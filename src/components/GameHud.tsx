@@ -1,0 +1,1733 @@
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  AlertTriangle,
+  HeartPulse,
+  LogOut,
+  Move,
+  Play,
+  Settings,
+  Trophy,
+} from 'lucide-react';
+import { InputManager } from '../game/inputManager';
+import {
+  ATTACHMENT_LABELS,
+  ControlMode,
+  GameState,
+  HudElementLayout,
+  HudLayoutConfig,
+  HudSnapshot,
+  MinimapBuilding,
+  MinimapRoad,
+  PoiMarker,
+  SCOPE_META,
+  ScopeType,
+  WEAPONS,
+} from '../game/types';
+import {
+  IconBackpackSvg,
+  IconCrouchSvg,
+  IconFireBurstSvg,
+  IconFistSvg,
+  IconGlooSvg,
+  IconGrenadeSvg,
+  IconHelmetSvg,
+  IconJumpSvg,
+  IconMedkitSvg,
+  IconProneSvg,
+  IconReloadSvg,
+  IconScopeSvg,
+  IconSprintSvg,
+  IconVestSvg,
+} from './HudIcons';
+import { ScopeOverlay } from './ScopeOverlay';
+import { WeaponIcon } from './WeaponIcon';
+
+interface GameHudProps {
+  gameState: GameState;
+  hud: HudSnapshot;
+  buildings: MinimapBuilding[];
+  roads: MinimapRoad[];
+  pois: PoiMarker[];
+  input: InputManager;
+  controlMode: ControlMode;
+  hudLayout: HudLayoutConfig;
+  showFps: boolean;
+  isPaused: boolean;
+  isBackpackOpen: boolean;
+  onTogglePause: () => void;
+  onToggleBackpack: () => void;
+  onUseMedkit: () => void;
+  onOpenSettings: () => void;
+  onOpenHudEditor: () => void;
+  onSelectScope: (scope: ScopeType) => void;
+  onSkipWaiting: () => void;
+  onJumpFromPlane: () => void;
+  onOpenParachute: () => void;
+  onReturnLobby: () => void;
+  onTestDamage: () => void;
+  onTestVictory: () => void;
+}
+
+const COMPASS_LABELS = [
+  { deg: 0, label: 'N' },
+  { deg: 45, label: 'NE' },
+  { deg: 90, label: 'L' },
+  { deg: 135, label: 'SE' },
+  { deg: 180, label: 'S' },
+  { deg: 225, label: 'SO' },
+  { deg: 270, label: 'O' },
+  { deg: 315, label: 'NO' },
+];
+
+function layoutStyle(cfg: HudElementLayout): React.CSSProperties {
+  return {
+    left: `${cfg.xPct}%`,
+    top: `${cfg.yPct}%`,
+    opacity: cfg.opacity,
+    transform: `translate(-50%, -50%) scale(${cfg.scale})`,
+  };
+}
+
+function getSlotColor(slotNumber: number, isDowned = false): string {
+  if (isDowned) return '#ef4444';
+  if (slotNumber === 2) return '#34d399'; // Verde Esmeralda
+  if (slotNumber === 3) return '#38bdf8'; // Azul Ciano
+  if (slotNumber === 4) return '#fbbf24'; // Amarelo Ouro
+  return '#f59e0b';
+}
+
+export const GameHud: React.FC<GameHudProps> = ({
+  gameState,
+  hud,
+  buildings,
+  roads,
+  pois,
+  input,
+  controlMode,
+  hudLayout,
+  showFps,
+  isPaused,
+  isBackpackOpen,
+  onTogglePause,
+  onToggleBackpack,
+  onUseMedkit,
+  onOpenSettings,
+  onOpenHudEditor,
+  onSelectScope,
+  onSkipWaiting,
+  onJumpFromPlane,
+  onOpenParachute,
+  onReturnLobby,
+  onTestDamage,
+  onTestVictory,
+}) => {
+  const minimapCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const minimapBgRef = useRef<HTMLCanvasElement | null>(null);
+  const [isTouchDevice, setIsTouchDevice] = useState(false);
+  const [joyKnob, setJoyKnob] = useState({ x: 0, y: 0 });
+  const [autoSprintActive, setAutoSprintActive] = useState(false);
+  const joyOriginRef = useRef<{ id: number; cx: number; cy: number } | null>(null);
+  const lookTouchRef = useRef<{ id: number; lx: number; ly: number } | null>(null);
+  const fireDragRef = useRef<{ id: number; lx: number; ly: number } | null>(null);
+
+  useEffect(() => {
+    const coarse =
+      typeof window !== 'undefined' &&
+      ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+    setIsTouchDevice(coarse);
+  }, []);
+
+  // Guarantee Fire button never stays stuck down if pointer leaves or cancels outside
+  useEffect(() => {
+    const releaseFire = (e: PointerEvent) => {
+      if (fireDragRef.current && fireDragRef.current.id === e.pointerId) {
+        fireDragRef.current = null;
+        input.setTouchFire(false);
+      }
+    };
+    const clearAllOnBlur = () => {
+      fireDragRef.current = null;
+      input.setTouchFire(false);
+    };
+    window.addEventListener('pointerup', releaseFire);
+    window.addEventListener('pointercancel', releaseFire);
+    window.addEventListener('blur', clearAllOnBlur);
+    return () => {
+      window.removeEventListener('pointerup', releaseFire);
+      window.removeEventListener('pointercancel', releaseFire);
+      window.removeEventListener('blur', clearAllOnBlur);
+    };
+  }, [input]);
+
+  const showTouchHud =
+    controlMode === 'mobile' || (controlMode === 'auto' && isTouchDevice);
+
+  // Pre-render static 2D Minimap terrain, river, roads, buildings & POIs once
+  useEffect(() => {
+    const size = 128;
+    const mapRange = 560;
+    const off = document.createElement('canvas');
+    off.width = size;
+    off.height = size;
+    const ctx = off.getContext('2d');
+    if (!ctx) return;
+
+    const toPx = (wx: number, wz: number) => ({
+      x: ((wx + mapRange) / (mapRange * 2)) * size,
+      y: ((wz + mapRange) / (mapRange * 2)) * size,
+    });
+
+    ctx.fillStyle = '#1b4965';
+    ctx.fillRect(0, 0, size, size);
+
+    ctx.fillStyle = '#536136';
+    ctx.beginPath();
+    for (let i = 0; i <= 56; i++) {
+      const a = (i / 56) * Math.PI * 2;
+      const edgeR = 515 + Math.sin(a * 3) * 28 + Math.cos(a * 5) * 17;
+      const p = toPx(Math.cos(a) * edgeR, Math.sin(a) * edgeR);
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = '#246b94';
+    ctx.lineWidth = 3.2;
+    ctx.beginPath();
+    for (let wx = -515; wx <= 515; wx += 24) {
+      const wz = 52 + Math.sin(wx * 0.009) * 34;
+      const p = toPx(wx, wz);
+      if (wx === -515) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+
+    roads.forEach((r) => {
+      const p1 = toPx(r.x1, r.z1);
+      const p2 = toPx(r.x2, r.z2);
+      ctx.strokeStyle = r.kind === 'asphalt' ? '#6e737b' : '#9c8360';
+      ctx.lineWidth = r.kind === 'asphalt' ? 1.8 : 1.3;
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
+    });
+
+    buildings.forEach((b) => {
+      const p = toPx(b.x, b.z);
+      ctx.fillStyle =
+        b.kind === 'container'
+          ? '#4ea8de'
+          : b.kind === 'tower'
+            ? '#f5b700'
+            : b.kind === 'bridge'
+              ? '#b0b7bf'
+              : '#e6d8b5';
+      ctx.fillRect(p.x - 1.2, p.y - 1.2, 2.4, 2.4);
+    });
+
+    ctx.font = 'bold 5.5px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(255,255,255,0.72)';
+    pois.forEach((poi) => {
+      if (poi.name.startsWith('PONTE')) return;
+      const p = toPx(poi.x, poi.z);
+      ctx.fillText(poi.name.split(' ')[0], p.x, p.y - 3);
+    });
+
+    minimapBgRef.current = off;
+  }, [buildings, roads, pois]);
+
+  // Fast Minimap dynamic Safe Zone circles + player arrow blit
+  useEffect(() => {
+    const canvas = minimapCanvasRef.current;
+    const bg = minimapBgRef.current;
+    if (!canvas || !bg) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const size = 128;
+    const mapRange = 560;
+    const scalePx = size / (mapRange * 2);
+    const toPx = (wx: number, wz: number) => ({
+      x: (wx + mapRange) * scalePx,
+      y: (wz + mapRange) * scalePx,
+    });
+
+    ctx.drawImage(bg, 0, 0);
+
+    if (gameState === GameState.PLAYING) {
+      const sz = hud.safeZone;
+      const nextP = toPx(sz.nextX, sz.nextZ);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.arc(nextP.x, nextP.y, Math.max(2, sz.nextRadius * scalePx), 0, Math.PI * 2);
+      ctx.stroke();
+
+      const curP = toPx(sz.currentX, sz.currentZ);
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 1.7;
+      ctx.beginPath();
+      ctx.arc(curP.x, curP.y, Math.max(2, sz.currentRadius * scalePx), 0, Math.PI * 2);
+      ctx.stroke();
+
+      if (sz.playerOutside) {
+        const plP = toPx(hud.playerX, hud.playerZ);
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.setLineDash([3, 2]);
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.moveTo(plP.x, plP.y);
+        ctx.lineTo(nextP.x, nextP.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    const px = (hud.playerX + mapRange) * scalePx;
+    const pz = (hud.playerZ + mapRange) * scalePx;
+    const rad = (hud.yawDeg * Math.PI) / 180;
+    ctx.save();
+    ctx.translate(px, pz);
+    ctx.rotate(rad);
+
+    ctx.fillStyle = 'rgba(45, 212, 191, 0.34)';
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(-9, -18);
+    ctx.lineTo(9, -18);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = '#5eead4';
+    ctx.beginPath();
+    ctx.moveTo(0, -4.5);
+    ctx.lineTo(3.5, 3.5);
+    ctx.lineTo(0, 1.8);
+    ctx.lineTo(-3.5, 3.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // Draw Duo / Squad teammate dots on Minimap
+    for (let i = 0; i < hud.teamMembers.length; i++) {
+      const m = hud.teamMembers[i];
+      if (m.slotNumber <= 1 || m.eliminated || m.worldX === undefined || m.worldZ === undefined) {
+        continue;
+      }
+      const mp = toPx(m.worldX, m.worldZ);
+      const col = getSlotColor(m.slotNumber, m.isDowned);
+      ctx.fillStyle = col;
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.arc(mp.x, mp.y, m.isDowned ? 3.2 : 2.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }, [
+    hud.playerX,
+    hud.playerZ,
+    hud.yawDeg,
+    hud.safeZone,
+    hud.teamMembers,
+    gameState,
+    buildings,
+    roads,
+    pois,
+  ]);
+
+  const activeWeaponSlot = hud.weapons[hud.activeSlot];
+  const activeWeaponDef = activeWeaponSlot
+    ? WEAPONS[activeWeaponSlot.weaponId]
+    : null;
+
+  const hpPct = Math.max(0, Math.min(100, (hud.hp / hud.maxHp) * 100));
+  const armorPct =
+    hud.vestMaxHp > 0
+      ? Math.max(0, Math.min(100, (hud.vestHp / hud.vestMaxHp) * 100))
+      : 0;
+  const backpackPct = Math.min(
+    100,
+    Math.round((hud.backpackUsed / Math.max(1, hud.backpackCapacity)) * 100),
+  );
+  const zoneMin = String(Math.floor(hud.zoneTimerSec / 60)).padStart(2, '0');
+  const zoneSec = String(hud.zoneTimerSec % 60).padStart(2, '0');
+
+  const isGroundCombat =
+    gameState === GameState.WAITING || gameState === GameState.PLAYING;
+
+  // Virtual Joystick Handlers
+  const handleJoyStart = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    const touch = e.changedTouches[0];
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    joyOriginRef.current = {
+      id: touch.identifier,
+      cx: rect.left + rect.width / 2,
+      cy: rect.top + rect.height / 2,
+    };
+  };
+
+  const handleJoyMove = (e: React.TouchEvent) => {
+    const origin = joyOriginRef.current;
+    if (!origin) return;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      if (t.identifier === origin.id) {
+        const dx = t.clientX - origin.cx;
+        const dy = t.clientY - origin.cy;
+        const maxR = 40;
+        const dist = Math.hypot(dx, dy);
+        const clamped = dist > maxR ? maxR / dist : 1;
+        const nx = (dx * clamped) / maxR;
+        const ny = (dy * clamped) / maxR;
+        setJoyKnob({ x: nx * maxR, y: ny * maxR });
+        input.setVirtualJoystick(nx, ny);
+        input.setTouchSprint(ny < -0.78);
+        if (ny > 0.35 && autoSprintActive) {
+          setAutoSprintActive(false);
+        }
+      }
+    }
+  };
+
+  const handleJoyEnd = (e: React.TouchEvent) => {
+    const origin = joyOriginRef.current;
+    if (!origin) return;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === origin.id) {
+        joyOriginRef.current = null;
+        setJoyKnob({ x: 0, y: 0 });
+        input.setVirtualJoystick(0, 0);
+        input.setTouchSprint(false);
+        break;
+      }
+    }
+  };
+
+  // Right Touch Look Area Handlers
+  const handleLookStart = (e: React.TouchEvent) => {
+    const t = e.changedTouches[0];
+    lookTouchRef.current = { id: t.identifier, lx: t.clientX, ly: t.clientY };
+  };
+
+  const handleLookMove = (e: React.TouchEvent) => {
+    const look = lookTouchRef.current;
+    if (!look) return;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      if (t.identifier === look.id) {
+        const dx = t.clientX - look.lx;
+        const dy = t.clientY - look.ly;
+        look.lx = t.clientX;
+        look.ly = t.clientY;
+        input.addTouchLook(dx * 2.0, dy * 2.0);
+      }
+    }
+  };
+
+  const handleLookEnd = (e: React.TouchEvent) => {
+    const look = lookTouchRef.current;
+    if (!look) return;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === look.id) {
+        lookTouchRef.current = null;
+        break;
+      }
+    }
+  };
+
+  const beginFirePointer = (e: React.PointerEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    e.preventDefault();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore if unsupported
+    }
+    fireDragRef.current = {
+      id: e.pointerId,
+      lx: e.clientX,
+      ly: e.clientY,
+    };
+    input.setTouchFire(true);
+  };
+
+  const moveFirePointer = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = fireDragRef.current;
+    if (!drag || drag.id !== e.pointerId) return;
+    e.stopPropagation();
+    const dx = e.clientX - drag.lx;
+    const dy = e.clientY - drag.ly;
+    drag.lx = e.clientX;
+    drag.ly = e.clientY;
+    input.addTouchLook(dx * 2.25, dy * 2.25);
+  };
+
+  const endFirePointer = (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (fireDragRef.current?.id === e.pointerId) {
+      e.stopPropagation();
+      try {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // ignore
+      }
+      fireDragRef.current = null;
+      input.setTouchFire(false);
+    }
+  };
+
+  const showOpticalOverlay =
+    isGroundCombat &&
+    hud.isAiming &&
+    hud.activeScope !== 'none' &&
+    !hud.isDead &&
+    !isPaused;
+
+  const slot1 = hud.weapons[1];
+  const slot2 = hud.weapons[2];
+  const slot3 = hud.weapons[3];
+
+  return (
+    <div className="fixed inset-0 z-30 pointer-events-none select-none text-white">
+      {/* Optical Scope Overlay (1x Red Dot, 2x, 4x, Sniper 8x) */}
+      {showOpticalOverlay && (
+        <ScopeOverlay
+          scope={hud.activeScope}
+          aimLockedTarget={hud.aimLockedTarget}
+          aimAssistActive={hud.aimAssistActive}
+          headshotFlashActive={hud.headshotFlashActive}
+        />
+      )}
+
+      {/* Damage Vignette Flash */}
+      {hud.damageFlashActive && (
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            boxShadow: 'inset 0 0 90px 28px rgba(220, 38, 38, 0.72)',
+          }}
+        />
+      )}
+
+      {/* Right Half Touch Camera Pad (when mobile HUD enabled) */}
+      {showTouchHud && !isPaused && (
+        <div
+          onTouchStart={handleLookStart}
+          onTouchMove={handleLookMove}
+          onTouchEnd={handleLookEnd}
+          onTouchCancel={handleLookEnd}
+          className="pointer-events-auto touch-none absolute top-16 right-0 bottom-0 left-1/2 z-10"
+        />
+      )}
+
+      {/* TOP-LEFT CUSTOMIZABLE SQUARE MINIMAP */}
+      <div
+        style={layoutStyle(hudLayout.minimap)}
+        className="absolute z-20 flex flex-col gap-0.5"
+      >
+        <div className="w-[100px] h-[100px] sm:w-[118px] sm:h-[118px] border border-white/60 bg-[#14181e] overflow-hidden shadow-lg">
+          <canvas
+            ref={minimapCanvasRef}
+            width={128}
+            height={128}
+            className="w-full h-full block"
+          />
+        </div>
+        {hud.currentPoi && (
+          <div
+            className="text-[9px] font-bold tracking-wide uppercase text-amber-200 px-1 w-fit"
+            style={{ textShadow: '0 1px 2px rgba(0,0,0,0.95)' }}
+          >
+            {hud.currentPoi}
+          </div>
+        )}
+      </div>
+
+      {/* OVERHEAD 3D-PROJECTED TEAMMATE TAGS (#2 JOGADOR + ▼) & OFF-SCREEN DIRECTIONAL ARROWS */}
+      {!isPaused &&
+        hud.teamMembers.map((m) => {
+          if (m.slotNumber <= 1 || m.eliminated) return null;
+          const color = getSlotColor(m.slotNumber, m.isDowned);
+          if (m.onScreen && m.screenXPct !== undefined && m.screenYPct !== undefined) {
+            return (
+              <div
+                key={`tag_${m.id}`}
+                className="pointer-events-none absolute z-20 flex flex-col items-center -translate-x-1/2 -translate-y-full"
+                style={{
+                  left: `${m.screenXPct}%`,
+                  top: `${m.screenYPct}%`,
+                  textShadow: '0 1px 3px rgba(0,0,0,0.95)',
+                }}
+              >
+                <div
+                  className={`flex items-center gap-1 px-1.5 py-0.5 bg-black/65 border rounded-[2px] ${
+                    m.isDowned ? 'border-red-500 animate-pulse' : 'border-white/25'
+                  }`}
+                >
+                  <span
+                    className="w-3.5 h-3.5 rounded-[2px] flex items-center justify-center text-[9px] font-black text-black shrink-0"
+                    style={{ backgroundColor: color }}
+                  >
+                    {m.slotNumber}
+                  </span>
+                  <span
+                    className="text-[10px] font-bold tracking-tight whitespace-nowrap"
+                    style={{ color: m.isDowned ? '#fca5a5' : '#ffffff' }}
+                  >
+                    {m.nick}
+                  </span>
+                  {m.distance !== undefined && (
+                    <span className="text-[8px] font-mono text-white/75">{m.distance}m</span>
+                  )}
+                </div>
+                {m.isDowned && (
+                  <span className="mt-0.5 px-1 bg-red-600 text-[8px] font-black text-white uppercase tracking-wider">
+                    CAÍDO · SALVAR
+                  </span>
+                )}
+                <span
+                  className="text-[11px] leading-none -mt-0.5"
+                  style={{ color }}
+                >
+                  ▼
+                </span>
+              </div>
+            );
+          }
+
+          if (m.offscreenAngleRad !== undefined) {
+            const clampedAngle = m.offscreenAngleRad;
+            const sinA = Math.sin(clampedAngle);
+            const cosA = Math.cos(clampedAngle);
+            const xPct = 50 + sinA * 40;
+            const yPct = 50 - cosA * 38;
+            return (
+              <div
+                key={`off_${m.id}`}
+                className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center"
+                style={{ left: `${xPct}%`, top: `${yPct}%` }}
+              >
+                <div
+                  className="w-5 h-5 flex items-center justify-center"
+                  style={{ transform: `rotate(${clampedAngle}rad)` }}
+                >
+                  <svg viewBox="0 0 20 20" className="w-4 h-4 drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)]">
+                    <path d="M10 1 L18 17 L10 13 L2 17 Z" fill={color} stroke="#000" strokeWidth="1.2" />
+                  </svg>
+                </div>
+                <div className="flex items-center gap-0.5 bg-black/70 px-1 rounded-[2px] text-[8px] font-mono font-bold">
+                  <span
+                    className="w-3 h-3 rounded-[2px] flex items-center justify-center text-[8px] font-black text-black"
+                    style={{ backgroundColor: color }}
+                  >
+                    {m.slotNumber}
+                  </span>
+                  {m.distance !== undefined && <span className="text-white">{m.distance}m</span>}
+                </div>
+              </div>
+            );
+          }
+          return null;
+        })}
+
+      {/* DUO / SQUAD TEAMMATE STATUS PANEL (next to Minimap) */}
+      {hud.teamMembers.length > 0 && (
+        <div className="absolute left-[112px] sm:left-[136px] top-3 z-20 flex flex-col gap-1 pointer-events-none">
+          {hud.teamMembers.map((m) => {
+            const slotColor = getSlotColor(m.slotNumber, m.isDowned);
+            return (
+              <div
+                key={m.id}
+                className={`w-28 sm:w-34 bg-black/55 border px-1.5 py-0.5 ${
+                  m.eliminated
+                    ? 'border-neutral-600/60 opacity-50'
+                    : m.isDowned
+                      ? 'border-red-500 animate-pulse'
+                      : 'border-white/25'
+                }`}
+              >
+                <div className="flex items-center justify-between text-[9px] font-bold leading-tight gap-1">
+                  <span className="flex items-center gap-1 truncate">
+                    <span
+                      className="w-3.5 h-3.5 rounded-[2px] inline-flex items-center justify-center text-[8px] font-black text-black shrink-0"
+                      style={{ backgroundColor: m.slotNumber === 1 ? '#f59e0b' : slotColor }}
+                    >
+                      {m.slotNumber}
+                    </span>
+                    <span className="truncate">{m.nick}</span>
+                  </span>
+                  {m.isDowned ? (
+                    <span className="text-[8px] font-black text-red-400 shrink-0">CAÍDO</span>
+                  ) : m.distance !== undefined && m.slotNumber > 1 && !m.eliminated ? (
+                    <span className="text-[8px] font-mono text-white/65 shrink-0">{m.distance}m</span>
+                  ) : null}
+                </div>
+                <div className="w-full h-1 bg-white/15 mt-0.5">
+                  <div
+                    className={`h-full transition-all ${
+                      m.isDowned
+                        ? 'bg-red-500'
+                        : m.eliminated
+                          ? 'bg-neutral-500'
+                          : 'bg-emerald-400'
+                    }`}
+                    style={{
+                      width: `${m.eliminated ? 0 : Math.max(4, Math.min(100, (m.hp / m.maxHp) * 100))}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* BOTTOM-LEFT FPS / LATENCY READOUT */}
+      {showFps && (
+        <div
+          className="absolute bottom-2 left-2.5 z-20 text-[10px] font-mono font-bold tabular-nums text-white/85"
+          style={{ textShadow: '0 1px 2px rgba(0,0,0,0.95)' }}
+        >
+          {hud.fps} FPS
+        </div>
+      )}
+
+      {/* LEFT-EDGE CLASSIC FREE FIRE UTILITY COLUMN (MOCHILA %, KIT, GRANADA, GELO) */}
+      {isGroundCombat && !hud.isDead && !isPaused && (
+        <div className="pointer-events-auto absolute left-2 top-[134px] sm:top-[152px] z-20 flex flex-col gap-1.5">
+          {/* Mochila (% lotação) */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onToggleBackpack();
+            }}
+            className="touch-none relative w-11 h-11 sm:w-12 sm:h-12 bg-black/50 hover:bg-black/65 border border-white/25 flex items-center justify-center shadow cursor-pointer active:scale-95"
+            title="Abrir Mochila (TAB ou B)"
+          >
+            <IconBackpackSvg className="w-6 h-6 sm:w-7 sm:h-7 text-white drop-shadow" />
+            <span className="absolute -top-1 right-0 bg-black/80 px-1 text-[8px] font-mono font-black text-white leading-tight">
+              {backpackPct}%
+            </span>
+            <div className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-white/15">
+              <div
+                className="h-full bg-amber-400"
+                style={{ width: `${backpackPct}%` }}
+              />
+            </div>
+          </button>
+
+          {/* Kit Médico */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onUseMedkit();
+            }}
+            disabled={hud.medkitCount <= 0 || hud.hp >= hud.maxHp || hud.usingMedkit}
+            className="touch-none relative w-11 h-11 sm:w-12 sm:h-12 bg-black/50 hover:bg-black/65 border border-white/25 flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:opacity-45"
+            title="Usar Kit Médico (H ou 4)"
+          >
+            <IconMedkitSvg className="w-6 h-6 sm:w-7 sm:h-7 text-white drop-shadow" />
+            <span className="absolute top-0 right-0.5 text-[10px] font-mono font-black text-white drop-shadow">
+              {hud.medkitCount}
+            </span>
+            {!showTouchHud && (
+              <span className="absolute bottom-0 left-0.5 text-[7px] font-mono text-white/75">
+                H
+              </span>
+            )}
+          </button>
+
+          {/* Granada */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              input.triggerGrenade();
+            }}
+            disabled={hud.grenadeCount <= 0}
+            className={`touch-none relative w-11 h-11 sm:w-12 sm:h-12 border flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:opacity-40 ${
+              hud.isHoldingGrenade
+                ? 'bg-red-600/80 border-amber-300 text-white ring-1 ring-amber-300'
+                : 'bg-black/50 hover:bg-black/65 border-white/25 text-white'
+            }`}
+            title="Granada Explosiva (X ou 6)"
+          >
+            <IconGrenadeSvg className="w-6 h-6 sm:w-7 sm:h-7 text-white drop-shadow" />
+            <span className="absolute bottom-0 right-0.5 text-[10px] font-mono font-black text-white drop-shadow">
+              {hud.grenadeCount}
+            </span>
+            {!showTouchHud && (
+              <span className="absolute top-0 left-0.5 text-[7px] font-mono text-white/75">
+                X
+              </span>
+            )}
+          </button>
+
+          {/* Parede de Gelo */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              input.triggerGloo();
+            }}
+            disabled={hud.glooCount <= 0}
+            className={`touch-none relative w-11 h-11 sm:w-12 sm:h-12 border flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:opacity-40 ${
+              hud.isPlacingGloo
+                ? 'bg-cyan-500/85 border-white text-black ring-1 ring-cyan-300'
+                : 'bg-black/50 hover:bg-black/65 border-white/25 text-cyan-200'
+            }`}
+            title="Parede de Gelo (G ou 5)"
+          >
+            <IconGlooSvg className="w-6 h-6 sm:w-7 sm:h-7 drop-shadow" />
+            <span className="absolute bottom-0 right-0.5 text-[10px] font-mono font-black text-white drop-shadow">
+              {hud.glooCount}
+            </span>
+            {!showTouchHud && (
+              <span className="absolute top-0 left-0.5 text-[7px] font-mono text-white/75">
+                G
+              </span>
+            )}
+          </button>
+        </div>
+      )}
+
+      {/* TOP-CENTER: Compass + Tapered Dark Smoke Zone Banner + Timer + Centered Rising Kill Feed */}
+      <div className="absolute top-1.5 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-0.5 w-[300px] sm:w-[370px] max-w-[92vw]">
+        {/* Crisp Compass Strip */}
+        <div
+          className="px-3 py-0.5 flex items-center gap-2.5 text-[10px] font-mono tabular-nums text-white/85"
+          style={{ textShadow: '0 1px 2px rgba(0,0,0,0.95)' }}
+        >
+          {COMPASS_LABELS.map((c) => {
+            let diff = Math.abs(hud.yawDeg - c.deg);
+            if (diff > 180) diff = 360 - diff;
+            if (diff > 70) return null;
+            return (
+              <span
+                key={c.label}
+                className={
+                  diff < 15 ? 'text-amber-300 font-black' : 'text-white/75'
+                }
+              >
+                {c.label}
+              </span>
+            );
+          })}
+          <span className="text-white font-bold border-l border-white/30 pl-2">
+            {Math.round(hud.yawDeg)}°
+          </span>
+        </div>
+
+        {gameState === GameState.WAITING && (
+          <div className="pointer-events-auto flex items-center gap-2 bg-black/75 border border-amber-400/70 px-3 py-1 text-xs font-mono mt-0.5">
+            <span>ILHA DE ESPERA:</span>
+            <strong className="text-amber-400 tabular-nums">
+              00:{String(hud.waitingTimerSec).padStart(2, '0')}
+            </strong>
+            <button
+              type="button"
+              onClick={onSkipWaiting}
+              className="ml-1 px-2 py-0.5 bg-amber-500 hover:bg-amber-400 text-black font-black text-[10px] uppercase cursor-pointer"
+            >
+              EMBARCAR
+            </button>
+          </div>
+        )}
+
+        {gameState === GameState.PLAYING && (
+          <div className="flex flex-col items-center w-full">
+            {/* Tapered Dark Smoke Warning Strip matching screenshot */}
+            <div
+              className="w-full py-0.5 px-4 flex items-center justify-center gap-1.5 text-[11px] sm:text-xs font-medium tracking-wide"
+              style={{
+                background:
+                  'linear-gradient(90deg, transparent 0%, rgba(8,10,12,0.72) 24%, rgba(8,10,12,0.72) 76%, transparent 100%)',
+                textShadow: '0 1px 2px rgba(0,0,0,0.95)',
+              }}
+            >
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 fill-amber-400/25 shrink-0" />
+              <span className="text-white/95">
+                {hud.safeZone.isShrinking
+                  ? `Zona segura ${hud.safeZone.phase}/${hud.safeZone.totalPhases} fechando`
+                  : 'Zona segura aparecerá em'}
+              </span>
+            </div>
+
+            {/* Large Centered White Timer */}
+            <div
+              className="text-2xl sm:text-[28px] font-bold font-mono tabular-nums text-white leading-tight mt-0.5"
+              style={{ textShadow: '0 2px 5px rgba(0,0,0,0.9)' }}
+            >
+              {zoneMin}:{zoneSec}
+            </div>
+
+            {hud.safeZone.playerOutside && (
+              <div className="mt-0.5 flex items-center gap-1 bg-red-950/88 border border-red-500 px-2 py-0.5 text-[10px] font-mono font-bold text-red-200 animate-pulse">
+                <AlertTriangle className="w-3 h-3 text-red-400" />
+                <span>FORA DA ZONA (-{hud.safeZone.damagePerSec} HP/s)</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {(gameState === GameState.AIRPLANE ||
+          gameState === GameState.DROPPING ||
+          gameState === GameState.PARACHUTE) && (
+          <div
+            className="px-4 py-0.5 text-xs font-mono tabular-nums"
+            style={{
+              background:
+                'linear-gradient(90deg, transparent 0%, rgba(8,10,12,0.72) 25%, rgba(8,10,12,0.72) 75%, transparent 100%)',
+            }}
+          >
+            ALTITUDE: <strong className="text-amber-300">{Math.round(hud.altitude)}m</strong>
+          </div>
+        )}
+
+        {/* CENTERED RISING KILL NOTIFICATIONS ("Fulano Eliminado") */}
+        {isGroundCombat && !isPaused && hud.killFeed.length > 0 && (
+          <div className="pointer-events-none mt-1 flex flex-col items-center gap-0.5 w-full">
+            {hud.killFeed.slice(0, 3).map((kf) => {
+              const fade =
+                kf.age > 3.4 ? Math.max(0, 1 - (kf.age - 3.4) / 1.0) : 1;
+              const enterLift = Math.max(0, 1 - kf.age * 5) * 6;
+              return (
+                <div
+                  key={kf.id}
+                  style={{
+                    opacity: fade,
+                    transform: `translateY(${enterLift - kf.age * 2.0}px)`,
+                    textShadow: '0 1px 4px rgba(0,0,0,0.95)',
+                  }}
+                  className="flex items-center justify-center gap-1.5 text-[11px] sm:text-xs font-bold tracking-wide"
+                >
+                  <span
+                    className={
+                      kf.isPlayerKiller ? 'text-amber-300 font-black' : 'text-white'
+                    }
+                  >
+                    {kf.killerName}
+                  </span>
+                  <span className="text-[9px] font-mono px-1 bg-black/55 border border-white/20 text-neutral-200">
+                    {kf.isHeadshot ? `☠ ${kf.weaponShort}` : kf.weaponShort}
+                  </span>
+                  <span className="text-amber-300">
+                    {kf.victimName} Eliminado
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* TOP-RIGHT: Cyan Vivo / Red-Orange Matou + Settings Gear */}
+      <div className="absolute top-2 right-2.5 z-20 flex items-center gap-1.5">
+        <div className="flex items-center text-[11px] sm:text-xs font-bold shadow-md overflow-hidden rounded-[2px]">
+          <div className="bg-gradient-to-r from-cyan-500/85 to-teal-400/85 px-2.5 py-1 flex items-center gap-1 text-white">
+            <span>Vivo</span>
+            <span className="font-mono font-black tabular-nums">{hud.aliveCount}</span>
+          </div>
+          <div className="bg-gradient-to-r from-orange-500/85 to-red-600/85 px-2.5 py-1 flex items-center gap-1 text-white">
+            <span>Matou</span>
+            <span className="font-mono font-black tabular-nums">{hud.kills}</span>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onTogglePause}
+          className="pointer-events-auto bg-black/50 hover:bg-black/75 border border-white/25 p-1.5 rounded-[2px] cursor-pointer"
+          title="Menu / Configurações (Esc)"
+        >
+          <Settings className="w-4 h-4 text-white" />
+        </button>
+      </div>
+
+      {/* CUSTOMIZABLE CLASSIC FREE FIRE TOP-RIGHT WEAPON BOX */}
+      {isGroundCombat && activeWeaponDef && activeWeaponSlot && (
+        <div
+          style={layoutStyle(hudLayout.weapons)}
+          className="pointer-events-auto absolute z-20 flex flex-col items-end gap-1 w-[176px] sm:w-[206px]"
+        >
+          <div className="w-full bg-black/45 border border-white/25 shadow-lg overflow-hidden">
+            {/* Top Row: Left ∞ + active weapon name/attachments | Right Fist / Slot 3 (G18) */}
+            <div className="grid grid-cols-2 border-b border-white/20 h-9 sm:h-10 divide-x divide-white/20">
+              <div className="flex flex-col items-center justify-center px-1.5 leading-none">
+                <span className="text-lg font-light text-white leading-none">∞</span>
+                <span className="text-[7px] font-mono text-white/75 truncate max-w-full">
+                  {activeWeaponDef.shortName}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => slot3 && input.triggerSlot(3)}
+                disabled={!slot3}
+                className={`relative flex items-center justify-center px-1.5 cursor-pointer transition-colors ${
+                  hud.activeSlot === 3
+                    ? 'bg-white/20 ring-1 ring-inset ring-amber-300'
+                    : 'hover:bg-white/10'
+                } disabled:opacity-45`}
+                title={slot3 ? 'Slot 3: Glock G18' : 'Slot 3 Vazio'}
+              >
+                {slot3 ? (
+                  <>
+                    <IconFistSvg className="w-6 h-6 text-white drop-shadow" />
+                    <span className="absolute bottom-0.5 left-1 text-[8px] font-mono font-bold text-white/90">
+                      {slot3.ammoInMag}/{slot3.reserveAmmo}
+                    </span>
+                    <span className="absolute top-0.5 right-1 text-[7px] font-mono text-amber-300 font-bold">
+                      3·G18
+                    </span>
+                  </>
+                ) : (
+                  <IconFistSvg className="w-6 h-6 text-white/60" />
+                )}
+              </button>
+            </div>
+
+            {/* Bottom Row: Primary Weapons Slot 1 & Slot 2 side-by-side white silhouettes */}
+            <div className="grid grid-cols-2 h-14 sm:h-16 divide-x divide-white/20">
+              {([1, 2] as const).map((slotNum) => {
+                const w = hud.weapons[slotNum];
+                const def = w ? WEAPONS[w.weaponId] : null;
+                const active = hud.activeSlot === slotNum;
+                if (!w || !def) {
+                  return (
+                    <div
+                      key={slotNum}
+                      className="flex items-center justify-center text-[9px] font-mono text-white/30"
+                    >
+                      [{slotNum}]
+                    </div>
+                  );
+                }
+                return (
+                  <button
+                    key={slotNum}
+                    type="button"
+                    onClick={() => input.triggerSlot(slotNum)}
+                    className={`relative flex items-center justify-center p-1 cursor-pointer transition-colors ${
+                      active
+                        ? 'bg-white/18 ring-1 ring-inset ring-amber-300'
+                        : 'hover:bg-white/10 opacity-85 hover:opacity-100'
+                    }`}
+                  >
+                    <WeaponIcon
+                      weaponId={w.weaponId}
+                      silhouette
+                      className="w-[82%] h-8 sm:h-9 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]"
+                    />
+                    <span className="absolute top-0.5 left-1 text-[8px] font-mono font-bold text-white/80">
+                      {slotNum}
+                    </span>
+                    <span className="absolute top-0.5 right-1 text-[7px] font-mono text-amber-300/95">
+                      {def.allowsCustomScope ? SCOPE_META[w.scope].short : def.shortName}
+                    </span>
+                    <div className="absolute bottom-0.5 left-1 font-mono tabular-nums leading-none">
+                      {active && hud.isReloading ? (
+                        <span className="text-[8px] font-black text-amber-300">RECAR...</span>
+                      ) : (
+                        <>
+                          <span className="text-[11px] font-black text-white">
+                            {w.ammoInMag}
+                          </span>
+                          <span className="text-[8px] text-white/65">/{w.reserveAmmo}</span>
+                        </>
+                      )}
+                    </div>
+                    {active && hud.isReloading && (
+                      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black/50">
+                        <div
+                          className="h-full bg-amber-300"
+                          style={{ width: `${Math.round(hud.reloadProgress * 100)}%` }}
+                        />
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Compact Scope Switcher & Equipped Attachments under weapon box */}
+          {activeWeaponDef.allowsCustomScope && (
+            <div className="flex items-center gap-1 flex-wrap justify-end">
+              {hud.ownedScopes.map((sc) => {
+                const isEq = hud.activeScope === sc;
+                return (
+                  <button
+                    key={sc}
+                    type="button"
+                    onClick={() => onSelectScope(sc)}
+                    className={`px-1.5 py-0.5 text-[8px] font-mono border cursor-pointer ${
+                      isEq
+                        ? 'bg-amber-400 text-black border-amber-200 font-black'
+                        : 'bg-black/55 text-white/80 border-white/25 hover:border-white/50'
+                    }`}
+                  >
+                    {SCOPE_META[sc].short}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {(activeWeaponSlot.attachments.muzzle ||
+            activeWeaponSlot.attachments.foregrip ||
+            activeWeaponSlot.attachments.magazine ||
+            activeWeaponSlot.attachments.stock) && (
+            <div className="flex items-center gap-1 flex-wrap justify-end">
+              {activeWeaponSlot.attachments.muzzle && (
+                <span className="text-[7px] font-mono px-1 bg-black/60 border border-amber-400/50 text-amber-200">
+                  {ATTACHMENT_LABELS[activeWeaponSlot.attachments.muzzle].short}
+                </span>
+              )}
+              {activeWeaponSlot.attachments.foregrip && (
+                <span className="text-[7px] font-mono px-1 bg-black/60 border border-amber-400/50 text-amber-200">
+                  {ATTACHMENT_LABELS[activeWeaponSlot.attachments.foregrip].short}
+                </span>
+              )}
+              {activeWeaponSlot.attachments.magazine && (
+                <span className="text-[7px] font-mono px-1 bg-black/60 border border-amber-400/50 text-amber-200">
+                  {ATTACHMENT_LABELS[activeWeaponSlot.attachments.magazine].short}
+                </span>
+              )}
+              {activeWeaponSlot.attachments.stock && (
+                <span className="text-[7px] font-mono px-1 bg-black/60 border border-amber-400/50 text-amber-200">
+                  {ATTACHMENT_LABELS[activeWeaponSlot.attachments.stock].short}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* DIRECTIONAL DAMAGE INDICATOR ARROWS */}
+      {isGroundCombat && !hud.isDead && !isPaused && hud.damageIndicators.length > 0 && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+          {hud.damageIndicators.map((di) => {
+            const opacity = Math.max(0, 1 - di.age / 1.45);
+            return (
+              <div
+                key={di.id}
+                className="absolute w-40 h-40 flex items-start justify-center"
+                style={{
+                  opacity,
+                  transform: `rotate(${di.angleRad}rad)`,
+                }}
+              >
+                <svg
+                  viewBox="0 0 36 22"
+                  className="w-8 h-5 drop-shadow-[0_0_8px_rgba(239,68,68,0.95)]"
+                >
+                  <path
+                    d="M18 1 L34 18 L18 12 L2 18 Z"
+                    fill="#ef4444"
+                    stroke="#7f1d1d"
+                    strokeWidth="1.5"
+                  />
+                </svg>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* CENTER CROSSHAIR (Compact & Semi-Transparent) */}
+      {isGroundCombat && !hud.isDead && !isPaused && !showOpticalOverlay && !isBackpackOpen && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div className="relative flex items-center justify-center">
+            <div
+              className={`border rounded-full transition-all duration-75 flex items-center justify-center ${
+                hud.aimLockedTarget
+                  ? 'w-4.5 h-4.5 border-red-500/80 border-[1.5px]'
+                  : hud.isAiming
+                    ? 'w-3.5 h-3.5 border-amber-300/65'
+                    : hud.isSprinting
+                      ? 'w-6 h-6 border-white/30'
+                      : 'w-4 h-4 border-white/45'
+              }`}
+            >
+              <div
+                className="absolute -top-1 w-[1px] h-1.5"
+                style={{
+                  backgroundColor: hud.aimLockedTarget
+                    ? 'rgba(239,68,68,0.85)'
+                    : 'rgba(255,255,255,0.45)',
+                }}
+              />
+              <div
+                className="absolute -bottom-1 w-[1px] h-1.5"
+                style={{
+                  backgroundColor: hud.aimLockedTarget
+                    ? 'rgba(239,68,68,0.85)'
+                    : 'rgba(255,255,255,0.45)',
+                }}
+              />
+              <div
+                className="absolute -left-1 h-[1px] w-1.5"
+                style={{
+                  backgroundColor: hud.aimLockedTarget
+                    ? 'rgba(239,68,68,0.85)'
+                    : 'rgba(255,255,255,0.45)',
+                }}
+              />
+              <div
+                className="absolute -right-1 h-[1px] w-1.5"
+                style={{
+                  backgroundColor: hud.aimLockedTarget
+                    ? 'rgba(239,68,68,0.85)'
+                    : 'rgba(255,255,255,0.45)',
+                }}
+              />
+            </div>
+            <div
+              className={`absolute w-1 h-1 rounded-full ${
+                hud.aimLockedTarget ? 'bg-red-500/90' : 'bg-white/65'
+              }`}
+            />
+            {hud.hitmarkerActive && (
+              <div
+                className={`absolute w-6 h-6 flex items-center justify-center font-black ${
+                  hud.headshotFlashActive ? 'text-amber-400 text-xl' : 'text-red-500 text-base'
+                }`}
+              >
+                ✕
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Floating Damage Numbers (Peito = Branco/Dourado, Capa = Vermelho Grande) */}
+      {isGroundCombat &&
+        !isPaused &&
+        hud.damagePopups.map((d) => {
+          const opacity = Math.max(0, 1 - d.age / 0.78);
+          const liftPx = d.age * 42;
+          return (
+            <div
+              key={d.id}
+              className="absolute z-20 pointer-events-none flex items-center gap-1 font-mono font-black leading-none"
+              style={{
+                left: `${d.xPct}%`,
+                top: `${d.yPct}%`,
+                opacity,
+                transform: `translate(-50%, calc(-50% - ${liftPx}px))`,
+                textShadow: '0 2px 3px rgba(0,0,0,0.95), 0 0 6px rgba(0,0,0,0.7)',
+              }}
+            >
+              <span
+                className={
+                  d.isHeadshot
+                    ? 'text-red-500 text-xl sm:text-2xl'
+                    : d.armorBlocked > 0
+                      ? 'text-amber-300 text-base'
+                      : 'text-white text-base'
+                }
+              >
+                {d.amount}
+              </span>
+              {d.armorBlocked > 0 && (
+                <span className="text-[9px] px-1 py-0.5 bg-black/75 border border-white/30 text-neutral-200">
+                  {d.isHeadshot ? `K${d.armorBlocked}` : `C${d.armorBlocked}`}
+                </span>
+              )}
+            </div>
+          );
+        })}
+
+      {/* Tactical Gloo Wall / Grenade Active Mode Banner */}
+      {isGroundCombat && !hud.isDead && !isPaused && (hud.isPlacingGloo || hud.isHoldingGrenade) && (
+        <div
+          className={`absolute top-[36%] left-1/2 -translate-x-1/2 z-20 pointer-events-none px-3 py-1 border font-mono font-bold text-[10px] uppercase tracking-wider ${
+            hud.isPlacingGloo
+              ? 'bg-cyan-950/90 border-cyan-400 text-cyan-200'
+              : 'bg-red-950/90 border-red-400 text-red-200'
+          }`}
+        >
+          {hud.isPlacingGloo
+            ? 'GELO: CLIQUE OU BOTÃO PARA POSICIONAR'
+            : 'GRANADA: CLIQUE OU BOTÃO PARA ARREMESSAR'}
+        </div>
+      )}
+
+      {/* AIRPLANE / DROPPING / WINDOW VAULT / MEDKIT / LOOT ACTION PROMPTS */}
+      <div className="absolute inset-x-0 bottom-24 flex flex-col items-center gap-1.5 z-20">
+        {hud.canJumpFromPlane && (
+          <button
+            type="button"
+            onClick={onJumpFromPlane}
+            className="pointer-events-auto px-6 py-3 bg-amber-500 hover:bg-amber-400 text-black font-black text-sm uppercase tracking-widest border-b-4 border-amber-700 shadow-xl cursor-pointer"
+          >
+            SALTAR DO AVIÃO (ESPAÇO)
+          </button>
+        )}
+
+        {hud.canOpenParachute && (
+          <button
+            type="button"
+            onClick={onOpenParachute}
+            className="pointer-events-auto px-6 py-3 bg-sky-500 hover:bg-sky-400 text-black font-black text-sm uppercase tracking-widest border-b-4 border-sky-700 shadow-xl cursor-pointer"
+          >
+            ABRIR PARAQUEDAS (ESPAÇO)
+          </button>
+        )}
+
+        {isGroundCombat && hud.reviveProgress > 0 && hud.reviveTarget && (
+          <div className="w-60 bg-black/85 border border-emerald-400 px-3 py-1.5 shadow-xl">
+            <div className="flex items-center justify-between text-[10px] font-mono text-emerald-300 mb-1">
+              <span>
+                SALVANDO #{hud.reviveTarget.slotNumber} {hud.reviveTarget.nick}...
+              </span>
+              <span>{Math.round(hud.reviveProgress * 100)}%</span>
+            </div>
+            <div className="w-full h-1.5 bg-neutral-800">
+              <div
+                className="h-full bg-emerald-400 transition-[width] duration-75"
+                style={{ width: `${Math.round(hud.reviveProgress * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {isGroundCombat && hud.reviveTarget && hud.reviveProgress <= 0 && (
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              input.triggerRevive();
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              input.triggerRevive();
+            }}
+            className="pointer-events-auto touch-none flex items-center gap-2 px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 active:scale-95 border-2 border-white text-black font-black text-xs uppercase tracking-wider shadow-2xl cursor-pointer animate-pulse"
+          >
+            <HeartPulse className="w-4 h-4 stroke-[2.6]" />
+            <span>
+              SALVAR #{hud.reviveTarget.slotNumber} {hud.reviveTarget.nick} (V / F)
+            </span>
+          </button>
+        )}
+
+        {isGroundCombat && hud.usingMedkit && (
+          <div className="w-56 bg-black/80 border border-emerald-400 px-3 py-1.5">
+            <div className="flex items-center justify-between text-[10px] font-mono text-emerald-300 mb-1">
+              <span>USANDO KIT MÉDICO...</span>
+              <span>{Math.round(hud.medkitProgress * 100)}%</span>
+            </div>
+            <div className="w-full h-1.5 bg-neutral-800">
+              <div
+                className="h-full bg-emerald-400 transition-[width] duration-75"
+                style={{ width: `${Math.round(hud.medkitProgress * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {isGroundCombat && hud.canVaultWindow && !hud.nearbyLootLabel && (
+          <div className="px-3 py-1 bg-sky-950/88 border border-sky-400 text-sky-200 font-mono font-bold text-[11px] uppercase">
+            [ESPAÇO] PULAR JANELA
+          </div>
+        )}
+
+        {isGroundCombat && hud.nearbyLootLabel && (
+          <button
+            type="button"
+            onClick={() => input.triggerInteract()}
+            className="pointer-events-auto px-4 py-1.5 bg-black/82 border border-amber-400 text-amber-200 font-bold text-xs uppercase tracking-wider cursor-pointer"
+          >
+            [E] {hud.nearbyLootLabel}
+          </button>
+        )}
+
+        {isGroundCombat && (hud.isPlacingGloo || hud.isHoldingGrenade) && (
+          <div className="pointer-events-auto flex items-center gap-2">
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                input.triggerFireTap();
+              }}
+              className={`px-4 py-2 font-black text-xs uppercase tracking-wider border-2 shadow-xl cursor-pointer ${
+                hud.isPlacingGloo
+                  ? 'bg-cyan-400 hover:bg-cyan-300 text-black border-white'
+                  : 'bg-red-500 hover:bg-red-400 text-white border-amber-300'
+              }`}
+            >
+              {hud.isPlacingGloo ? 'BOTAR GELO AQUI' : 'ARREMESSAR GRANADA'}
+            </button>
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                if (hud.isPlacingGloo) input.triggerGloo();
+                else input.triggerGrenade();
+              }}
+              className="px-3 py-2 bg-black/85 hover:bg-neutral-800 border border-neutral-400 text-neutral-200 font-bold text-xs uppercase cursor-pointer"
+            >
+              CANCELAR
+            </button>
+          </div>
+        )}
+
+        {isGroundCombat && !hud.pointerLocked && !showTouchHud && !isPaused && !isBackpackOpen && (
+          <div className="bg-black/55 px-2.5 py-0.5 text-[9px] font-mono text-white/80">
+            CLIQUE ATIRA · DIR MIRA · C AGACHA · Z DEITA · R RECAR · G GELO · X GRANADA · H KIT · TAB MOCHILA
+          </div>
+        )}
+      </div>
+
+      {/* CUSTOMIZABLE SLEEK FREE FIRE BOTTOM-CENTER HP / ARMOR BAR */}
+      <div
+        style={layoutStyle(hudLayout.hpBar)}
+        className="absolute z-20 flex items-end gap-2.5 w-[270px] sm:w-[320px] max-w-[82vw]"
+      >
+        {/* Helmet & Vest Level Indicators */}
+        {isGroundCombat && (
+          <div className="flex items-center gap-1 pb-0.5 shrink-0">
+            <div
+              className={`flex items-center gap-0.5 ${
+                hud.helmetLevel > 0 ? 'text-amber-300' : 'text-white/30'
+              }`}
+              title={`Capacete Nv.${hud.helmetLevel}`}
+            >
+              <IconHelmetSvg className="w-4 h-4 drop-shadow" />
+              {hud.helmetLevel > 0 && (
+                <span className="text-[8px] font-mono font-black">{hud.helmetLevel}</span>
+              )}
+            </div>
+            <div
+              className={`flex items-center gap-0.5 ${
+                hud.vestLevel > 0 ? 'text-amber-300' : 'text-white/30'
+              }`}
+              title={`Colete Nv.${hud.vestLevel}`}
+            >
+              <IconVestSvg className="w-4 h-4 drop-shadow" />
+              {hud.vestLevel > 0 && (
+                <span className="text-[8px] font-mono font-black">{hud.vestLevel}</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Dual Sleek Progress Stack (Colete Amber + White HP Bar) */}
+        <div className="flex-1 flex flex-col gap-0.5">
+          {/* Colete / Armor Bar */}
+          <div className="flex items-center gap-1.5">
+            <span
+              className="text-[9px] font-mono font-bold text-amber-300 tabular-nums shrink-0"
+              style={{ textShadow: '0 1px 2px rgba(0,0,0,0.95)' }}
+            >
+              {hud.vestLevel > 0 ? `COLETE ${hud.vestHp}/${hud.vestMaxHp}` : 'COLETE 0/0'}
+            </span>
+            <div className="flex-1 h-1.5 bg-black/55 overflow-hidden">
+              <div
+                className="h-full bg-amber-400 transition-[width] duration-150"
+                style={{ width: `${armorPct}%` }}
+              />
+            </div>
+          </div>
+
+          {/* White Health Bar */}
+          <div className="flex items-center gap-1.5">
+            <span
+              className="text-[10px] font-mono font-black text-white tabular-nums shrink-0"
+              style={{ textShadow: '0 1px 2px rgba(0,0,0,0.95)' }}
+            >
+              HP {hud.hp}/{hud.maxHp}
+            </span>
+            <div className="flex-1 h-2.5 bg-black/60 overflow-hidden shadow">
+              <div
+                className={`h-full transition-[width] duration-150 ${
+                  hpPct > 40 ? 'bg-white' : 'bg-red-500'
+                }`}
+                style={{ width: `${hpPct}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Small Quick Gloo Diamond/Circle right of HP bar like screenshot */}
+        {isGroundCombat && (
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              input.triggerGloo();
+            }}
+            disabled={hud.glooCount <= 0}
+            className={`pointer-events-auto touch-none relative w-7 h-7 rounded-full border flex items-center justify-center shrink-0 cursor-pointer disabled:opacity-40 ${
+              hud.isPlacingGloo
+                ? 'bg-cyan-400 border-white text-black'
+                : 'bg-black/55 border-white/40 text-white'
+            }`}
+            title="Parede de Gelo (G)"
+          >
+            <IconGlooSvg className="w-4 h-4" />
+            <span className="absolute -bottom-1 -right-1 text-[8px] font-mono font-black bg-black/80 px-0.5 rounded-full">
+              {hud.glooCount}
+            </span>
+          </button>
+        )}
+      </div>
+
+      {/* CUSTOMIZABLE MOBILE VIRTUAL JOYSTICK, SPRINT, LEFT-FIRE & RIGHT BUTTON CLUSTER */}
+      {showTouchHud && isGroundCombat && !isPaused && (
+        <>
+          {/* Left Sprint Toggle + Left Fire Circle above Joystick (Classic Free Fire Layout) */}
+          <div className="pointer-events-auto absolute left-[14%] sm:left-[15%] bottom-[29%] z-20 flex items-center gap-2.5">
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                const next = !autoSprintActive;
+                setAutoSprintActive(next);
+                input.setTouchAutoSprint(next);
+              }}
+              className={`touch-none w-11 h-11 rounded-full border-2 flex items-center justify-center shadow-lg cursor-pointer ${
+                autoSprintActive || hud.isSprinting
+                  ? 'bg-white/85 border-white text-black'
+                  : 'bg-black/45 border-white/55 text-white'
+              }`}
+              title="Correr Automático"
+            >
+              <IconSprintSvg className="w-6 h-6" />
+            </button>
+
+            <button
+              type="button"
+              onContextMenu={(e) => e.preventDefault()}
+              onPointerDown={beginFirePointer}
+              onPointerMove={moveFirePointer}
+              onPointerUp={endFirePointer}
+              onPointerCancel={endFirePointer}
+              onLostPointerCapture={() => {
+                fireDragRef.current = null;
+                input.setTouchFire(false);
+              }}
+              className="touch-none w-12 h-12 rounded-full bg-black/45 active:bg-white/30 border-[1.5px] border-white/60 flex items-center justify-center text-white shadow-lg cursor-pointer"
+              title="Atirar Esquerdo"
+            >
+              <IconFireBurstSvg className="w-7 h-7 text-white" />
+            </button>
+          </div>
+
+          {/* Left Virtual Joystick */}
+          <div
+            onTouchStart={handleJoyStart}
+            onTouchMove={handleJoyMove}
+            onTouchEnd={handleJoyEnd}
+            onTouchCancel={handleJoyEnd}
+            style={layoutStyle(hudLayout.joystick)}
+            className="pointer-events-auto absolute z-20 w-28 h-28 rounded-full border-2 border-white/35 bg-black/25 flex items-center justify-center touch-none"
+          >
+            <div
+              className="w-11 h-11 rounded-full bg-white/55 border border-white/80 shadow"
+              style={{
+                transform: `translate(${joyKnob.x}px, ${joyKnob.y}px)`,
+              }}
+            />
+          </div>
+
+          {/* Prone Button */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              input.triggerProne();
+            }}
+            style={layoutStyle(hudLayout.proneBtn)}
+            className={`pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full border-[1.5px] flex items-center justify-center shadow cursor-pointer ${
+              hud.stance === 'prone'
+                ? 'bg-amber-400/90 text-black border-white'
+                : 'bg-black/45 text-white border-white/55'
+            }`}
+          >
+            <IconProneSvg className="w-6 h-6" />
+          </button>
+
+          {/* Crouch Button (Single tap, zero bounce) */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              input.triggerCrouch();
+            }}
+            style={layoutStyle(hudLayout.crouchBtn)}
+            className={`pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full border-[1.5px] flex items-center justify-center shadow cursor-pointer ${
+              hud.stance === 'crouch'
+                ? 'bg-amber-400/90 text-black border-white'
+                : 'bg-black/45 text-white border-white/55'
+            }`}
+          >
+            <IconCrouchSvg className="w-6 h-6" />
+          </button>
+
+          {/* Jump / Vault Button */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              input.triggerJump();
+            }}
+            style={layoutStyle(hudLayout.jumpBtn)}
+            className="pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full bg-black/45 border-[1.5px] border-white/55 text-white flex items-center justify-center shadow cursor-pointer active:bg-white/25"
+          >
+            <IconJumpSvg className="w-6 h-6" />
+          </button>
+
+          {/* Reload Button */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              input.triggerReload();
+            }}
+            style={layoutStyle(hudLayout.reloadBtn)}
+            className="pointer-events-auto touch-none absolute z-20 w-11 h-11 rounded-full bg-black/45 border-[1.5px] border-white/55 text-white flex items-center justify-center shadow cursor-pointer active:bg-white/25"
+          >
+            <IconReloadSvg className="w-5 h-5" />
+          </button>
+
+          {/* Scope / Aim Button */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              input.setTouchAim(!hud.isAiming);
+            }}
+            style={layoutStyle(hudLayout.aimBtn)}
+            className={`pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full border-[1.5px] flex items-center justify-center shadow cursor-pointer ${
+              hud.isAiming
+                ? 'bg-amber-400/90 text-black border-white'
+                : 'bg-black/45 text-white border-white/55'
+            }`}
+          >
+            <IconScopeSvg className="w-6 h-6" />
+          </button>
+
+          {/* Primary Right Fire Button (with Drag-Up Capa Look Support & Translucent Ring Halo) */}
+          <button
+            type="button"
+            onContextMenu={(e) => e.preventDefault()}
+            onPointerDown={beginFirePointer}
+            onPointerMove={moveFirePointer}
+            onPointerUp={endFirePointer}
+            onPointerCancel={endFirePointer}
+            onLostPointerCapture={() => {
+              fireDragRef.current = null;
+              input.setTouchFire(false);
+            }}
+            style={layoutStyle(hudLayout.fireBtn)}
+            className="pointer-events-auto touch-none absolute z-20 w-16 h-16 rounded-full bg-black/45 active:bg-white/25 border-2 border-white/75 ring-8 ring-white/10 flex items-center justify-center text-white shadow-xl cursor-pointer"
+          >
+            <IconFireBurstSvg className="w-9 h-9 text-white drop-shadow" />
+          </button>
+        </>
+      )}
+
+      {/* PAUSE / TEST MODAL */}
+      {isPaused && (
+        <div className="pointer-events-auto fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
+          <div className="w-full max-w-sm bg-[#14181e] border-2 border-amber-500 p-5 space-y-2.5 shadow-2xl">
+            <h2 className="text-center font-black text-base tracking-widest uppercase text-amber-400 border-b border-neutral-700 pb-2">
+              MENU DE PAUSA
+            </h2>
+
+            <button
+              type="button"
+              onClick={onTogglePause}
+              className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Play className="w-4 h-4 fill-black" />
+              <span>CONTINUAR PARTIDA</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="w-full py-2.5 bg-[#1d232c] hover:bg-[#27303d] border border-neutral-600 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Settings className="w-4 h-4 text-amber-400" />
+              <span>SENSIBILIDADE E CONFIGURAÇÕES</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenHudEditor}
+              className="w-full py-2.5 bg-[#1d232c] hover:bg-[#27303d] border border-amber-500/50 text-amber-300 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Move className="w-4 h-4" />
+              <span>PERSONALIZAR HUD</span>
+            </button>
+
+            <div className="border-t border-neutral-700 pt-2.5 space-y-2">
+              <div className="text-[10px] font-mono text-neutral-400 uppercase text-center">
+                TESTES RÁPIDOS DE PARTIDA
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onTogglePause();
+                    onTestDamage();
+                  }}
+                  className="py-2 px-2 bg-red-900/50 hover:bg-red-800/60 border border-red-600 text-[11px] font-bold uppercase flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <HeartPulse className="w-3.5 h-3.5" />
+                  <span>SOFRER DANO</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onTogglePause();
+                    onTestVictory();
+                  }}
+                  className="py-2 px-2 bg-emerald-900/50 hover:bg-emerald-800/60 border border-emerald-600 text-[11px] font-bold uppercase flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <Trophy className="w-3.5 h-3.5" />
+                  <span>TESTAR VITÓRIA</span>
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={onReturnLobby}
+              className="w-full py-2.5 bg-red-950/70 hover:bg-red-900 border border-red-700 text-red-200 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>VOLTAR AO LOBBY</span>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
