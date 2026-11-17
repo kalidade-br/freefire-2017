@@ -308,3 +308,45 @@ export const RankEmblemSvg: React.FC<{
     />
   </svg>
 );
+
+export const IconAmmoSvg: React.FC<IconProps> = ({ className = 'w-8 h-8' }) => (
+  <svg viewBox="0 0 36 32" fill="none" className={className} aria-hidden="true">
+    {/* Military green ammo crate */}
+    <path d="M5 10L16 6L30 11L19 15.5L5 10Z" fill="#5e6854" stroke="#181c22" strokeWidth="1" />
+    <path d="M5 10L19 15.5V26L5 20V10Z" fill="#46503e" stroke="#181c22" strokeWidth="1" />
+    <path d="M19 15.5L30 11V21.5L19 26V15.5Z" fill="#323a2c" stroke="#181c22" strokeWidth="1" />
+    {/* Brass cartridges accent */}
+    <rect x="21.5" y="15.5" width="2" height="5.5" rx="0.6" fill="#e5b842" />
+    <rect x="24.2" y="14.5" width="2" height="5.5" rx="0.6" fill="#e5b842" />
+    <rect x="26.9" y="13.5" width="2" height="5.5" rx="0.6" fill="#d97706" />
+    <path d="M8.5 14.5L15.5 17.3" stroke="#9ca3af" strokeWidth="1.3" strokeLinecap="round" />
+  </svg>
+);
+
+export const IconDiscardDragSvg: React.FC<IconProps> = ({ className = 'w-9 h-9' }) => (
+  <svg viewBox="0 0 40 40" fill="none" className={className} aria-hidden="true">
+    {/* Triangular 3-arrow discard icon matching classic Free Fire backpack */}
+    <path
+      d="M11 11H27L24 7.5M27 11L24 14.5"
+      stroke="currentColor"
+      strokeWidth="3.1"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M29 15L21 29.5L25.5 29M21 29.5L19 25.5"
+      stroke="currentColor"
+      strokeWidth="3.1"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M17 29.5L9.5 15.5L8 20M9.5 15.5L13.5 16.5"
+      stroke="currentColor"
+      strokeWidth="3.1"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+

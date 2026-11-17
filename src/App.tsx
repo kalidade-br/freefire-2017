@@ -504,13 +504,27 @@ export default function App() {
           onClose={() => setIsBackpackOpen(false)}
           onUseMedkit={() => engineRef.current?.useMedkit()}
           onDropMedkit={() => engineRef.current?.dropMedkit()}
+          onDropGloo={() => engineRef.current?.dropGloo()}
+          onDropGrenade={() => engineRef.current?.dropGrenade()}
+          onDropAmmo={(slot, amt) => engineRef.current?.dropAmmo(slot, amt)}
           onEquipItem={(id, slot) => engineRef.current?.equipBackpackItem(id, slot)}
           onDropItem={(id) => engineRef.current?.dropBackpackItem(id)}
           onUnequipAttachment={(slot, key) =>
             engineRef.current?.unequipWeaponAttachment(slot, key)
           }
+          onDropEquippedAttachment={(slot, key) =>
+            engineRef.current?.dropEquippedAttachment(slot, key)
+          }
           onUnequipScope={(slot) => engineRef.current?.unequipWeaponScope(slot)}
+          onDropEquippedScope={(slot) => engineRef.current?.dropEquippedScope(slot)}
+          onTransferScope={(from, to) =>
+            engineRef.current?.transferScopeBetweenSlots(from, to)
+          }
+          onTransferAttachment={(from, key, to) =>
+            engineRef.current?.transferAttachmentBetweenSlots(from, key, to)
+          }
           onDropWeaponSlot={(slot) => engineRef.current?.dropWeaponSlot(slot)}
+          onSelectSlot={(slot) => engineRef.current?.selectWeaponSlot(slot)}
         />
       )}
 

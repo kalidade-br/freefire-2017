@@ -317,6 +317,8 @@ export interface NearbyLootSlot {
   attachmentKind?: AttachmentKind;
   level?: 1 | 2 | 3;
   count?: number;
+  deathBoxId?: string;
+  boxOwnerNick?: string;
 }
 
 export interface VendingShopOffer {
@@ -355,6 +357,8 @@ export interface VehicleHudState {
   passengerCount: number;
 }
 
+export type WeaponSlotId = 1 | 2 | 3 | 4; // 4 = Punho (Soco)
+
 export interface HudSnapshot {
   hp: number;
   maxHp: number;
@@ -383,7 +387,9 @@ export interface HudSnapshot {
   isReloading: boolean;
   reloadProgress: number; // 0..1
   isDead: boolean;
-  activeSlot: 1 | 2 | 3;
+  isPlayerDowned: boolean;
+  playerBleedHp: number;
+  activeSlot: WeaponSlotId;
   activeScope: ScopeType;
   ownedScopes: ScopeType[];
   weapons: Record<1 | 2 | 3, WeaponSlotState | null>;
@@ -429,6 +435,11 @@ export interface HudSnapshot {
     bleedHp: number;
   } | null;
   reviveProgress: number; // 0..1
+  revivedBy: {
+    slotNumber: number;
+    nick: string;
+    progress: number;
+  } | null;
   teamMembers: Array<{
     id: string;
     slotNumber: number;
@@ -512,6 +523,23 @@ export interface MinimapRoad {
   kind?: 'dirt' | 'asphalt';
 }
 
+export interface DeathBoxItemEntry {
+  id: string;
+  kind: Exclude<LootItem['kind'], 'deathbox'>;
+  label: string;
+  subLabel?: string;
+  weaponId?: WeaponId;
+  scopeType?: ScopeType;
+  attachmentKind?: AttachmentKind;
+  level?: 1 | 2 | 3;
+  ammoAmount?: number;
+  glooAmount?: number;
+  grenadeAmount?: number;
+  coinAmount?: number;
+  medkitAmount?: number;
+  collected?: boolean;
+}
+
 export interface LootItem {
   id: string;
   x: number;
@@ -538,6 +566,8 @@ export interface LootItem {
   glooAmount?: number;
   grenadeAmount?: number;
   coinAmount?: number;
+  deathOwnerNick?: string;
+  deathEntries?: DeathBoxItemEntry[];
   deathLoot?: {
     medkits: number;
     gloos: number;

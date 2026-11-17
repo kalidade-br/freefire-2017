@@ -1343,6 +1343,42 @@ class SoundEngine {
     osc.start(now);
     osc.stop(now + 0.2);
   }
+
+  public playPunchSwing(): void {
+    if (!this.ready() || !this.ctx || !this.masterGain || !this.noiseBuffer) return;
+    const now = this.ctx.currentTime;
+    const n = this.ctx.createBufferSource();
+    n.buffer = this.noiseBuffer;
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.setValueAtTime(520, now);
+    f.frequency.exponentialRampToValueAtTime(190, now + 0.12);
+    f.Q.value = 1.4;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.24, now + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
+    n.connect(f);
+    f.connect(g);
+    g.connect(this.masterGain);
+    n.start(now, Math.random() * 0.4, 0.15);
+  }
+
+  public playPunchHit(isHead = false): void {
+    if (!this.ready() || !this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(isHead ? 185 : 135, now);
+    osc.frequency.exponentialRampToValueAtTime(38, now + 0.11);
+    g.gain.setValueAtTime(isHead ? 0.48 : 0.38, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    osc.connect(g);
+    g.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.13);
+  }
 }
 
 export const soundEngine = new SoundEngine();

@@ -14,6 +14,7 @@ import {
   BackpackItem,
   CharacterConfig,
   DamagePopup,
+  DeathBoxItemEntry,
   GameSettings,
   GameState,
   HudSnapshot,
@@ -32,6 +33,7 @@ import {
   WeaponAttachments,
   WeaponDef,
   WeaponId,
+  WeaponSlotId,
   WeaponSlotState,
   WorldObbCollider,
 } from './types';
@@ -303,6 +305,9 @@ export class BattleRoyaleEngine {
   private aimLockedTarget = false;
   private aimAssistActive = false;
   private isDead = false;
+  private isPlayerDowned = false;
+  private playerBleedHp = 100;
+  private playerRevivingAllyId: string | null = null;
   private deathTimer = 0;
 
   private hp = 200;
@@ -330,7 +335,7 @@ export class BattleRoyaleEngine {
   private reviveTimer = 0;
   private readonly reviveDuration = 3.0;
 
-  private activeSlot: 1 | 2 | 3 = 3;
+  private activeSlot: WeaponSlotId = 3;
   private ownedScopes: ScopeType[] = ['none'];
   private weapons: Record<1 | 2 | 3, WeaponSlotState | null> = {
     1: null,
@@ -460,6 +465,7 @@ export class BattleRoyaleEngine {
       this.textures.contactShadow,
     );
     this.lobbyRig.setWeapon(null);
+    this.lobbyRig.setBackWeapons(null, null);
     this.lobbyScene.characterAnchor.add(this.lobbyRig.root);
 
     this.world = createIslandWorld(this.textures, this.envMap);
@@ -519,7 +525,7 @@ export class BattleRoyaleEngine {
       this.textures.camoParachute,
       this.textures.contactShadow,
     );
-    this.playerRig.setWeapon('g18');
+    this.syncPlayerWeaponAndBackVisuals();
     this.world.scene.add(this.playerRig.root);
 
     this.healRingMesh = new THREE.Mesh(this.healRingGeo, this.healRingMat);
@@ -574,15 +580,15 @@ export class BattleRoyaleEngine {
   }
 
   private getEnemyRenderDist(): number {
-    if (this.settings.quality === 'low') return 66;
-    if (this.settings.quality === 'high') return 138;
-    return 100;
+    if (this.settings.quality === 'low') return 58;
+    if (this.settings.quality === 'high') return 122;
+    return 86;
   }
 
   private getLootRenderDist(): number {
-    if (this.settings.quality === 'low') return 32;
-    if (this.settings.quality === 'high') return 82;
-    return 54;
+    if (this.settings.quality === 'low') return 24;
+    if (this.settings.quality === 'high') return 52;
+    return 36;
   }
 
   public applyQualitySettings(settings: GameSettings): void {
@@ -605,7 +611,7 @@ export class BattleRoyaleEngine {
     if (this.world) {
       this.world.applyQuality(settings.quality, this.isSoftwareGl);
       this.world.camera.far =
-        settings.quality === 'low' ? 340 : settings.quality === 'high' ? 840 : 560;
+        settings.quality === 'low' ? 320 : settings.quality === 'high' ? 620 : 440;
       this.world.camera.updateProjectionMatrix();
     }
   }
@@ -793,6 +799,71 @@ export class BattleRoyaleEngine {
     this.stateMachine.forceState(GameState.LOBBY);
   }
 
+  private eliminatePlayerAndSquad(
+    attackerName: string,
+    weaponShort: string,
+    isHead = false,
+  ): void {
+    if (this.isDead) return;
+    this.exitVehicleImmediate();
+    soundEngine.stopVehicleAudio();
+    soundEngine.stopRunAudio();
+    soundEngine.stopMedkitAudio();
+    this.isPlayerDowned = false;
+    this.playerBleedHp = 0;
+    this.playerRevivingAllyId = null;
+    this.hp = 0;
+    this.isDead = true;
+    this.deathTimer = 1.6;
+    this.input.setGameplayActive(false);
+    this.pushKillFeed(attackerName, this.playerNick, weaponShort, isHead, false);
+
+    // Team wipe: eliminate any already-downed teammates on team 0
+    const bots = this.world.targets;
+    for (let i = 0; i < bots.length; i++) {
+      const mate = bots[i];
+      if (mate.teamId === 0 && mate.isDowned && !mate.eliminated) {
+        mate.isDowned = false;
+        mate.bleedHp = 0;
+        mate.downTimer = 1.4;
+        this.aliveCount = Math.max(1, this.aliveCount - 1);
+        this.pushKillFeed(attackerName, mate.nick, weaponShort, false, false);
+      }
+    }
+  }
+
+  private handlePlayerZeroHp(
+    attackerName: string,
+    weaponShort: string,
+    isHead = false,
+  ): void {
+    if (this.isDead || this.isPlayerDowned) return;
+    const isPlaying = this.stateMachine.getState() === GameState.PLAYING;
+    if (isPlaying && this.matchMode !== 'solo' && this.hasStandingTeammate(0, 'player')) {
+      this.exitVehicleImmediate();
+      soundEngine.stopVehicleAudio();
+      soundEngine.stopRunAudio();
+      soundEngine.stopMedkitAudio();
+      this.isPlayerDowned = true;
+      this.playerBleedHp = 100;
+      this.playerRevivingAllyId = null;
+      this.hp = 0;
+      this.isAiming = false;
+      this.usingMedkit = false;
+      this.medkitTimer = 0;
+      this.isReloading = false;
+      this.reloadTimer = 0;
+      this.isPlacingGloo = false;
+      this.isHoldingGrenade = false;
+      this.revivingBotId = null;
+      this.reviveTimer = 0;
+      this.lockedTargetId = null;
+      this.pushKillFeed(`${attackerName} (DERRUBOU)`, this.playerNick, weaponShort, isHead, false);
+      return;
+    }
+    this.eliminatePlayerAndSquad(attackerName, weaponShort, isHead);
+  }
+
   private applyPlayerDamage(
     rawDmg: number,
     attackerX: number,
@@ -802,6 +873,29 @@ export class BattleRoyaleEngine {
     isHead = false,
   ): void {
     if (this.isDead) return;
+
+    if (this.isPlayerDowned) {
+      const bleedDmg = Math.max(1, Math.round(rawDmg * 1.1));
+      this.playerBleedHp = Math.max(0, this.playerBleedHp - bleedDmg);
+      this.damageFlashTimer = 0.2;
+      this.camShake = Math.max(this.camShake, 0.14);
+      this.animator.triggerHit();
+      if (this.damageIndicators.length >= 6) {
+        this.damageIndicators.shift();
+      }
+      this.damageIndicators.push({
+        id: this.nextDamageIndicatorId++,
+        worldX: attackerX,
+        worldZ: attackerZ,
+        age: 0,
+      });
+      soundEngine.playDamage();
+      if (this.playerBleedHp <= 0) {
+        this.eliminatePlayerAndSquad(attackerName, weaponShort, isHead);
+      }
+      return;
+    }
+
     let dmg = rawDmg;
     if (isHead && this.helmetLevel > 0 && this.helmetHp > 0) {
       const red = [0, 0.25, 0.38, 0.5][this.helmetLevel];
@@ -831,28 +925,30 @@ export class BattleRoyaleEngine {
     soundEngine.playDamage();
 
     if (this.hp <= 0) {
-      this.exitVehicleImmediate();
-      soundEngine.stopVehicleAudio();
-      this.isDead = true;
-      this.deathTimer = 1.6;
-      this.input.setGameplayActive(false);
-      this.pushKillFeed(attackerName, this.playerNick, weaponShort, isHead, false);
+      this.handlePlayerZeroHp(attackerName, weaponShort, isHead);
     }
   }
 
   public applyTestDamage(amount: number): void {
     if (this.isDead) return;
+    if (this.isPlayerDowned) {
+      this.playerBleedHp = Math.max(0, this.playerBleedHp - amount);
+      this.damageFlashTimer = 0.25;
+      this.camShake = 0.2;
+      this.animator.triggerHit();
+      soundEngine.playDamage();
+      if (this.playerBleedHp <= 0) {
+        this.eliminatePlayerAndSquad('TESTE', 'TESTE', false);
+      }
+      return;
+    }
     this.hp = Math.max(0, this.hp - amount);
     this.damageFlashTimer = 0.25;
     this.camShake = 0.22;
     this.animator.triggerHit();
     soundEngine.playDamage();
     if (this.hp <= 0) {
-      this.exitVehicleImmediate();
-      soundEngine.stopVehicleAudio();
-      this.isDead = true;
-      this.deathTimer = 1.6;
-      this.input.setGameplayActive(false);
+      this.handlePlayerZeroHp('TESTE', 'TESTE', false);
     }
   }
 
@@ -887,8 +983,46 @@ export class BattleRoyaleEngine {
     }
   }
 
+  private getActiveWeaponState(): WeaponSlotState | null {
+    return this.activeSlot === 4 ? null : this.weapons[this.activeSlot];
+  }
+
+  private syncPlayerWeaponAndBackVisuals(): void {
+    const activeW = this.getActiveWeaponState();
+    this.playerRig.setWeapon(activeW ? activeW.weaponId : null);
+
+    // Put carried non-active firearms on character's back (Slot 1/2 rifles first)
+    const holstered: WeaponId[] = [];
+    const order: readonly (1 | 2 | 3)[] = [1, 2, 3];
+    for (let i = 0; i < order.length; i++) {
+      const s = order[i];
+      if (s !== this.activeSlot && this.weapons[s]) {
+        holstered.push(this.weapons[s]!.weaponId);
+      }
+    }
+    this.playerRig.setBackWeapons(holstered[1] ?? null, holstered[0] ?? null);
+  }
+
+  public selectWeaponSlot(slot: WeaponSlotId): void {
+    if (this.isDead || this.isPlayerDowned) return;
+    if (slot !== 4 && !this.weapons[slot]) return;
+    this.isPlacingGloo = false;
+    this.isHoldingGrenade = false;
+    if (slot !== this.activeSlot) {
+      this.activeSlot = slot;
+      this.isReloading = false;
+      this.reloadTimer = 0;
+      this.lockedTargetId = null;
+      this.aimBreakAccum = 0;
+      this.bugDoCapaTimer = 0;
+      this.consecutiveShots = 0;
+      this.syncPlayerWeaponAndBackVisuals();
+      soundEngine.playWeaponSwitch();
+    }
+  }
+
   public setActiveWeaponScope(scope: ScopeType): void {
-    const active = this.weapons[this.activeSlot];
+    const active = this.getActiveWeaponState();
     if (!active) return;
     const def = WEAPONS[active.weaponId];
     if (!def.allowsCustomScope) return;
@@ -898,7 +1032,7 @@ export class BattleRoyaleEngine {
   }
 
   public cycleActiveWeaponScope(): void {
-    const active = this.weapons[this.activeSlot];
+    const active = this.getActiveWeaponState();
     if (!active) return;
     const def = WEAPONS[active.weaponId];
     if (!def.allowsCustomScope) return;
@@ -911,7 +1045,7 @@ export class BattleRoyaleEngine {
   public useMedkit(): void {
     const state = this.stateMachine.getState();
     if (state !== GameState.PLAYING && state !== GameState.WAITING) return;
-    if (this.isDead || this.usingMedkit) return;
+    if (this.isDead || this.isPlayerDowned || this.usingMedkit) return;
     if (this.medkitCount <= 0 || this.hp >= this.maxHp) return;
     this.usingMedkit = true;
     this.medkitTimer = this.medkitDuration;
@@ -929,6 +1063,43 @@ export class BattleRoyaleEngine {
     soundEngine.playUiClick(420);
   }
 
+  public dropGloo(): void {
+    if (this.glooCount <= 0) return;
+    this.glooCount -= 1;
+    if (this.glooCount <= 0) this.isPlacingGloo = false;
+    this.spawnItemInFront({
+      kind: 'gloo',
+      glooAmount: 1,
+      label: 'Parede de Gelo (+1)',
+    });
+    soundEngine.playUiClick(420);
+  }
+
+  public dropGrenade(): void {
+    if (this.grenadeCount <= 0) return;
+    this.grenadeCount -= 1;
+    if (this.grenadeCount <= 0) this.isHoldingGrenade = false;
+    this.spawnItemInFront({
+      kind: 'grenade',
+      grenadeAmount: 1,
+      label: 'Granada Explosiva (+1)',
+    });
+    soundEngine.playUiClick(420);
+  }
+
+  public dropAmmo(slot: 1 | 2 | 3, amount = 30): void {
+    const w = this.weapons[slot];
+    if (!w || w.reserveAmmo <= 0) return;
+    const dropped = Math.min(amount, w.reserveAmmo);
+    w.reserveAmmo -= dropped;
+    this.spawnItemInFront({
+      kind: 'ammo',
+      ammoAmount: dropped,
+      label: `Munição (+${dropped})`,
+    });
+    soundEngine.playUiClick(420);
+  }
+
   public equipBackpackItem(itemId: string, targetSlot?: 1 | 2 | 3): void {
     const idx = this.backpackItems.findIndex((it) => it.id === itemId);
     if (idx < 0) return;
@@ -939,7 +1110,15 @@ export class BattleRoyaleEngine {
       return;
     }
 
-    const slotToUse = targetSlot ?? this.activeSlot;
+    const slotToUse: 1 | 2 | 3 =
+      targetSlot ??
+      (this.activeSlot === 4
+        ? this.weapons[1]
+          ? 1
+          : this.weapons[2]
+            ? 2
+            : 3
+        : this.activeSlot);
     const weaponState = this.weapons[slotToUse];
     if (!weaponState) return;
     const def = WEAPONS[weaponState.weaponId];
@@ -996,6 +1175,20 @@ export class BattleRoyaleEngine {
     soundEngine.playUiClick(520);
   }
 
+  public dropEquippedAttachment(slot: 1 | 2 | 3, key: AttachmentSlotKey): void {
+    const w = this.weapons[slot];
+    if (!w) return;
+    const current = w.attachments[key];
+    if (!current) return;
+    (w.attachments as Record<AttachmentSlotKey, AttachmentKind | null>)[key] = null;
+    this.spawnItemInFront({
+      kind: 'attachment',
+      attachmentKind: current,
+      label: ATTACHMENT_LABELS[current].name,
+    });
+    soundEngine.playUiClick(410);
+  }
+
   public unequipWeaponScope(slot: 1 | 2 | 3): void {
     const w = this.weapons[slot];
     if (!w || !WEAPONS[w.weaponId].allowsCustomScope || w.scope === 'none') return;
@@ -1009,6 +1202,51 @@ export class BattleRoyaleEngine {
       });
     }
     soundEngine.playUiClick(520);
+  }
+
+  public dropEquippedScope(slot: 1 | 2 | 3): void {
+    const w = this.weapons[slot];
+    if (!w || !WEAPONS[w.weaponId].allowsCustomScope || w.scope === 'none') return;
+    const old = w.scope;
+    w.scope = 'none';
+    this.spawnItemInFront({
+      kind: 'scope',
+      scopeType: old,
+      label: SCOPE_META[old].label,
+    });
+    soundEngine.playUiClick(410);
+  }
+
+  public transferScopeBetweenSlots(fromSlot: 1 | 2 | 3, toSlot: 1 | 2 | 3): void {
+    if (fromSlot === toSlot) return;
+    const fromW = this.weapons[fromSlot];
+    const toW = this.weapons[toSlot];
+    if (!fromW || !toW) return;
+    if (!WEAPONS[fromW.weaponId].allowsCustomScope || !WEAPONS[toW.weaponId].allowsCustomScope) return;
+    if (fromW.scope === 'none') return;
+    const moved = fromW.scope;
+    const replaced = toW.scope;
+    toW.scope = moved;
+    fromW.scope = replaced;
+    soundEngine.playUiClick(760);
+  }
+
+  public transferAttachmentBetweenSlots(
+    fromSlot: 1 | 2 | 3,
+    key: AttachmentSlotKey,
+    toSlot: 1 | 2 | 3,
+  ): void {
+    if (fromSlot === toSlot) return;
+    const fromW = this.weapons[fromSlot];
+    const toW = this.weapons[toSlot];
+    if (!fromW || !toW) return;
+    if (!WEAPONS[toW.weaponId].allowsAttachments) return;
+    const moved = fromW.attachments[key];
+    if (!moved) return;
+    const replaced = toW.attachments[key];
+    (toW.attachments as Record<AttachmentSlotKey, AttachmentKind | null>)[key] = moved;
+    (fromW.attachments as Record<AttachmentSlotKey, AttachmentKind | null>)[key] = replaced;
+    soundEngine.playUiClick(760);
   }
 
   public dropBackpackItem(itemId: string): void {
@@ -1046,9 +1284,6 @@ export class BattleRoyaleEngine {
   public dropWeaponSlot(slot: 1 | 2 | 3): void {
     const w = this.weapons[slot];
     if (!w) return;
-    // Always keep at least one firearm (slot 3 G18 or another primary)
-    const occupied = ([1, 2, 3] as const).filter((s) => this.weapons[s] !== null);
-    if (occupied.length <= 1) return;
 
     const def = WEAPONS[w.weaponId];
     this.spawnItemInFront({
@@ -1058,11 +1293,11 @@ export class BattleRoyaleEngine {
     });
     this.weapons[slot] = null;
     if (this.activeSlot === slot) {
-      const next = ([1, 2, 3] as const).find((s) => this.weapons[s] !== null) ?? 3;
+      const next: WeaponSlotId =
+        ([1, 2, 3] as const).find((s) => this.weapons[s] !== null) ?? 4;
       this.activeSlot = next;
-      const nw = this.weapons[next];
-      this.playerRig.setWeapon(nw ? nw.weaponId : null);
     }
+    this.syncPlayerWeaponAndBackVisuals();
     soundEngine.playUiClick(410);
   }
 
@@ -1128,12 +1363,14 @@ export class BattleRoyaleEngine {
 
   private spawnItemInFront(
     partial: {
-      kind: 'ammo' | 'medkit' | 'weapon' | 'scope' | 'vest' | 'helmet' | 'backpack' | 'attachment';
+      kind: 'ammo' | 'medkit' | 'weapon' | 'scope' | 'vest' | 'helmet' | 'backpack' | 'attachment' | 'gloo' | 'grenade';
       weaponId?: WeaponId;
       scopeType?: ScopeType;
       attachmentKind?: AttachmentKind;
       level?: 1 | 2 | 3;
       ammoAmount?: number;
+      glooAmount?: number;
+      grenadeAmount?: number;
       label: string;
     },
   ): void {
@@ -1229,6 +1466,9 @@ export class BattleRoyaleEngine {
     this.camDistCurrent = 3.75;
     this.camShoulderCurrent = 0.42;
     this.isDead = false;
+    this.isPlayerDowned = false;
+    this.playerBleedHp = 100;
+    this.playerRevivingAllyId = null;
     this.deathTimer = 0;
     this.hp = this.maxHp;
     this.vestLevel = 0;
@@ -1274,7 +1514,7 @@ export class BattleRoyaleEngine {
     };
     this.isReloading = false;
     this.reloadTimer = 0;
-    this.playerRig.setWeapon('g18');
+    this.syncPlayerWeaponAndBackVisuals();
     this.playerRig.weaponMount.visible = true;
     this.playerRig.root.visible = true;
     this.animator.reset();
@@ -1356,8 +1596,15 @@ export class BattleRoyaleEngine {
       if (b.armR) b.armR.rotation.set(0, 0, 0);
       if (b.gunMesh) b.gunMesh.visible = true;
       b.weaponId = 'g18';
+      b.secondaryWeaponId = undefined;
+      b.ammoCount = 45;
       b.medkits = 1;
       b.gloos = 2;
+      b.grenades = 1;
+      b.backpackLevel = 1;
+      b.coins = 100;
+      b.scopes = [];
+      b.attachments = [];
       b.glooCooldown = 0;
       b.healTimer = 0;
       b.revivingMateId = null;
@@ -1454,10 +1701,10 @@ export class BattleRoyaleEngine {
       }
     }
 
-    // Reset loot visibility
+    // Reset loot visibility (initially culled; updateDynamicProps reveals within range)
     this.world.loots.forEach((l) => {
       l.data.collected = false;
-      l.mesh.visible = true;
+      l.mesh.visible = false;
     });
 
     this.camPosCurrent.set(startX + 1.5, y + 2.4, startZ + 4.5);
@@ -1628,7 +1875,7 @@ export class BattleRoyaleEngine {
       dt,
       this.elapsed,
       this.world.camera.position,
-      inMatchView ? this.getLootRenderDist() : 280,
+      inMatchView ? this.getLootRenderDist() : 120,
     );
     this.updateDeployedGloos(dt);
     this.updateThrownGrenades(dt);
@@ -1927,12 +2174,17 @@ export class BattleRoyaleEngine {
       if (this.zoneDmgAccum >= 1) {
         const tickDmg = Math.floor(this.zoneDmgAccum);
         this.zoneDmgAccum -= tickDmg;
-        this.hp = Math.max(0, this.hp - tickDmg);
         this.damageFlashTimer = 0.14;
-        if (this.hp <= 0) {
-          this.isDead = true;
-          this.deathTimer = 1.6;
-          this.input.setGameplayActive(false);
+        if (this.isPlayerDowned) {
+          this.playerBleedHp = Math.max(0, this.playerBleedHp - tickDmg);
+          if (this.playerBleedHp <= 0) {
+            this.eliminatePlayerAndSquad('ZONA SEGURA', 'SAFE', false);
+          }
+        } else {
+          this.hp = Math.max(0, this.hp - tickDmg);
+          if (this.hp <= 0) {
+            this.handlePlayerZeroHp('ZONA SEGURA', 'SAFE', false);
+          }
         }
       }
     } else {
@@ -2253,18 +2505,21 @@ export class BattleRoyaleEngine {
       }
     }
 
-    // Weapon slot switching (1/2/3 keys, HUD clicks, or mouse wheel)
+    // Weapon slot switching (1/2/3/4 keys, HUD clicks, or mouse wheel)
     let nextSlot = edges.slot;
     if (!nextSlot && edges.cycleSlotDir !== 0) {
-      const available = ([1, 2, 3] as const).filter((s) => this.weapons[s] !== null);
+      const available: WeaponSlotId[] = ([1, 2, 3] as const).filter(
+        (s) => this.weapons[s] !== null,
+      );
+      available.push(4);
       if (available.length > 1) {
-        const curIdx = available.indexOf(this.activeSlot);
+        const curIdx = Math.max(0, available.indexOf(this.activeSlot));
         const movedIdx =
           (curIdx + edges.cycleSlotDir + available.length) % available.length;
         nextSlot = available[movedIdx];
       }
     }
-    if (nextSlot && this.weapons[nextSlot]) {
+    if (nextSlot && (nextSlot === 4 || this.weapons[nextSlot])) {
       this.isPlacingGloo = false;
       this.isHoldingGrenade = false;
       if (nextSlot !== this.activeSlot) {
@@ -2275,7 +2530,7 @@ export class BattleRoyaleEngine {
         this.aimBreakAccum = 0;
         this.bugDoCapaTimer = 0;
         this.consecutiveShots = 0;
-        this.playerRig.setWeapon(this.weapons[nextSlot]!.weaponId);
+        this.syncPlayerWeaponAndBackVisuals();
         soundEngine.playWeaponSwitch();
       }
     }
@@ -2286,7 +2541,7 @@ export class BattleRoyaleEngine {
       this.cycleActiveWeaponScope();
     }
 
-    const activeWeaponState = this.weapons[this.activeSlot];
+    const activeWeaponState = this.getActiveWeaponState();
     const activeDef = activeWeaponState ? WEAPONS[activeWeaponState.weaponId] : null;
     const activeScope: ScopeType = activeWeaponState ? activeWeaponState.scope : 'none';
 
@@ -2827,7 +3082,8 @@ export class BattleRoyaleEngine {
       !fireDown &&
       !this.usingMedkit;
 
-    const weaponSpeedMult = activeDef ? activeDef.moveSpeedMult : 1.0;
+    const weaponSpeedMult =
+      this.activeSlot === 4 ? 1.07 : activeDef ? activeDef.moveSpeedMult : 1.0;
     const stockAimBonus =
       this.isAiming && activeWeaponState?.attachments.stock === 'stock' ? 1.14 : 1.0;
     const baseSpeed =
@@ -2897,9 +3153,10 @@ export class BattleRoyaleEngine {
       : 0;
     soundEngine.updateRunAudio(activelyMoving, moveSpeedRatio, this.stance, dt);
 
-    // Hide character body during ALL ADS scopes; hide held gun while wrapping Medkit or Reviving
+    // Hide character body during ALL ADS scopes; hide held gun while unarmed/Medkit/Reviving
     this.playerRig.root.visible = !isFirstPersonAds;
-    this.playerRig.weaponMount.visible = !this.usingMedkit && !this.revivingBotId;
+    this.playerRig.weaponMount.visible =
+      this.activeSlot !== 4 && !this.usingMedkit && !this.revivingBotId;
 
     if (this.usingMedkit) {
       const pulse = 1 + Math.sin(this.elapsed * 8.5) * 0.14;
@@ -2955,6 +3212,7 @@ export class BattleRoyaleEngine {
       isSkydiving: false,
       isParachuting: false,
       isDead: false,
+      hasWeapon: this.activeSlot !== 4,
       pitchRad: this.pitch,
       turnDeltaRad,
     });
@@ -2998,14 +3256,21 @@ export class BattleRoyaleEngine {
       snapCameraNow,
     );
 
-    // Fire AFTER camera & aim-assist sync
-    if (weaponFireDown && activeWeaponState && !this.isReloading) {
-      const def = WEAPONS[activeWeaponState.weaponId];
+    // Fire or Melee Punch AFTER camera & aim-assist sync
+    if (weaponFireDown) {
       const nowMs = performance.now();
-      const canFire = def.automatic ? true : !this.wasFireDown;
-      if (canFire && nowMs - this.lastShotTime >= def.fireRateMs) {
-        this.lastShotTime = nowMs;
-        this.fireActiveWeapon(activeWeaponState);
+      if (this.activeSlot === 4) {
+        if (nowMs - this.lastShotTime >= 390) {
+          this.lastShotTime = nowMs;
+          this.performMeleePunch();
+        }
+      } else if (activeWeaponState && !this.isReloading) {
+        const def = WEAPONS[activeWeaponState.weaponId];
+        const canFire = def.automatic ? true : !this.wasFireDown;
+        if (canFire && nowMs - this.lastShotTime >= def.fireRateMs) {
+          this.lastShotTime = nowMs;
+          this.fireActiveWeapon(activeWeaponState);
+        }
       }
     }
     this.wasFireDown = fireDown;
@@ -3535,6 +3800,74 @@ export class BattleRoyaleEngine {
       e.mesh.scale.setScalar(0.6 + t * 8.2);
       e.mat.opacity = (1 - t) * 0.85;
       e.mat.color.setHex(t < 0.35 ? 0xfef08a : t < 0.7 ? 0xf97316 : 0xdc2626);
+    }
+  }
+
+  private performMeleePunch(): void {
+    this.animator.triggerPunch();
+    soundEngine.playPunchSwing();
+    this.combatFacingTimer = 0.35;
+
+    const fwdX = -Math.sin(this.yaw);
+    const fwdZ = -Math.cos(this.yaw);
+    let bestBot: TargetDummy | null = null;
+    let bestDist = 2.85;
+
+    const bots = this.world.targets;
+    for (let i = 0; i < bots.length; i++) {
+      const b = bots[i];
+      if (b.isAlly || b.eliminated || !b.group.visible) continue;
+      if (b.downTimer > 0 && !b.isDowned) continue;
+      const dy = Math.abs(b.group.position.y - this.pos.y);
+      if (dy > 2.2) continue;
+      const dx = b.group.position.x - this.pos.x;
+      const dz = b.group.position.z - this.pos.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > bestDist) continue;
+      if (dist > 0.25) {
+        const dot = (dx * fwdX + dz * fwdZ) / dist;
+        if (dot < 0.28) continue;
+      }
+      bestDist = dist;
+      bestBot = b;
+    }
+
+    if (bestBot) {
+      const isHead = !bestBot.isDowned && this.pitch > 0.12;
+      const dmg = isHead ? 95 : 42;
+      this.applyBotHitDamage(
+        bestBot,
+        dmg,
+        true,
+        this.playerNick,
+        'SOCO',
+        isHead,
+        this.pos.x,
+        this.pos.z,
+      );
+      this.damageDealt += dmg;
+      this.hitmarkerTimer = 0.2;
+      if (isHead) {
+        this.headshotFlashTimer = 0.45;
+      }
+      soundEngine.playPunchHit(isHead);
+      this.getBotBodyPoint(bestBot, isHead ? 'head' : 'chest', _v2);
+      this.pushDamagePopup(_v2, dmg, isHead, 0);
+      return;
+    }
+
+    // Punch nearby vehicle if no enemy hit
+    for (let i = 0; i < this.world.vehicles.length; i++) {
+      const veh = this.world.vehicles[i];
+      if (veh.destroyed) continue;
+      const dx = veh.x - this.pos.x;
+      const dz = veh.z - this.pos.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 3.4) {
+        this.damageVehicle(veh, 34);
+        soundEngine.playPunchHit(false);
+        break;
+      }
     }
   }
 
@@ -4648,6 +4981,9 @@ export class BattleRoyaleEngine {
                 loot.data.weaponId !== 'awm'
               ) {
                 bot.weaponId = loot.data.weaponId;
+                if (bot.backGunMesh) {
+                  bot.backGunMesh.visible = bot.weaponId !== 'g18';
+                }
               } else if (loot.data.kind === 'vest') {
                 const lvl = loot.data.level ?? 1;
                 if (lvl > bot.vestLevel) {
@@ -5001,7 +5337,7 @@ export class BattleRoyaleEngine {
       this.activeSlot = targetSlot;
       this.isReloading = false;
       this.reloadTimer = 0;
-      this.playerRig.setWeapon(grantWeaponId);
+      this.syncPlayerWeaponAndBackVisuals();
     }
 
     this.airDropNotice = hasAwm ? 'AIRDROP SAQUEADO (COLETE NV.3 + M4)!' : 'AIRDROP SAQUEADO (AWM + NV.3)!';
@@ -5057,7 +5393,7 @@ export class BattleRoyaleEngine {
 
     if (ld.kind === 'ammo') {
       const amt = ld.ammoAmount ?? 30;
-      const w = this.weapons[this.activeSlot] ?? this.weapons[1] ?? this.weapons[2] ?? this.weapons[3];
+      const w = this.getActiveWeaponState() ?? this.weapons[1] ?? this.weapons[2] ?? this.weapons[3];
       if (w) w.reserveAmmo += amt;
       return;
     }
@@ -5097,7 +5433,7 @@ export class BattleRoyaleEngine {
       if (!this.ownedScopes.includes(st)) {
         this.ownedScopes.push(st);
       }
-      const w = this.weapons[this.activeSlot];
+      const w = this.getActiveWeaponState() ?? this.weapons[1] ?? this.weapons[2];
       if (w && WEAPONS[w.weaponId].allowsCustomScope && w.scope === 'none') {
         w.scope = st;
       } else {
@@ -5109,7 +5445,7 @@ export class BattleRoyaleEngine {
     if (ld.kind === 'attachment' && ld.attachmentKind) {
       const att = ld.attachmentKind;
       const slotKey = ATTACHMENT_LABELS[att].slot;
-      const w = this.weapons[this.activeSlot];
+      const w = this.getActiveWeaponState() ?? this.weapons[1] ?? this.weapons[2];
       if (w && WEAPONS[w.weaponId].allowsAttachments && !w.attachments[slotKey]) {
         (w.attachments as Record<AttachmentSlotKey, AttachmentKind | null>)[slotKey] = att;
       } else {
@@ -5131,7 +5467,7 @@ export class BattleRoyaleEngine {
     if (ld.kind === 'deathbox' && ld.deathLoot) {
       const dl = ld.deathLoot;
       this.ffCoins += dl.coins ?? 120;
-      const w = this.weapons[this.activeSlot] ?? this.weapons[1] ?? this.weapons[2] ?? this.weapons[3];
+      const w = this.getActiveWeaponState() ?? this.weapons[1] ?? this.weapons[2] ?? this.weapons[3];
       if (w) w.reserveAmmo += dl.ammo;
       if (dl.medkits > 0) {
         if (this.getBackpackUsedWeight() + 12 <= this.getBackpackCapacity()) {
@@ -5172,7 +5508,7 @@ export class BattleRoyaleEngine {
         this.activeSlot = targetSlot;
         this.isReloading = false;
         this.reloadTimer = 0;
-        this.playerRig.setWeapon(wid);
+        this.syncPlayerWeaponAndBackVisuals();
         soundEngine.playWeaponSwitch();
       }
       return;
@@ -5193,7 +5529,7 @@ export class BattleRoyaleEngine {
             attachments: emptyAttachments(),
           };
           this.activeSlot = 3;
-          this.playerRig.setWeapon('g18');
+          this.syncPlayerWeaponAndBackVisuals();
           soundEngine.playWeaponSwitch();
         }
         return;
@@ -5225,7 +5561,7 @@ export class BattleRoyaleEngine {
       this.activeSlot = targetSlot;
       this.isReloading = false;
       this.reloadTimer = 0;
-      this.playerRig.setWeapon(wid);
+      this.syncPlayerWeaponAndBackVisuals();
       soundEngine.playWeaponSwitch();
     }
   }
@@ -5360,7 +5696,7 @@ export class BattleRoyaleEngine {
     } else if (offer.id === 'grenade2') {
       this.grenadeCount = Math.min(6, this.grenadeCount + 2);
     } else if (offer.id === 'ammo60') {
-      const w = this.weapons[this.activeSlot] ?? this.weapons[1] ?? this.weapons[2] ?? this.weapons[3];
+      const w = this.getActiveWeaponState() ?? this.weapons[1] ?? this.weapons[2] ?? this.weapons[3];
       if (w) w.reserveAmmo += 60;
     } else if (offer.id === 'vest2') {
       if (this.vestLevel < 2 || this.vestHp < 160) {
@@ -5379,7 +5715,7 @@ export class BattleRoyaleEngine {
     } else if (offer.id === 'scope4x') {
       const sc = '4x' as const;
       if (!this.ownedScopes.includes(sc)) this.ownedScopes.push(sc);
-      const w = this.weapons[this.activeSlot];
+      const w = this.getActiveWeaponState() ?? this.weapons[1] ?? this.weapons[2];
       if (w && WEAPONS[w.weaponId].allowsCustomScope) w.scope = sc;
       else this.addScopeToBackpack(sc);
     } else if (offer.weaponId) {
@@ -5404,7 +5740,7 @@ export class BattleRoyaleEngine {
       this.activeSlot = slot;
       this.isReloading = false;
       this.reloadTimer = 0;
-      this.playerRig.setWeapon(wid);
+      this.syncPlayerWeaponAndBackVisuals();
     }
     return true;
   }
@@ -5452,7 +5788,7 @@ export class BattleRoyaleEngine {
       this.ejectPassengersFromVehicle(v);
     }
     this.activeVehicleId = null;
-    this.playerRig.weaponMount.visible = true;
+    this.playerRig.weaponMount.visible = this.activeSlot !== 4;
     soundEngine.stopVehicleAudio();
   }
 
@@ -5460,7 +5796,7 @@ export class BattleRoyaleEngine {
     if (!this.activeVehicleId) return;
     const v = this.world.vehicles.find((veh) => veh.id === this.activeVehicleId);
     this.activeVehicleId = null;
-    this.playerRig.weaponMount.visible = true;
+    this.playerRig.weaponMount.visible = this.activeSlot !== 4;
     soundEngine.stopVehicleAudio();
     soundEngine.playVehicleEnter();
 
@@ -5859,7 +6195,7 @@ export class BattleRoyaleEngine {
     const state = this.stateMachine.getState();
     const groundY = Math.max(0, this.world.groundHeightAt(this.pos.x, this.pos.z));
     const altitude = Math.max(0, this.pos.y - groundY);
-    const activeW = this.weapons[this.activeSlot];
+    const activeW = this.getActiveWeaponState();
     const reloadTotal = activeW ? this.getEffectiveReloadSec(activeW) : 1;
     const nearbyLaunchPad = this.findNearbyLaunchPad();
     const nearbyAirDrop = nearbyLaunchPad ? null : this.findNearbyAirDrop();

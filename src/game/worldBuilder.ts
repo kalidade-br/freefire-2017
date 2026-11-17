@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { createWeaponModel } from './characterBuilder';
 import { ProceduralTextureSet } from './textures';
 import {
+  AttachmentKind,
+  DeathBoxItemEntry,
   GraphicsQuality,
   LootItem,
   MinimapBuilding,
@@ -31,6 +34,7 @@ export interface TargetDummy {
   armL?: THREE.Mesh;
   armR?: THREE.Mesh;
   gunMesh?: THREE.Mesh;
+  backGunMesh?: THREE.Mesh;
   parachuteMesh?: THREE.Mesh;
   hp: number;
   maxHp: number;
@@ -53,9 +57,16 @@ export interface TargetDummy {
   helmetMaxHp: number;
   helmetMesh: THREE.Mesh | null;
   weaponId: WeaponId;
+  secondaryWeaponId?: WeaponId;
+  ammoCount: number;
   medkits: number;
   healTimer: number;
   gloos: number;
+  grenades: number;
+  backpackLevel: 1 | 2 | 3;
+  coins: number;
+  scopes: ScopeType[];
+  attachments: AttachmentKind[];
   glooCooldown: number;
   revivingMateId: string | null;
   reviveTimer: number;
@@ -1143,6 +1154,16 @@ function createBotEntity(
   gunMesh.rotation.x = 0.95;
   armRPivot.add(armR, gunMesh);
 
+  // Diagonal slung weapon on bot's back (visible when carrying primary weapon or healing)
+  const backGunMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(0.065, 0.085, 0.66),
+    new THREE.MeshStandardMaterial({ color: 0x1e2228, roughness: 0.42, metalness: 0.72 }),
+  );
+  backGunMesh.position.set(0.14, 0.42, -0.17);
+  backGunMesh.rotation.set(-Math.PI * 0.42, 0.1, -0.24);
+  backGunMesh.visible = weaponId !== 'g18';
+  torsoGroup.add(backGunMesh);
+
   // Bot Camo Parachute Canopy (visible during parachute descent across the map)
   const parachuteMesh = new THREE.Mesh(
     new THREE.CylinderGeometry(1.45, 1.7, 1.0, 8, 1, true, 0, Math.PI),
@@ -1182,6 +1203,7 @@ function createBotEntity(
     armL,
     armR,
     gunMesh,
+    backGunMesh,
     parachuteMesh,
     hp: 200,
     maxHp: 200,
@@ -1204,9 +1226,16 @@ function createBotEntity(
     helmetMaxHp,
     helmetMesh,
     weaponId,
+    secondaryWeaponId: undefined,
+    ammoCount: 45,
     medkits: 2,
     healTimer: 0,
     gloos: 2,
+    grenades: 1,
+    backpackLevel: 1,
+    coins: 100,
+    scopes: [],
+    attachments: [],
     glooCooldown: 0,
     revivingMateId: null,
     reviveTimer: 0,
@@ -1296,7 +1325,7 @@ function createAirplane(): { group: THREE.Group; props: THREE.Mesh[] } {
 }
 
 function createSkyDome(): THREE.Mesh {
-  const skyGeo = new THREE.SphereGeometry(1450, 24, 16);
+  const skyGeo = new THREE.SphereGeometry(240, 20, 14);
   const pos = skyGeo.attributes.position;
   const colors = new Float32Array(pos.count * 3);
   const cZenith = new THREE.Color(0x286bb5);
@@ -1306,7 +1335,7 @@ function createSkyDome(): THREE.Mesh {
 
   for (let i = 0; i < pos.count; i++) {
     const y = pos.getY(i);
-    const t = THREE.MathUtils.clamp(y / 1450, 0, 1);
+    const t = THREE.MathUtils.clamp(y / 240, 0, 1);
     if (t < 0.28) {
       tmp.copy(cHorizon).lerp(cMid, t / 0.28);
     } else {
@@ -1323,7 +1352,9 @@ function createSkyDome(): THREE.Mesh {
     fog: false,
     depthWrite: false,
   });
-  return new THREE.Mesh(skyGeo, skyMat);
+  const mesh = new THREE.Mesh(skyGeo, skyMat);
+  mesh.renderOrder = -100;
+  return mesh;
 }
 
 export function createIslandWorld(
@@ -1333,7 +1364,7 @@ export function createIslandWorld(
   const scene = new THREE.Scene();
   const horizonFogColor = new THREE.Color(0xa6cfe8);
   scene.background = horizonFogColor;
-  const fog = new THREE.Fog(horizonFogColor, 230, 880);
+  const fog = new THREE.Fog(horizonFogColor, 180, 520);
   scene.fog = fog;
   scene.environment = envMap;
 
@@ -1341,11 +1372,11 @@ export function createIslandWorld(
     64,
     window.innerWidth / window.innerHeight,
     0.15,
-    1600,
+    640,
   );
 
   // Distant-Render Texture LOD uniform: strips detail texture past threshold while keeping geometry visible
-  const texDistUniform = { value: 95.0 };
+  const texDistUniform = { value: 75.0 };
   const applyDistanceTextureLod = (
     mat: THREE.MeshStandardMaterial,
     flatRgb: [number, number, number],
@@ -1375,7 +1406,8 @@ export function createIslandWorld(
   };
 
   // Sky Dome + Soft Rounded Horizon Clouds
-  scene.add(createSkyDome());
+  const skyDome = createSkyDome();
+  scene.add(skyDome);
 
   const cloudGroup = new THREE.Group();
   const cloudMat = new THREE.MeshBasicMaterial({
@@ -2675,34 +2707,70 @@ export function createIslandWorld(
     });
   });
 
-  // Shared pooled geometries & materials for ALL loot items (cuts GPU draw overhead dramatically)
-  const lootBoxGeo = new THREE.BoxGeometry(0.54, 0.28, 0.38);
-  const lootGlooGeo = new THREE.BoxGeometry(0.46, 0.56, 0.18);
-  const lootDeathGeo = new THREE.BoxGeometry(0.76, 0.44, 0.52);
-  const lootCylGeo = new THREE.CylinderGeometry(0.17, 0.17, 0.44, 10);
-  const lootCoinGeo = new THREE.CylinderGeometry(0.24, 0.24, 0.08, 12);
-  lootCoinGeo.rotateZ(Math.PI / 2);
-  const lootSphereGeo = new THREE.SphereGeometry(0.24, 10, 8);
-  const lootGrenadeGeo = new THREE.SphereGeometry(0.2, 10, 8);
-  const lootRingGeo = new THREE.RingGeometry(0.42, 0.54, 14);
-  const lootDeathRingGeo = new THREE.RingGeometry(0.65, 0.85, 16);
+  // Shared pooled geometries, prototypes & materials for ALL ground loot assets (maximum FPS + authentic shapes)
+  const lootRingGeo = new THREE.RingGeometry(0.36, 0.52, 16);
+  const lootInnerGlowGeo = new THREE.CircleGeometry(0.36, 16);
+  const lootBeamGeo = new THREE.CylinderGeometry(0.11, 0.34, 0.92, 10, 1, true);
+  const lootDeathRingGeo = new THREE.RingGeometry(0.62, 0.86, 16);
+  const lootDeathBeamGeo = new THREE.CylinderGeometry(0.24, 0.58, 1.45, 10, 1, true);
 
-  const lootMatCache = new Map<number, THREE.MeshStandardMaterial>();
-  const ringMatCache = new Map<number, THREE.MeshBasicMaterial>();
-  const getLootMat = (hex: number) => {
-    let m = lootMatCache.get(hex);
-    if (!m) {
-      m = new THREE.MeshStandardMaterial({
-        color: hex,
-        roughness: 0.42,
-        metalness: 0.35,
-        emissive: hex,
-        emissiveIntensity: 0.28,
-      });
-      lootMatCache.set(hex, m);
-    }
-    return m;
+  // Asset geometries built once and reused across every loot pickup on the map
+  const ammoCrateGeo = new THREE.BoxGeometry(0.46, 0.22, 0.28);
+  const ammoStripGeo = new THREE.BoxGeometry(0.34, 0.06, 0.12);
+  const medCaseGeo = new THREE.BoxGeometry(0.44, 0.18, 0.32);
+  const medCrossHGeo = new THREE.BoxGeometry(0.18, 0.04, 0.06);
+  const medCrossVGeo = new THREE.BoxGeometry(0.06, 0.04, 0.18);
+  const medHandleGeo = new THREE.BoxGeometry(0.16, 0.05, 0.05);
+  const vestPlateGeo = new THREE.CylinderGeometry(0.22, 0.19, 0.34, 8);
+  vestPlateGeo.scale(1.15, 1, 0.65);
+  const vestPouchGeo = new THREE.BoxGeometry(0.22, 0.14, 0.08);
+  const helmDomeGeo = new THREE.SphereGeometry(0.21, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.58);
+  const helmRimGeo = new THREE.TorusGeometry(0.205, 0.024, 6, 14);
+  const packMainGeo = new THREE.BoxGeometry(0.34, 0.4, 0.22);
+  const packPocketGeo = new THREE.BoxGeometry(0.26, 0.2, 0.12);
+  const scopeTubeGeo = new THREE.CylinderGeometry(0.055, 0.055, 0.34, 10);
+  scopeTubeGeo.rotateZ(Math.PI / 2);
+  const scopeBellGeo = new THREE.CylinderGeometry(0.075, 0.058, 0.09, 10);
+  scopeBellGeo.rotateZ(Math.PI / 2);
+  const attCylGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.34, 10);
+  attCylGeo.rotateZ(Math.PI / 2);
+  const glooCanGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.42, 10);
+  const glooBandGeo = new THREE.TorusGeometry(0.145, 0.02, 6, 12);
+  const fragBodyGeo = new THREE.SphereGeometry(0.15, 10, 8);
+  fragBodyGeo.scale(0.9, 1.18, 0.9);
+  const fragCapGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.08, 8);
+  const lootCoinGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.08, 12);
+  lootCoinGeo.rotateZ(Math.PI / 2);
+  const lootDeathGeo = new THREE.BoxGeometry(0.76, 0.42, 0.52);
+
+  // Shared materials
+  const matAmmoOlive = new THREE.MeshStandardMaterial({ color: 0x3b442b, roughness: 0.68, metalness: 0.2 });
+  const matGoldTrim = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.32, metalness: 0.72, emissive: 0xca8a04, emissiveIntensity: 0.28 });
+  const matMedWhite = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.45, metalness: 0.08, emissive: 0x16a34a, emissiveIntensity: 0.14 });
+  const matMedRed = new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.4, emissive: 0x991b1b, emissiveIntensity: 0.35 });
+  const matDarkMetal = new THREE.MeshStandardMaterial({ color: 0x20242a, roughness: 0.35, metalness: 0.8 });
+  const matLensBlue = new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.15, metalness: 0.85, emissive: 0x0284c7, emissiveIntensity: 0.4 });
+  const matGlooCyan = new THREE.MeshStandardMaterial({ color: 0x0891b2, roughness: 0.35, metalness: 0.3, emissive: 0x06b6d4, emissiveIntensity: 0.3 });
+  const matGrenadeOlive = new THREE.MeshStandardMaterial({ color: 0x4d5d33, roughness: 0.55, metalness: 0.25 });
+  const matDeathCrate = new THREE.MeshStandardMaterial({ color: 0x6b4728, roughness: 0.72, metalness: 0.12, emissive: 0x92400e, emissiveIntensity: 0.18 });
+  const armorMatByLevel: Record<number, THREE.MeshStandardMaterial> = {
+    1: new THREE.MeshStandardMaterial({ color: 0x4b5842, roughness: 0.58, metalness: 0.22, emissive: 0x0369a1, emissiveIntensity: 0.18 }),
+    2: new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.48, metalness: 0.42, emissive: 0x0284c7, emissiveIntensity: 0.22 }),
+    3: new THREE.MeshStandardMaterial({ color: 0x181c24, roughness: 0.35, metalness: 0.65, emissive: 0x0ea5e9, emissiveIntensity: 0.28 }),
   };
+
+  // Weapon prototypes (each WeaponId built once via createWeaponModel & cloned for ground pickups)
+  const weaponPrototypes: Record<WeaponId, THREE.Group> = {
+    g18: createWeaponModel('g18'),
+    m4a1: createWeaponModel('m4a1'),
+    ump45: createWeaponModel('ump45'),
+    m1014: createWeaponModel('m1014'),
+    awm: createWeaponModel('awm'),
+  };
+
+  const ringMatCache = new Map<number, THREE.MeshBasicMaterial>();
+  const glowFillMatCache = new Map<number, THREE.MeshBasicMaterial>();
+  const beamMatCache = new Map<number, THREE.MeshBasicMaterial>();
   const getRingMat = (hex: number) => {
     let m = ringMatCache.get(hex);
     if (!m) {
@@ -2710,9 +2778,38 @@ export function createIslandWorld(
         color: hex,
         side: THREE.DoubleSide,
         transparent: true,
-        opacity: 0.68,
+        opacity: 0.85,
+        depthWrite: false,
       });
       ringMatCache.set(hex, m);
+    }
+    return m;
+  };
+  const getGlowFillMat = (hex: number) => {
+    let m = glowFillMatCache.get(hex);
+    if (!m) {
+      m = new THREE.MeshBasicMaterial({
+        color: hex,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.24,
+        depthWrite: false,
+      });
+      glowFillMatCache.set(hex, m);
+    }
+    return m;
+  };
+  const getBeamMat = (hex: number) => {
+    let m = beamMatCache.get(hex);
+    if (!m) {
+      m = new THREE.MeshBasicMaterial({
+        color: hex,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.14,
+        depthWrite: false,
+      });
+      beamMatCache.set(hex, m);
     }
     return m;
   };
@@ -2732,6 +2829,8 @@ export function createIslandWorld(
       glooAmount?: number;
       grenadeAmount?: number;
       coinAmount?: number;
+      deathOwnerNick?: string;
+      deathEntries?: DeathBoxItemEntry[];
       deathLoot?: LootItem['deathLoot'];
       label: string;
     },
@@ -2739,61 +2838,131 @@ export function createIslandWorld(
   ): LootVisual => {
     const g = new THREE.Group();
     const ly = ld.yOverride !== undefined ? ld.yOverride : sampleGroundHeight(ld.x, ld.z);
-    g.position.set(ld.x, ly + 0.25, ld.z);
+    g.position.set(ld.x, ly + 0.22, ld.z);
 
-    const boxColor =
-      ld.kind === 'coin'
+    // Color-coded ground glow matching user specification:
+    // Gold for weapons, ammo & coins | Bright Green for medkits, scopes & attachments | Cyan/Orange/Red for gear/gloo/grenade
+    const glowColor =
+      ld.kind === 'weapon' || ld.kind === 'ammo' || ld.kind === 'coin'
         ? 0xfacc15
-        : ld.kind === 'deathbox'
-          ? 0xf59e0b
-          : ld.kind === 'gloo'
-            ? 0x22d3ee
-            : ld.kind === 'grenade'
-              ? 0x84cc16
-              : ld.kind === 'medkit'
-                ? 0xd93838
-                : ld.kind === 'ammo'
-                  ? 0xd69f2b
-                  : ld.kind === 'scope'
-                    ? 0x10b981
-                    : ld.kind === 'vest'
-                      ? 0x0ea5e9
-                      : ld.kind === 'helmet'
-                        ? 0x38bdf8
-                        : ld.kind === 'backpack'
-                          ? 0xf59e0b
-                          : ld.kind === 'attachment'
-                            ? 0xf43f5e
-                            : ld.weaponId === 'awm'
-                              ? 0xa855f7
-                              : 0x3b82f6;
+        : ld.kind === 'medkit' || ld.kind === 'scope' || ld.kind === 'attachment'
+          ? 0x22c55e
+          : ld.kind === 'vest' || ld.kind === 'helmet'
+            ? 0x38bdf8
+            : ld.kind === 'gloo'
+              ? 0x22d3ee
+              : ld.kind === 'grenade'
+                ? 0xef4444
+                : 0xf59e0b;
 
-    const itemGeo =
-      ld.kind === 'coin'
-        ? lootCoinGeo
-        : ld.kind === 'deathbox'
-          ? lootDeathGeo
-          : ld.kind === 'gloo'
-            ? lootGlooGeo
-            : ld.kind === 'grenade'
-              ? lootGrenadeGeo
-              : ld.kind === 'scope' || ld.kind === 'attachment'
-                ? lootCylGeo
-                : ld.kind === 'helmet'
-                  ? lootSphereGeo
-                  : lootBoxGeo;
+    const itemRoot = new THREE.Group();
 
-    const itemMesh = new THREE.Mesh(itemGeo, getLootMat(boxColor));
-    if (ld.kind === 'scope' || ld.kind === 'attachment') {
-      itemMesh.rotation.z = Math.PI / 2;
+    if (ld.kind === 'weapon' && ld.weaponId) {
+      const gun = weaponPrototypes[ld.weaponId].clone();
+      gun.scale.setScalar(1.22);
+      gun.rotation.set(0, Math.PI * 0.25, Math.PI * 0.44);
+      gun.traverse((obj) => {
+        if ((obj as THREE.Mesh).isMesh) {
+          obj.castShadow = false;
+        }
+      });
+      itemRoot.add(gun);
+    } else if (ld.kind === 'ammo') {
+      const crate = new THREE.Mesh(ammoCrateGeo, matAmmoOlive);
+      const strip = new THREE.Mesh(ammoStripGeo, matGoldTrim);
+      strip.position.y = 0.125;
+      itemRoot.add(crate, strip);
+    } else if (ld.kind === 'coin') {
+      const coin = new THREE.Mesh(lootCoinGeo, matGoldTrim);
+      itemRoot.add(coin);
+    } else if (ld.kind === 'medkit') {
+      const box = new THREE.Mesh(medCaseGeo, matMedWhite);
+      const crossH = new THREE.Mesh(medCrossHGeo, matMedRed);
+      crossH.position.y = 0.1;
+      const crossV = new THREE.Mesh(medCrossVGeo, matMedRed);
+      crossV.position.y = 0.1;
+      const handle = new THREE.Mesh(medHandleGeo, matMedRed);
+      handle.position.set(0, 0.04, 0.17);
+      itemRoot.add(box, crossH, crossV, handle);
+    } else if (ld.kind === 'vest') {
+      const armorMat = armorMatByLevel[ld.level ?? 1] ?? armorMatByLevel[1];
+      const plate = new THREE.Mesh(vestPlateGeo, armorMat);
+      const pouch = new THREE.Mesh(vestPouchGeo, matDarkMetal);
+      pouch.position.set(0, -0.02, 0.12);
+      itemRoot.add(plate, pouch);
+    } else if (ld.kind === 'helmet') {
+      const armorMat = armorMatByLevel[ld.level ?? 1] ?? armorMatByLevel[1];
+      const dome = new THREE.Mesh(helmDomeGeo, armorMat);
+      dome.position.y = -0.04;
+      const rim = new THREE.Mesh(helmRimGeo, matDarkMetal);
+      rim.rotation.x = Math.PI / 2;
+      rim.position.y = -0.05;
+      itemRoot.add(dome, rim);
+    } else if (ld.kind === 'backpack') {
+      const armorMat = armorMatByLevel[ld.level ?? 2] ?? armorMatByLevel[2];
+      const main = new THREE.Mesh(packMainGeo, armorMat);
+      const pocket = new THREE.Mesh(packPocketGeo, matDarkMetal);
+      pocket.position.set(0, -0.05, 0.13);
+      itemRoot.add(main, pocket);
+    } else if (ld.kind === 'scope') {
+      const tube = new THREE.Mesh(scopeTubeGeo, matDarkMetal);
+      const bell = new THREE.Mesh(scopeBellGeo, matDarkMetal);
+      bell.position.x = 0.17;
+      const lens = new THREE.Mesh(scopeBellGeo, matLensBlue);
+      lens.scale.set(0.35, 0.85, 0.85);
+      lens.position.x = 0.21;
+      itemRoot.add(tube, bell, lens);
+    } else if (ld.kind === 'attachment') {
+      const body = new THREE.Mesh(attCylGeo, matDarkMetal);
+      const ringT = new THREE.Mesh(glooBandGeo, matGoldTrim);
+      ringT.scale.setScalar(0.38);
+      ringT.rotation.y = Math.PI / 2;
+      itemRoot.add(body, ringT);
+    } else if (ld.kind === 'gloo') {
+      const can = new THREE.Mesh(glooCanGeo, matGlooCyan);
+      const band1 = new THREE.Mesh(glooBandGeo, matMedWhite);
+      band1.rotation.x = Math.PI / 2;
+      band1.position.y = 0.1;
+      const band2 = new THREE.Mesh(glooBandGeo, matMedWhite);
+      band2.rotation.x = Math.PI / 2;
+      band2.position.y = -0.1;
+      itemRoot.add(can, band1, band2);
+    } else if (ld.kind === 'grenade') {
+      const body = new THREE.Mesh(fragBodyGeo, matGrenadeOlive);
+      const cap = new THREE.Mesh(fragCapGeo, matGoldTrim);
+      cap.position.y = 0.18;
+      itemRoot.add(body, cap);
+    } else {
+      const crate = new THREE.Mesh(lootDeathGeo, matDeathCrate);
+      const trim = new THREE.Mesh(medHandleGeo, matGoldTrim);
+      trim.scale.set(2.5, 1, 2.2);
+      trim.position.y = 0.22;
+      itemRoot.add(crate, trim);
     }
+
+    const isDeathbox = ld.kind === 'deathbox';
     const ring = new THREE.Mesh(
-      ld.kind === 'deathbox' ? lootDeathRingGeo : lootRingGeo,
-      getRingMat(boxColor),
+      isDeathbox ? lootDeathRingGeo : lootRingGeo,
+      getRingMat(glowColor),
     );
     ring.rotation.x = -Math.PI / 2;
-    ring.position.y = -0.2;
-    g.add(itemMesh, ring);
+    ring.position.y = -0.18;
+
+    const glowFill = new THREE.Mesh(
+      isDeathbox ? lootDeathRingGeo : lootInnerGlowGeo,
+      getGlowFillMat(glowColor),
+    );
+    glowFill.rotation.x = -Math.PI / 2;
+    glowFill.position.y = -0.185;
+
+    const beam = new THREE.Mesh(
+      isDeathbox ? lootDeathBeamGeo : lootBeamGeo,
+      getBeamMat(glowColor),
+    );
+    beam.position.y = isDeathbox ? 0.54 : 0.28;
+
+    // Keep itemRoot at children[0] so updateDynamicProps animates itemRoot cleanly!
+    g.add(itemRoot, ring, glowFill, beam);
     scene.add(g);
 
     return {
@@ -2811,6 +2980,8 @@ export function createIslandWorld(
         glooAmount: ld.glooAmount,
         grenadeAmount: ld.grenadeAmount,
         coinAmount: ld.coinAmount,
+        deathOwnerNick: ld.deathOwnerNick,
+        deathEntries: ld.deathEntries,
         deathLoot: ld.deathLoot,
         label: ld.label,
         collected: false,
@@ -2887,15 +3058,15 @@ export function createIslandWorld(
     });
   }
 
-  let structureCullDist = 265;
+  let structureCullDist = 200;
 
   const applyQuality = (quality: GraphicsQuality, isSoftwareGl: boolean) => {
     if (quality === 'low' || isSoftwareGl) {
-      // SUAVE: mínimo leve para celular fraco e PC fraco (render enxuto + textura curta)
-      texDistUniform.value = 34.0;
-      fog.near = 88;
-      fog.far = 260;
-      structureCullDist = 175;
+      // SUAVE: mínimo ultra leve com culling agressivo de distância
+      texDistUniform.value = 26.0;
+      fog.near = 75;
+      fog.far = 215;
+      structureCullDist = 130;
       bushInst.visible = false;
       sunLight.castShadow = false;
       sunLight.shadow.mapSize.set(512, 512);
@@ -2905,11 +3076,11 @@ export function createIslandWorld(
       waterMat.metalness = 0.05;
       scene.environmentIntensity = 0.55;
     } else if (quality === 'medium') {
-      // PADRÃO: equilibrado para celular intermediário com render otimizado
-      texDistUniform.value = 68.0;
-      fog.near = 145;
-      fog.far = 430;
-      structureCullDist = 265;
+      // PADRÃO: equilibrado com render distante otimizado para zero travamentos
+      texDistUniform.value = 54.0;
+      fog.near = 120;
+      fog.far = 335;
+      structureCullDist = 200;
       bushInst.visible = true;
       sunLight.castShadow = true;
       sunLight.shadow.mapSize.set(1024, 1024);
@@ -2919,11 +3090,11 @@ export function createIslandWorld(
       waterMat.metalness = 0.22;
       scene.environmentIntensity = 0.85;
     } else {
-      // ULTRA: gráfico detalhado, sombra 2048, folhagem completa com culling distante
-      texDistUniform.value = 122.0;
-      fog.near = 205;
-      fog.far = 640;
-      structureCullDist = 390;
+      // ULTRA: gráfico detalhado com culling distante inteligente
+      texDistUniform.value = 96.0;
+      fog.near = 165;
+      fog.far = 475;
+      structureCullDist = 295;
       bushInst.visible = true;
       sunLight.castShadow = true;
       sunLight.shadow.mapSize.set(2048, 2048);
@@ -2943,7 +3114,7 @@ export function createIslandWorld(
     dt: number,
     elapsed: number,
     camPos?: THREE.Vector3,
-    lootRenderDist = 80,
+    lootRenderDist = 38,
   ) => {
     cloudGroup.rotation.y = elapsed * 0.0025;
     textures.waterWave.offset.x = (elapsed * 0.028) % 1;
@@ -2953,10 +3124,12 @@ export function createIslandWorld(
     const cx = camPos ? camPos.x : 0;
     const cz = camPos ? camPos.z : 0;
     const cy = camPos ? camPos.y : 0;
+    skyDome.position.set(cx, 0, cz);
     const renderMaxSq = lootRenderDist * lootRenderDist;
-    const animMaxSq = 55 * 55;
+    const beamMaxSq = Math.min(renderMaxSq, 26 * 26);
+    const animMaxSq = 30 * 30;
 
-    // Distance-cull distant structures when on the ground (keep visible when skydiving/plane!)
+    // Distance-cull distant structures & vehicles when on the ground (keep visible in airplane/skydive)
     if (camPos) {
       const keepAllStructures = cy > 45;
       for (let i = 0; i < cullableStructures.length; i++) {
@@ -2965,10 +3138,33 @@ export function createIslandWorld(
           if (!s.obj.visible) s.obj.visible = true;
         } else {
           const maxR = structureCullDist * s.radiusScale;
-          const dSq = (s.x - cx) * (s.x - cx) + (s.z - cz) * (s.z - cz);
-          const vis = dSq <= maxR * maxR;
+          const dx = s.x - cx;
+          const dz = s.z - cz;
+          const vis =
+            Math.abs(dx) <= maxR &&
+            Math.abs(dz) <= maxR &&
+            dx * dx + dz * dz <= maxR * maxR;
           if (s.obj.visible !== vis) {
             s.obj.visible = vis;
+          }
+        }
+      }
+
+      const vehCullR = structureCullDist + 45;
+      const vehCullSq = vehCullR * vehCullR;
+      for (let i = 0; i < vehicles.length; i++) {
+        const v = vehicles[i];
+        if (keepAllStructures || v.driverIsPlayer) {
+          if (!v.group.visible) v.group.visible = true;
+        } else {
+          const dx = v.x - cx;
+          const dz = v.z - cz;
+          const vis =
+            Math.abs(dx) <= vehCullR &&
+            Math.abs(dz) <= vehCullR &&
+            dx * dx + dz * dz <= vehCullSq;
+          if (v.group.visible !== vis) {
+            v.group.visible = vis;
           }
         }
       }
@@ -2978,12 +3174,25 @@ export function createIslandWorld(
       const l = loots[i];
       if (l.data.collected) continue;
       if (camPos) {
-        const dSq = (l.data.x - cx) * (l.data.x - cx) + (l.data.z - cz) * (l.data.z - cz);
+        const dx = l.data.x - cx;
+        const dz = l.data.z - cz;
+        if (Math.abs(dx) > lootRenderDist || Math.abs(dz) > lootRenderDist) {
+          if (l.mesh.visible) l.mesh.visible = false;
+          continue;
+        }
+        const dSq = dx * dx + dz * dz;
         const vis = dSq <= renderMaxSq;
         if (l.mesh.visible !== vis) {
           l.mesh.visible = vis;
         }
-        if (!vis || dSq > animMaxSq) continue;
+        if (!vis) continue;
+        // Hide floor glow fill & beam past 26m to avoid overdraw GPU stalls
+        const beamVis = dSq <= beamMaxSq;
+        if (l.mesh.children.length >= 4 && l.mesh.children[3].visible !== beamVis) {
+          l.mesh.children[2].visible = beamVis;
+          l.mesh.children[3].visible = beamVis;
+        }
+        if (dSq > animMaxSq) continue;
       }
       l.mesh.children[0].rotation.y = elapsed * 1.8 + i;
       l.mesh.children[0].position.y = Math.sin(elapsed * 3 + i) * 0.07;

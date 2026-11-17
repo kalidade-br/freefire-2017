@@ -20,7 +20,7 @@ export class InputManager {
   public grenadePressed = false;
   public fireTapPressed = false;
   public revivePressed = false;
-  public switchSlot: 1 | 2 | 3 | null = null;
+  public switchSlot: 1 | 2 | 3 | 4 | null = null;
   public cycleSlotDir: -1 | 0 | 1 = 0;
   public pointerLocked = false;
   private lastCrouchMs = 0;
@@ -180,7 +180,7 @@ export class InputManager {
     this.revivePressed = true;
   }
 
-  public triggerSlot(slot: 1 | 2 | 3): void {
+  public triggerSlot(slot: 1 | 2 | 3 | 4): void {
     this.switchSlot = slot;
   }
 
@@ -233,7 +233,7 @@ export class InputManager {
     grenade: boolean;
     fireTap: boolean;
     revive: boolean;
-    slot: 1 | 2 | 3 | null;
+    slot: 1 | 2 | 3 | 4 | null;
     cycleSlotDir: -1 | 0 | 1;
   } {
     const out = {
@@ -297,13 +297,14 @@ export class InputManager {
     if (e.code === 'KeyE' || e.code === 'KeyF') this.interactPressed = true;
     if (e.code === 'KeyQ') this.cycleScopePressed = true;
     if (e.code === 'Tab' || e.code === 'KeyB') this.backpackPressed = true;
-    if (e.code === 'KeyH' || e.code === 'Digit4') this.medkitPressed = true;
+    if (e.code === 'KeyH') this.medkitPressed = true;
     if (e.code === 'KeyG' || e.code === 'Digit5') this.glooPressed = true;
     if (e.code === 'KeyX' || e.code === 'Digit6') this.grenadePressed = true;
     if (e.code === 'KeyV') this.revivePressed = true;
     if (e.code === 'Digit1') this.switchSlot = 1;
     if (e.code === 'Digit2') this.switchSlot = 2;
     if (e.code === 'Digit3') this.switchSlot = 3;
+    if (e.code === 'Digit4') this.switchSlot = 4;
     if (e.code === 'Escape' && this.onPauseCallback && !this.pointerLocked) {
       this.onPauseCallback();
     }

@@ -15,35 +15,52 @@ export interface CharacterRig {
   rightHip: THREE.Group;
   rightKnee: THREE.Group;
   weaponMount: THREE.Group;
+  backMount1: THREE.Group;
+  backMount2: THREE.Group;
   muzzleFlash: THREE.Mesh;
   parachuteGroup: THREE.Group;
   contactShadow: THREE.Mesh;
   weaponMeshes: Record<WeaponId, THREE.Group>;
   bodyMeshes: THREE.Mesh[];
   setWeapon: (weaponId: WeaponId | null) => void;
+  setBackWeapons: (left: WeaponId | null, right: WeaponId | null) => void;
   setParachuteVisible: (visible: boolean) => void;
   setHitFlash: (amount: number) => void;
   applyConfig: (config: CharacterConfig) => void;
   dispose: () => void;
 }
 
-function createWeaponModel(weaponId: WeaponId): THREE.Group {
+const WEAPON_GUN_METAL_MAT = new THREE.MeshStandardMaterial({
+  color: 0x26292e,
+  roughness: 0.35,
+  metalness: 0.85,
+});
+const WEAPON_POLYMER_MAT = new THREE.MeshStandardMaterial({
+  color: 0x191a1d,
+  roughness: 0.78,
+  metalness: 0.1,
+});
+const WEAPON_WOOD_MAT = new THREE.MeshStandardMaterial({
+  color: 0x5c3c24,
+  roughness: 0.72,
+  metalness: 0.05,
+});
+const WEAPON_SNIPER_GREEN_MAT = new THREE.MeshStandardMaterial({
+  color: 0x3b4d32,
+  roughness: 0.72,
+  metalness: 0.12,
+});
+const WEAPON_LENS_MAT = new THREE.MeshStandardMaterial({
+  color: 0x38bdf8,
+  roughness: 0.15,
+  metalness: 0.9,
+});
+
+export function createWeaponModel(weaponId: WeaponId): THREE.Group {
   const group = new THREE.Group();
-  const gunMetal = new THREE.MeshStandardMaterial({
-    color: 0x26292e,
-    roughness: 0.35,
-    metalness: 0.85,
-  });
-  const polymer = new THREE.MeshStandardMaterial({
-    color: 0x191a1d,
-    roughness: 0.78,
-    metalness: 0.1,
-  });
-  const woodAccent = new THREE.MeshStandardMaterial({
-    color: 0x5c3c24,
-    roughness: 0.72,
-    metalness: 0.05,
-  });
+  const gunMetal = WEAPON_GUN_METAL_MAT;
+  const polymer = WEAPON_POLYMER_MAT;
+  const woodAccent = WEAPON_WOOD_MAT;
 
   if (weaponId === 'g18') {
     const slide = new THREE.Mesh(
@@ -156,16 +173,8 @@ function createWeaponModel(weaponId: WeaponId): THREE.Group {
     group.add(receiver, barrel, tube, stock);
   } else {
     // AWM-17 Bolt-Action Sniper Rifle with 8x Scope
-    const sniperGreen = new THREE.MeshStandardMaterial({
-      color: 0x3b4d32,
-      roughness: 0.72,
-      metalness: 0.12,
-    });
-    const lensMat = new THREE.MeshStandardMaterial({
-      color: 0x38bdf8,
-      roughness: 0.15,
-      metalness: 0.9,
-    });
+    const sniperGreen = WEAPON_SNIPER_GREEN_MAT;
+    const lensMat = WEAPON_LENS_MAT;
     const body = new THREE.Mesh(
       new THREE.BoxGeometry(0.058, 0.088, 0.46),
       sniperGreen,
@@ -531,6 +540,38 @@ export function createCharacterRig(
   });
   weaponMeshes.m4a1.visible = true;
 
+  // Holstered Back Weapon Mounts (Right & Left shoulder slings behind/beside backpack)
+  const backMount1 = new THREE.Group();
+  backMount1.position.set(0.175, 0.31, -0.215);
+  backMount1.rotation.set(-Math.PI * 0.44, 0.12, -0.22);
+  torso.add(backMount1);
+
+  const backMount2 = new THREE.Group();
+  backMount2.position.set(-0.175, 0.31, -0.215);
+  backMount2.rotation.set(-Math.PI * 0.44, -0.12, 0.22);
+  torso.add(backMount2);
+
+  const backMeshes1: Record<WeaponId, THREE.Group> = {
+    g18: createWeaponModel('g18'),
+    m4a1: createWeaponModel('m4a1'),
+    ump45: createWeaponModel('ump45'),
+    m1014: createWeaponModel('m1014'),
+    awm: createWeaponModel('awm'),
+  };
+  const backMeshes2: Record<WeaponId, THREE.Group> = {
+    g18: createWeaponModel('g18'),
+    m4a1: createWeaponModel('m4a1'),
+    ump45: createWeaponModel('ump45'),
+    m1014: createWeaponModel('m1014'),
+    awm: createWeaponModel('awm'),
+  };
+  (Object.keys(backMeshes1) as WeaponId[]).forEach((id) => {
+    backMeshes1[id].visible = false;
+    backMeshes2[id].visible = false;
+    backMount1.add(backMeshes1[id]);
+    backMount2.add(backMeshes2[id]);
+  });
+
   // Muzzle flash sprite-like cone
   const muzzleFlash = new THREE.Mesh(
     new THREE.ConeGeometry(0.085, 0.24, 6),
@@ -663,6 +704,13 @@ export function createCharacterRig(
     });
   };
 
+  const setBackWeapons = (left: WeaponId | null, right: WeaponId | null) => {
+    (Object.keys(backMeshes1) as WeaponId[]).forEach((id) => {
+      backMeshes1[id].visible = right === id;
+      backMeshes2[id].visible = left === id;
+    });
+  };
+
   const setParachuteVisible = (visible: boolean) => {
     parachuteGroup.visible = visible;
   };
@@ -706,12 +754,15 @@ export function createCharacterRig(
     rightHip: rightLeg.hip,
     rightKnee: rightLeg.knee,
     weaponMount,
+    backMount1,
+    backMount2,
     muzzleFlash,
     parachuteGroup,
     contactShadow,
     weaponMeshes,
     bodyMeshes,
     setWeapon,
+    setBackWeapons,
     setParachuteVisible,
     setHitFlash,
     applyConfig,

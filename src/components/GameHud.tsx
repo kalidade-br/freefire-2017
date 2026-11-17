@@ -22,8 +22,10 @@ import {
   SCOPE_META,
   ScopeType,
   WEAPONS,
+  WeaponSlotId,
 } from '../game/types';
 import {
+  IconAmmoSvg,
   IconBackpackSvg,
   IconCoinSvg,
   IconCrouchSvg,
@@ -411,7 +413,8 @@ export const GameHud: React.FC<GameHudProps> = ({
     pois,
   ]);
 
-  const activeWeaponSlot = hud.weapons[hud.activeSlot];
+  const activeWeaponSlot =
+    hud.activeSlot === 4 ? null : hud.weapons[hud.activeSlot];
   const activeWeaponDef = activeWeaponSlot
     ? WEAPONS[activeWeaponSlot.weaponId]
     : null;
@@ -562,9 +565,9 @@ export const GameHud: React.FC<GameHudProps> = ({
     !hud.isDead &&
     !isPaused;
 
-  const slot1 = hud.weapons[1];
-  const slot2 = hud.weapons[2];
-  const slot3 = hud.weapons[3];
+  const inactiveWeaponSlots: WeaponSlotId[] = (
+    [1, 2, 3, 4] as const
+  ).filter((s) => s !== hud.activeSlot);
 
   return (
     <div className="fixed inset-0 z-30 pointer-events-none select-none text-white">
@@ -812,7 +815,7 @@ export const GameHud: React.FC<GameHudProps> = ({
             disabled={hud.medkitCount <= 0 || hud.hp >= hud.maxHp || hud.usingMedkit}
             style={layoutStyle(hudLayout.medkitBtn)}
             className="pointer-events-auto touch-none absolute z-20 w-11 h-11 sm:w-12 sm:h-12 bg-black/50 hover:bg-black/65 border border-white/25 flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:brightness-50 disabled:grayscale"
-            title="Usar Kit Médico (H ou 4)"
+            title="Usar Kit Médico (H)"
           >
             <IconMedkitSvg className="w-6 h-6 sm:w-7 sm:h-7 text-white drop-shadow" />
             <span className="absolute top-0 right-0.5 text-[10px] font-mono font-black text-white drop-shadow">
@@ -1057,107 +1060,145 @@ export const GameHud: React.FC<GameHudProps> = ({
         </button>
       </div>
 
-      {/* CUSTOMIZABLE CLASSIC FREE FIRE TOP-RIGHT WEAPON BOX */}
-      {isGroundCombat && activeWeaponDef && activeWeaponSlot && (
+      {/* CUSTOMIZABLE CLASSIC FREE FIRE TOP-RIGHT WEAPON BOX (MATCHES SCREENSHOTS 1 & 3) */}
+      {isGroundCombat && (
         <div
           style={layoutStyle(hudLayout.weapons)}
-          className="pointer-events-auto absolute z-20 flex flex-col items-end gap-1 w-[176px] sm:w-[206px]"
+          className="pointer-events-auto absolute z-20 flex flex-col items-end gap-1 w-[184px] sm:w-[214px]"
         >
-          <div className="w-full bg-black/45 border border-white/25 shadow-lg overflow-hidden">
-            {/* Top Row: Left ∞ + active weapon name/attachments | Right Fist / Slot 3 (G18) */}
-            <div className="grid grid-cols-2 border-b border-white/20 h-9 sm:h-10 divide-x divide-white/20">
-              <div className="flex flex-col items-center justify-center px-1.5 leading-none">
-                <span className="text-lg font-light text-white leading-none">∞</span>
-                <span className="text-[7px] font-mono text-white/75 truncate max-w-full">
-                  {activeWeaponDef.shortName}
-                </span>
+          <div className="w-full bg-black/50 border border-white/30 shadow-lg overflow-hidden">
+            {/* Top Active Slot Card */}
+            {hud.activeSlot === 4 || !activeWeaponDef || !activeWeaponSlot ? (
+              <div className="relative grid grid-cols-12 h-11 sm:h-12 border-b border-white/25 bg-black/35">
+                <div className="col-span-5 flex flex-col items-center justify-center leading-none border-r border-white/15">
+                  <span className="text-2xl font-light text-white leading-none">∞</span>
+                  <span className="text-[8px] font-mono text-white/75 tracking-wider">
+                    PUNHO
+                  </span>
+                </div>
+                <div className="col-span-7 flex items-center justify-center px-2">
+                  <IconFistSvg className="w-7 h-7 sm:w-8 sm:h-8 text-white drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)]" />
+                </div>
               </div>
+            ) : (
+              <div className="relative grid grid-cols-12 h-11 sm:h-12 border-b border-white/25 bg-black/35">
+                {/* Left Ammo Stack: Mag / Reserve */}
+                <div className="col-span-4 flex flex-col items-center justify-center leading-none px-1 border-r border-white/15 font-mono tabular-nums">
+                  {hud.isReloading ? (
+                    <span className="text-[9px] font-black text-amber-300">RECAR...</span>
+                  ) : (
+                    <>
+                      <span className="text-sm sm:text-base font-black text-white leading-none">
+                        {activeWeaponSlot.ammoInMag}
+                      </span>
+                      <div className="w-5 h-[1px] bg-white/40 my-0.5" />
+                      <span className="text-[9px] font-bold text-white/75 leading-none">
+                        {activeWeaponSlot.reserveAmmo}
+                      </span>
+                    </>
+                  )}
+                </div>
 
-              <button
-                type="button"
-                onClick={() => slot3 && input.triggerSlot(3)}
-                disabled={!slot3}
-                className={`relative flex items-center justify-center px-1.5 cursor-pointer transition-colors ${
-                  hud.activeSlot === 3
-                    ? 'bg-white/20 ring-1 ring-inset ring-amber-300'
-                    : 'hover:bg-white/10'
-                } disabled:opacity-45`}
-                title={slot3 ? 'Slot 3: Glock G18' : 'Slot 3 Vazio'}
-              >
-                {slot3 ? (
-                  <>
-                    <IconFistSvg className="w-6 h-6 text-white drop-shadow" />
-                    <span className="absolute bottom-0.5 left-1 text-[8px] font-mono font-bold text-white/90">
-                      {slot3.ammoInMag}/{slot3.reserveAmmo}
+                {/* Right Active Weapon Silhouette + Recarga Rápida header */}
+                <div className="col-span-8 relative flex flex-col items-center justify-center px-1.5 pt-2.5 pb-0.5">
+                  <div className="absolute top-0.5 inset-x-1.5 flex items-center justify-between text-[7px] font-sans tracking-wide text-white/85">
+                    <span>Recarga Rápida</span>
+                    <span className="font-mono font-bold text-amber-300">
+                      {activeWeaponDef.shortName}
                     </span>
-                    <span className="absolute top-0.5 right-1 text-[7px] font-mono text-amber-300 font-bold">
-                      3·G18
-                    </span>
-                  </>
-                ) : (
-                  <IconFistSvg className="w-6 h-6 text-white/60" />
+                  </div>
+                  <WeaponIcon
+                    weaponId={activeWeaponSlot.weaponId}
+                    silhouette
+                    className="w-[88%] h-7 sm:h-8 drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]"
+                  />
+                </div>
+
+                {hud.isReloading && (
+                  <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black/60">
+                    <div
+                      className="h-full bg-amber-300"
+                      style={{ width: `${Math.round(hud.reloadProgress * 100)}%` }}
+                    />
+                  </div>
                 )}
-              </button>
-            </div>
+              </div>
+            )}
 
-            {/* Bottom Row: Primary Weapons Slot 1 & Slot 2 side-by-side white silhouettes */}
-            <div className="grid grid-cols-2 h-14 sm:h-16 divide-x divide-white/20">
-              {([1, 2] as const).map((slotNum) => {
+            {/* Bottom Row: 3 Inactive Slots (Always includes remaining guns + Punho) */}
+            <div className="grid grid-cols-3 h-11 sm:h-12 divide-x divide-white/25">
+              {inactiveWeaponSlots.map((slotNum) => {
+                if (slotNum === 4) {
+                  return (
+                    <button
+                      key={4}
+                      type="button"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        input.triggerSlot(4);
+                      }}
+                      className="relative flex items-center justify-center p-1 hover:bg-white/15 cursor-pointer transition-colors"
+                      title="Soco / Punho (Tecla 4)"
+                    >
+                      <IconFistSvg className="w-6 h-6 text-white drop-shadow" />
+                      <span className="absolute bottom-0.5 left-1 text-[10px] font-mono font-bold text-white/90 leading-none">
+                        ∞
+                      </span>
+                      {!showTouchHud && (
+                        <span className="absolute top-0.5 right-1 text-[7px] font-mono text-white/60">
+                          4
+                        </span>
+                      )}
+                    </button>
+                  );
+                }
+
                 const w = hud.weapons[slotNum];
                 const def = w ? WEAPONS[w.weaponId] : null;
-                const active = hud.activeSlot === slotNum;
                 if (!w || !def) {
                   return (
                     <div
                       key={slotNum}
-                      className="flex items-center justify-center text-[9px] font-mono text-white/30"
+                      className="relative flex items-center justify-center opacity-35"
                     >
-                      [{slotNum}]
+                      <WeaponIcon
+                        weaponId={slotNum === 3 ? 'g18' : 'm4a1'}
+                        silhouette
+                        className="w-8 h-4 opacity-40"
+                      />
+                      <span className="absolute top-0.5 left-1 text-[7px] font-mono text-white/60">
+                        {slotNum}
+                      </span>
                     </div>
                   );
                 }
+
                 return (
                   <button
                     key={slotNum}
                     type="button"
-                    onClick={() => input.triggerSlot(slotNum)}
-                    className={`relative flex items-center justify-center p-1 cursor-pointer transition-colors ${
-                      active
-                        ? 'bg-white/18 ring-1 ring-inset ring-amber-300'
-                        : 'hover:bg-white/10 opacity-85 hover:opacity-100'
-                    }`}
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      input.triggerSlot(slotNum);
+                    }}
+                    className="relative flex items-center justify-center p-1 hover:bg-white/15 cursor-pointer transition-colors"
+                    title={`Slot ${slotNum}: ${def.name}`}
                   >
                     <WeaponIcon
                       weaponId={w.weaponId}
                       silhouette
-                      className="w-[82%] h-8 sm:h-9 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]"
+                      className="w-[86%] h-6 -rotate-6 drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]"
                     />
-                    <span className="absolute top-0.5 left-1 text-[8px] font-mono font-bold text-white/80">
-                      {slotNum}
+                    <span className="absolute bottom-0.5 left-1 text-[8px] font-mono font-black text-white/95 tabular-nums leading-none">
+                      {w.ammoInMag + w.reserveAmmo}
                     </span>
-                    <span className="absolute top-0.5 right-1 text-[7px] font-mono text-amber-300/95">
-                      {def.allowsCustomScope ? SCOPE_META[w.scope].short : def.shortName}
+                    <span className="absolute top-0.5 right-1 text-[7px] font-mono text-amber-300/90 leading-none">
+                      {def.allowsCustomScope && w.scope !== 'none'
+                        ? SCOPE_META[w.scope].short
+                        : slotNum}
                     </span>
-                    <div className="absolute bottom-0.5 left-1 font-mono tabular-nums leading-none">
-                      {active && hud.isReloading ? (
-                        <span className="text-[8px] font-black text-amber-300">RECAR...</span>
-                      ) : (
-                        <>
-                          <span className="text-[11px] font-black text-white">
-                            {w.ammoInMag}
-                          </span>
-                          <span className="text-[8px] text-white/65">/{w.reserveAmmo}</span>
-                        </>
-                      )}
-                    </div>
-                    {active && hud.isReloading && (
-                      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black/50">
-                        <div
-                          className="h-full bg-amber-300"
-                          style={{ width: `${Math.round(hud.reloadProgress * 100)}%` }}
-                        />
-                      </div>
-                    )}
                   </button>
                 );
               })}
@@ -1165,7 +1206,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
 
           {/* Compact Scope Switcher & Equipped Attachments under weapon box */}
-          {activeWeaponDef.allowsCustomScope && (
+          {activeWeaponDef && activeWeaponSlot && activeWeaponDef.allowsCustomScope && (
             <div className="flex items-center gap-1 flex-wrap justify-end">
               {hud.ownedScopes.map((sc) => {
                 const isEq = hud.activeScope === sc;
@@ -1187,33 +1228,34 @@ export const GameHud: React.FC<GameHudProps> = ({
             </div>
           )}
 
-          {(activeWeaponSlot.attachments.muzzle ||
-            activeWeaponSlot.attachments.foregrip ||
-            activeWeaponSlot.attachments.magazine ||
-            activeWeaponSlot.attachments.stock) && (
-            <div className="flex items-center gap-1 flex-wrap justify-end">
-              {activeWeaponSlot.attachments.muzzle && (
-                <span className="text-[7px] font-mono px-1 bg-black/60 border border-amber-400/50 text-amber-200">
-                  {ATTACHMENT_LABELS[activeWeaponSlot.attachments.muzzle].short}
-                </span>
-              )}
-              {activeWeaponSlot.attachments.foregrip && (
-                <span className="text-[7px] font-mono px-1 bg-black/60 border border-amber-400/50 text-amber-200">
-                  {ATTACHMENT_LABELS[activeWeaponSlot.attachments.foregrip].short}
-                </span>
-              )}
-              {activeWeaponSlot.attachments.magazine && (
-                <span className="text-[7px] font-mono px-1 bg-black/60 border border-amber-400/50 text-amber-200">
-                  {ATTACHMENT_LABELS[activeWeaponSlot.attachments.magazine].short}
-                </span>
-              )}
-              {activeWeaponSlot.attachments.stock && (
-                <span className="text-[7px] font-mono px-1 bg-black/60 border border-amber-400/50 text-amber-200">
-                  {ATTACHMENT_LABELS[activeWeaponSlot.attachments.stock].short}
-                </span>
-              )}
-            </div>
-          )}
+          {activeWeaponSlot &&
+            (activeWeaponSlot.attachments.muzzle ||
+              activeWeaponSlot.attachments.foregrip ||
+              activeWeaponSlot.attachments.magazine ||
+              activeWeaponSlot.attachments.stock) && (
+              <div className="flex items-center gap-1 flex-wrap justify-end">
+                {activeWeaponSlot.attachments.muzzle && (
+                  <span className="text-[7px] font-mono px-1 bg-black/60 border border-amber-400/50 text-amber-200">
+                    {ATTACHMENT_LABELS[activeWeaponSlot.attachments.muzzle].short}
+                  </span>
+                )}
+                {activeWeaponSlot.attachments.foregrip && (
+                  <span className="text-[7px] font-mono px-1 bg-black/60 border border-amber-400/50 text-amber-200">
+                    {ATTACHMENT_LABELS[activeWeaponSlot.attachments.foregrip].short}
+                  </span>
+                )}
+                {activeWeaponSlot.attachments.magazine && (
+                  <span className="text-[7px] font-mono px-1 bg-black/60 border border-amber-400/50 text-amber-200">
+                    {ATTACHMENT_LABELS[activeWeaponSlot.attachments.magazine].short}
+                  </span>
+                )}
+                {activeWeaponSlot.attachments.stock && (
+                  <span className="text-[7px] font-mono px-1 bg-black/60 border border-amber-400/50 text-amber-200">
+                    {ATTACHMENT_LABELS[activeWeaponSlot.attachments.stock].short}
+                  </span>
+                )}
+              </div>
+            )}
         </div>
       )}
 
@@ -1659,29 +1701,55 @@ export const GameHud: React.FC<GameHudProps> = ({
         )}
       </div>
 
-      {/* FREE FIRE MULTI-SLOT INDIVIDUAL LOOT LIST (CLICK ANY SLOT OR PRESS E) */}
+      {/* FREE FIRE LOOT STRIP DIRECTLY UNDER TOP-RIGHT WEAPON BOX (MATCHES SCREENSHOT 1) */}
       {isGroundCombat &&
         !hud.isDead &&
         !isPaused &&
         !isBackpackOpen &&
         !hud.inVehicle &&
         hud.nearbyLoots.length > 0 && (
-          <div className="pointer-events-auto absolute right-2 sm:right-4 top-[42%] -translate-y-1/2 z-20 flex flex-col gap-1 w-48 sm:w-56">
-            {hud.nearbyLoots.map((slot, idx) => {
+          <div className="pointer-events-auto absolute right-2 sm:right-3 top-[172px] sm:top-[190px] z-20 flex flex-row-reverse flex-wrap justify-start gap-1.5 max-w-[340px] sm:max-w-[420px]">
+            {hud.nearbyLoots.slice(0, 4).map((slot, idx) => {
               const renderSlotIcon = () => {
                 if (slot.weaponId) {
-                  return <WeaponIcon weaponId={slot.weaponId} className="w-10 h-4 shrink-0" />;
+                  return (
+                    <WeaponIcon
+                      weaponId={slot.weaponId}
+                      className="w-12 h-6 shrink-0 drop-shadow"
+                    />
+                  );
                 }
-                if (slot.kind === 'coin') return <IconCoinSvg className="w-4 h-4 shrink-0" />;
-                if (slot.kind === 'medkit') return <IconMedkitSvg className="w-4 h-4 text-emerald-400 shrink-0" />;
-                if (slot.kind === 'gloo') return <IconGlooSvg className="w-4 h-4 text-cyan-400 shrink-0" />;
-                if (slot.kind === 'grenade') return <IconGrenadeSvg className="w-4 h-4 text-red-400 shrink-0" />;
-                if (slot.kind === 'vest') return <IconVestSvg className="w-4 h-4 text-amber-300 shrink-0" />;
-                if (slot.kind === 'helmet') return <IconHelmetSvg className="w-4 h-4 text-amber-300 shrink-0" />;
-                if (slot.kind === 'backpack') return <IconBackpackSvg className="w-4 h-4 text-amber-300 shrink-0" />;
-                if (slot.kind === 'scope') return <IconScopeSvg className="w-4 h-4 text-sky-300 shrink-0" />;
-                if (slot.kind === 'airdrop') return <Trophy className="w-4 h-4 text-amber-400 shrink-0" />;
-                return <IconBackpackSvg className="w-4 h-4 text-neutral-300 shrink-0" />;
+                if (slot.kind === 'ammo') {
+                  return <IconAmmoSvg className="w-8 h-7 shrink-0 drop-shadow" />;
+                }
+                if (slot.kind === 'coin') {
+                  return <IconCoinSvg className="w-6 h-6 shrink-0" />;
+                }
+                if (slot.kind === 'medkit') {
+                  return <IconMedkitSvg className="w-7 h-7 text-emerald-400 shrink-0" />;
+                }
+                if (slot.kind === 'gloo') {
+                  return <IconGlooSvg className="w-7 h-7 text-cyan-300 shrink-0" />;
+                }
+                if (slot.kind === 'grenade') {
+                  return <IconGrenadeSvg className="w-7 h-7 text-red-400 shrink-0" />;
+                }
+                if (slot.kind === 'vest') {
+                  return <IconVestSvg className="w-7 h-7 text-sky-300 shrink-0" />;
+                }
+                if (slot.kind === 'helmet') {
+                  return <IconHelmetSvg className="w-7 h-7 text-sky-300 shrink-0" />;
+                }
+                if (slot.kind === 'backpack') {
+                  return <IconBackpackSvg className="w-7 h-7 text-amber-300 shrink-0" />;
+                }
+                if (slot.kind === 'scope') {
+                  return <IconScopeSvg className="w-7 h-7 text-emerald-300 shrink-0" />;
+                }
+                if (slot.kind === 'airdrop') {
+                  return <Trophy className="w-7 h-7 text-amber-400 shrink-0" />;
+                }
+                return <IconBackpackSvg className="w-6 h-6 text-emerald-300 shrink-0" />;
               };
 
               return (
@@ -1693,30 +1761,37 @@ export const GameHud: React.FC<GameHudProps> = ({
                     e.preventDefault();
                     onCollectLoot(slot.id);
                   }}
-                  className={`flex items-center justify-between gap-2 px-2 py-1.5 border text-left shadow-lg cursor-pointer transition-colors ${
+                  className={`relative w-[74px] h-[76px] sm:w-[82px] sm:h-[84px] flex flex-col items-center justify-between p-1.5 border shadow-lg cursor-pointer transition-colors ${
                     idx === 0
-                      ? 'bg-[#1a222c]/92 hover:bg-amber-500/25 border-amber-400 text-white'
-                      : 'bg-black/82 hover:bg-[#1f2937]/90 border-white/25 text-neutral-100'
+                      ? 'bg-black/68 hover:bg-amber-500/25 border-amber-400/90 text-white'
+                      : 'bg-black/58 hover:bg-black/78 border-white/30 text-neutral-100'
                   }`}
                 >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className="w-9 h-6 bg-black/55 border border-white/10 flex items-center justify-center shrink-0">
-                      {renderSlotIcon()}
-                    </div>
-                    <div className="min-w-0 leading-tight">
-                      <div className="text-[11px] font-bold truncate">{slot.label}</div>
-                      {slot.subLabel && (
-                        <div className="text-[9px] font-mono text-amber-300">
-                          {slot.subLabel}
-                        </div>
-                      )}
-                    </div>
+                  {/* Top row: [E] badge left + Quantity / level right */}
+                  <div className="w-full flex items-center justify-between leading-none">
+                    {idx === 0 ? (
+                      <span className="px-1 py-0.5 bg-amber-400 text-black text-[8px] font-black font-mono">
+                        E
+                      </span>
+                    ) : (
+                      <span />
+                    )}
+                    {slot.subLabel && (
+                      <span className="text-[9px] font-mono font-bold text-white/90">
+                        {slot.subLabel.replace('+', '')}
+                      </span>
+                    )}
                   </div>
-                  {idx === 0 && (
-                    <span className="px-1 py-0.5 bg-amber-400 text-black text-[9px] font-black font-mono shrink-0">
-                      E
-                    </span>
-                  )}
+
+                  {/* Center item graphic */}
+                  <div className="flex-1 flex items-center justify-center">
+                    {renderSlotIcon()}
+                  </div>
+
+                  {/* Bottom item name */}
+                  <div className="w-full text-[8px] sm:text-[9px] font-sans font-medium leading-[1.1] text-center text-white/95 line-clamp-2">
+                    {slot.label}
+                  </div>
                 </button>
               );
             })}

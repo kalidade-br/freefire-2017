@@ -104,8 +104,8 @@ const ELEMENT_META: Record<HudElementId, ElementMeta> = {
     shape: 'box',
     renderPreview: () => (
       <div className="flex flex-col items-center leading-tight">
-        <span className="text-[9px] font-black">ARMAS / MIRA</span>
-        <span className="text-[7px] font-mono opacity-80">1 · 2 · 3</span>
+        <span className="text-[9px] font-black">ARMAS / PUNHO</span>
+        <span className="text-[7px] font-mono opacity-80">1 · 2 · 3 · 4</span>
       </div>
     ),
   },
