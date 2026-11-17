@@ -25,6 +25,7 @@ import {
 } from '../game/types';
 import {
   IconBackpackSvg,
+  IconCoinSvg,
   IconCrouchSvg,
   IconFireBurstSvg,
   IconFistSvg,
@@ -37,6 +38,8 @@ import {
   IconReloadSvg,
   IconScopeSvg,
   IconSprintSvg,
+  IconVehicleSvg,
+  IconVendingSvg,
   IconVestSvg,
 } from './HudIcons';
 import { ScopeOverlay } from './ScopeOverlay';
@@ -57,6 +60,9 @@ interface GameHudProps {
   onTogglePause: () => void;
   onToggleBackpack: () => void;
   onUseMedkit: () => void;
+  onCollectLoot: (id: string) => void;
+  onOpenVending: () => void;
+  onToggleVehicle: () => void;
   onOpenSettings: () => void;
   onOpenHudEditor: () => void;
   onSelectScope: (scope: ScopeType) => void;
@@ -111,6 +117,9 @@ export const GameHud: React.FC<GameHudProps> = ({
   onTogglePause,
   onToggleBackpack,
   onUseMedkit,
+  onCollectLoot,
+  onOpenVending,
+  onToggleVehicle,
   onOpenSettings,
   onOpenHudEditor,
   onSelectScope,
@@ -129,6 +138,21 @@ export const GameHud: React.FC<GameHudProps> = ({
   const joyOriginRef = useRef<{ id: number; cx: number; cy: number } | null>(null);
   const lookTouchRef = useRef<{ id: number; lx: number; ly: number } | null>(null);
   const fireDragRef = useRef<{ id: number; lx: number; ly: number } | null>(null);
+  const vehTouchRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  const setVehAxis = (axis: 'x' | 'y', value: number) => {
+    vehTouchRef.current[axis] = value;
+    input.setVirtualJoystick(vehTouchRef.current.x, vehTouchRef.current.y);
+  };
+
+  useEffect(() => {
+    if (!hud.inVehicle) {
+      if (vehTouchRef.current.x !== 0 || vehTouchRef.current.y !== 0) {
+        vehTouchRef.current = { x: 0, y: 0 };
+        input.setVirtualJoystick(0, 0);
+      }
+    }
+  }, [hud.inVehicle, input]);
 
   useEffect(() => {
     const coarse =
@@ -328,12 +352,59 @@ export const GameHud: React.FC<GameHudProps> = ({
       ctx.fill();
       ctx.stroke();
     }
+
+    // Draw Vending Machines (Lojinhas) as cyan squares on Minimap
+    for (let i = 0; i < hud.vendingLocations.length; i++) {
+      const vm = hud.vendingLocations[i];
+      const vp = toPx(vm.x, vm.z);
+      ctx.fillStyle = '#22d3ee';
+      ctx.strokeStyle = '#083344';
+      ctx.lineWidth = 0.8;
+      ctx.fillRect(vp.x - 1.8, vp.y - 1.8, 3.6, 3.6);
+      ctx.strokeRect(vp.x - 1.8, vp.y - 1.8, 3.6, 3.6);
+    }
+
+    // Draw Drivable Vehicles on Minimap
+    for (let i = 0; i < hud.vehicleLocations.length; i++) {
+      const veh = hud.vehicleLocations[i];
+      if (veh.destroyed) continue;
+      const vp = toPx(veh.x, veh.z);
+      ctx.fillStyle = veh.kind === 'sport' ? '#f43f5e' : '#f97316';
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.arc(vp.x, vp.y, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Draw AirDrop crates on Minimap (gold crate icon + pulse when falling)
+    for (let i = 0; i < hud.airDrops.length; i++) {
+      const ad = hud.airDrops[i];
+      if (ad.state === 'looted') continue;
+      const ap = toPx(ad.x, ad.z);
+      if (ad.state === 'falling') {
+        ctx.strokeStyle = '#fde047';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(ap.x, ap.y, 4.6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#facc15';
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1.0;
+      ctx.fillRect(ap.x - 2.6, ap.y - 2.6, 5.2, 5.2);
+      ctx.strokeRect(ap.x - 2.6, ap.y - 2.6, 5.2, 5.2);
+    }
   }, [
     hud.playerX,
     hud.playerZ,
     hud.yawDeg,
     hud.safeZone,
     hud.teamMembers,
+    hud.airDrops,
+    hud.vendingLocations,
+    hud.vehicleLocations,
     gameState,
     buildings,
     roads,
@@ -486,7 +557,8 @@ export const GameHud: React.FC<GameHudProps> = ({
   const showOpticalOverlay =
     isGroundCombat &&
     hud.isAiming &&
-    hud.activeScope !== 'none' &&
+    !hud.isPlacingGloo &&
+    !hud.isHoldingGrenade &&
     !hud.isDead &&
     !isPaused;
 
@@ -637,9 +709,12 @@ export const GameHud: React.FC<GameHudProps> = ({
           return null;
         })}
 
-      {/* DUO / SQUAD TEAMMATE STATUS PANEL (next to Minimap) */}
+      {/* DUO / SQUAD TEAMMATE STATUS PANEL (customizable) */}
       {hud.teamMembers.length > 0 && (
-        <div className="absolute left-[112px] sm:left-[136px] top-3 z-20 flex flex-col gap-1 pointer-events-none">
+        <div
+          style={layoutStyle(hudLayout.teamPanel)}
+          className="absolute z-20 flex flex-col gap-1 pointer-events-none"
+        >
           {hud.teamMembers.map((m) => {
             const slotColor = getSlotColor(m.slotNumber, m.isDowned);
             return (
@@ -699,9 +774,9 @@ export const GameHud: React.FC<GameHudProps> = ({
         </div>
       )}
 
-      {/* LEFT-EDGE CLASSIC FREE FIRE UTILITY COLUMN (MOCHILA %, KIT, GRANADA, GELO) */}
+      {/* CUSTOMIZABLE UTILITY BUTTONS (MOCHILA %, KIT, GRANADA, GELO) */}
       {isGroundCombat && !hud.isDead && !isPaused && (
-        <div className="pointer-events-auto absolute left-2 top-[134px] sm:top-[152px] z-20 flex flex-col gap-1.5">
+        <>
           {/* Mochila (% lotação) */}
           <button
             type="button"
@@ -710,7 +785,8 @@ export const GameHud: React.FC<GameHudProps> = ({
               e.preventDefault();
               onToggleBackpack();
             }}
-            className="touch-none relative w-11 h-11 sm:w-12 sm:h-12 bg-black/50 hover:bg-black/65 border border-white/25 flex items-center justify-center shadow cursor-pointer active:scale-95"
+            style={layoutStyle(hudLayout.backpackBtn)}
+            className="pointer-events-auto touch-none absolute z-20 w-11 h-11 sm:w-12 sm:h-12 bg-black/50 hover:bg-black/65 border border-white/25 flex items-center justify-center shadow cursor-pointer active:scale-95"
             title="Abrir Mochila (TAB ou B)"
           >
             <IconBackpackSvg className="w-6 h-6 sm:w-7 sm:h-7 text-white drop-shadow" />
@@ -734,7 +810,8 @@ export const GameHud: React.FC<GameHudProps> = ({
               onUseMedkit();
             }}
             disabled={hud.medkitCount <= 0 || hud.hp >= hud.maxHp || hud.usingMedkit}
-            className="touch-none relative w-11 h-11 sm:w-12 sm:h-12 bg-black/50 hover:bg-black/65 border border-white/25 flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:opacity-45"
+            style={layoutStyle(hudLayout.medkitBtn)}
+            className="pointer-events-auto touch-none absolute z-20 w-11 h-11 sm:w-12 sm:h-12 bg-black/50 hover:bg-black/65 border border-white/25 flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:brightness-50 disabled:grayscale"
             title="Usar Kit Médico (H ou 4)"
           >
             <IconMedkitSvg className="w-6 h-6 sm:w-7 sm:h-7 text-white drop-shadow" />
@@ -757,7 +834,8 @@ export const GameHud: React.FC<GameHudProps> = ({
               input.triggerGrenade();
             }}
             disabled={hud.grenadeCount <= 0}
-            className={`touch-none relative w-11 h-11 sm:w-12 sm:h-12 border flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:opacity-40 ${
+            style={layoutStyle(hudLayout.grenadeBtn)}
+            className={`pointer-events-auto touch-none absolute z-20 w-11 h-11 sm:w-12 sm:h-12 border flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:brightness-50 disabled:grayscale ${
               hud.isHoldingGrenade
                 ? 'bg-red-600/80 border-amber-300 text-white ring-1 ring-amber-300'
                 : 'bg-black/50 hover:bg-black/65 border-white/25 text-white'
@@ -784,7 +862,8 @@ export const GameHud: React.FC<GameHudProps> = ({
               input.triggerGloo();
             }}
             disabled={hud.glooCount <= 0}
-            className={`touch-none relative w-11 h-11 sm:w-12 sm:h-12 border flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:opacity-40 ${
+            style={layoutStyle(hudLayout.glooBtn)}
+            className={`pointer-events-auto touch-none absolute z-20 w-11 h-11 sm:w-12 sm:h-12 border flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:brightness-50 disabled:grayscale ${
               hud.isPlacingGloo
                 ? 'bg-cyan-500/85 border-white text-black ring-1 ring-cyan-300'
                 : 'bg-black/50 hover:bg-black/65 border-white/25 text-cyan-200'
@@ -801,11 +880,14 @@ export const GameHud: React.FC<GameHudProps> = ({
               </span>
             )}
           </button>
-        </div>
+        </>
       )}
 
-      {/* TOP-CENTER: Compass + Tapered Dark Smoke Zone Banner + Timer + Centered Rising Kill Feed */}
-      <div className="absolute top-1.5 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-0.5 w-[300px] sm:w-[370px] max-w-[92vw]">
+      {/* TOP-CENTER (customizable): Compass + Tapered Dark Smoke Zone Banner + Timer + Centered Rising Kill Feed */}
+      <div
+        style={layoutStyle(hudLayout.topBanner)}
+        className="pointer-events-none absolute z-20 flex flex-col items-center gap-0.5 w-[300px] sm:w-[370px] max-w-[92vw]"
+      >
         {/* Crisp Compass Strip */}
         <div
           className="px-3 py-0.5 flex items-center gap-2.5 text-[10px] font-mono tabular-nums text-white/85"
@@ -880,6 +962,13 @@ export const GameHud: React.FC<GameHudProps> = ({
                 <span>FORA DA ZONA (-{hud.safeZone.damagePerSec} HP/s)</span>
               </div>
             )}
+
+            {hud.airDropNotice && (
+              <div className="mt-0.5 flex items-center gap-1.5 bg-amber-950/90 border border-amber-400 px-2.5 py-0.5 text-[10px] font-mono font-black text-amber-200 tracking-wider uppercase shadow">
+                <span className="w-2 h-2 bg-amber-400 rounded-xs animate-pulse" />
+                <span>{hud.airDropNotice}</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -934,8 +1023,20 @@ export const GameHud: React.FC<GameHudProps> = ({
         )}
       </div>
 
-      {/* TOP-RIGHT: Cyan Vivo / Red-Orange Matou + Settings Gear */}
-      <div className="absolute top-2 right-2.5 z-20 flex items-center gap-1.5">
+      {/* TOP-RIGHT (customizable): FF Coins + Ranked Badge + Cyan Vivo / Red-Orange Matou + Settings Gear */}
+      <div
+        style={layoutStyle(hudLayout.aliveBox)}
+        className="pointer-events-auto absolute z-20 flex items-center gap-1.5"
+      >
+        {hud.isRanked && (
+          <div className="bg-red-700/90 border border-amber-300/80 px-1.5 py-1 text-[9px] font-black tracking-wider uppercase text-amber-200 whitespace-nowrap">
+            RANK
+          </div>
+        )}
+        <div className="flex items-center gap-1 bg-black/75 border border-amber-400/55 px-2 py-1 text-[11px] font-mono font-black text-amber-300 tabular-nums whitespace-nowrap">
+          <IconCoinSvg className="w-3.5 h-3.5 shrink-0" />
+          <span>{hud.ffCoins}</span>
+        </div>
         <div className="flex items-center text-[11px] sm:text-xs font-bold shadow-md overflow-hidden rounded-[2px]">
           <div className="bg-gradient-to-r from-cyan-500/85 to-teal-400/85 px-2.5 py-1 flex items-center gap-1 text-white">
             <span>Vivo</span>
@@ -1213,37 +1314,38 @@ export const GameHud: React.FC<GameHudProps> = ({
         </div>
       )}
 
-      {/* Floating Damage Numbers (Peito = Branco/Dourado, Capa = Vermelho Grande) */}
+      {/* Floating Damage Numbers (Peito = Branco/Dourado, Capa = Vermelho Vivo estilo 4x) */}
       {isGroundCombat &&
         !isPaused &&
         hud.damagePopups.map((d) => {
           const opacity = Math.max(0, 1 - d.age / 0.78);
-          const liftPx = d.age * 42;
+          const liftPx = d.age * 46;
           return (
             <div
               key={d.id}
-              className="absolute z-20 pointer-events-none flex items-center gap-1 font-mono font-black leading-none"
+              className="absolute z-20 pointer-events-none flex items-center gap-1 font-sans font-black leading-none tracking-tight"
               style={{
                 left: `${d.xPct}%`,
                 top: `${d.yPct}%`,
                 opacity,
                 transform: `translate(-50%, calc(-50% - ${liftPx}px))`,
-                textShadow: '0 2px 3px rgba(0,0,0,0.95), 0 0 6px rgba(0,0,0,0.7)',
+                textShadow:
+                  '0 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000',
               }}
             >
               <span
                 className={
                   d.isHeadshot
-                    ? 'text-red-500 text-xl sm:text-2xl'
+                    ? 'text-[#ff1e1e] text-[22px] sm:text-[26px]'
                     : d.armorBlocked > 0
-                      ? 'text-amber-300 text-base'
-                      : 'text-white text-base'
+                      ? 'text-amber-300 text-[17px] sm:text-[19px]'
+                      : 'text-white text-[17px] sm:text-[19px]'
                 }
               >
                 {d.amount}
               </span>
               {d.armorBlocked > 0 && (
-                <span className="text-[9px] px-1 py-0.5 bg-black/75 border border-white/30 text-neutral-200">
+                <span className="text-[9px] font-mono px-1 py-0.5 bg-black/80 border border-white/30 text-neutral-200">
                   {d.isHeadshot ? `K${d.armorBlocked}` : `C${d.armorBlocked}`}
                 </span>
               )}
@@ -1266,8 +1368,11 @@ export const GameHud: React.FC<GameHudProps> = ({
         </div>
       )}
 
-      {/* AIRPLANE / DROPPING / WINDOW VAULT / MEDKIT / LOOT ACTION PROMPTS */}
-      <div className="absolute inset-x-0 bottom-24 flex flex-col items-center gap-1.5 z-20">
+      {/* AIRPLANE / DROPPING / WINDOW VAULT / MEDKIT / LOOT / REVIVE ACTION PROMPTS (customizable) */}
+      <div
+        style={layoutStyle(hudLayout.actionPrompt)}
+        className="pointer-events-none absolute z-20 flex flex-col items-center gap-1.5 w-[320px] max-w-[92vw]"
+      >
         {hud.canJumpFromPlane && (
           <button
             type="button"
@@ -1341,20 +1446,83 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
         )}
 
-        {isGroundCombat && hud.canVaultWindow && !hud.nearbyLootLabel && (
+        {isGroundCombat && hud.canVaultWindow && !hud.nearbyLootLabel && !hud.inVehicle && (
           <div className="px-3 py-1 bg-sky-950/88 border border-sky-400 text-sky-200 font-mono font-bold text-[11px] uppercase">
             [ESPAÇO] PULAR JANELA
           </div>
         )}
 
-        {isGroundCombat && hud.nearbyLootLabel && (
+        {isGroundCombat && hud.nearbyVending && !hud.inVehicle && (
           <button
             type="button"
-            onClick={() => input.triggerInteract()}
-            className="pointer-events-auto px-4 py-1.5 bg-black/82 border border-amber-400 text-amber-200 font-bold text-xs uppercase tracking-wider cursor-pointer"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onOpenVending();
+            }}
+            className="pointer-events-auto touch-none flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 border-2 border-white text-black font-black text-xs uppercase tracking-wider shadow-xl cursor-pointer whitespace-nowrap"
           >
-            [E] {hud.nearbyLootLabel}
+            <IconVendingSvg className="w-4 h-4 shrink-0" />
+            <span>[E] ABRIR LOJINHA</span>
           </button>
+        )}
+
+        {isGroundCombat && hud.nearbyVehicle && !hud.inVehicle && (
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onToggleVehicle();
+            }}
+            className="pointer-events-auto touch-none flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-400 border-2 border-white text-black font-black text-xs uppercase tracking-wider shadow-xl cursor-pointer whitespace-nowrap"
+          >
+            <IconVehicleSvg className="w-4 h-4 shrink-0" />
+            <span>[E] DIRIGIR {hud.nearbyVehicle.name}</span>
+          </button>
+        )}
+
+        {isGroundCombat && hud.inVehicle && (
+          <div className="pointer-events-auto flex flex-col items-center gap-1.5 bg-black/82 border border-amber-400/70 px-3.5 py-2 shadow-2xl w-64">
+            <div className="w-full flex items-center justify-between text-[11px] font-black uppercase">
+              <span className="flex items-center gap-1.5 text-amber-300">
+                <IconVehicleSvg className="w-4 h-4 shrink-0" />
+                <span>{hud.inVehicle.name}</span>
+              </span>
+              <span className="font-mono text-white tabular-nums">
+                {hud.inVehicle.speedKmh} km/h
+              </span>
+            </div>
+            <div className="w-full flex items-center gap-2">
+              <div className="flex-1 h-2 bg-neutral-800 overflow-hidden">
+                <div
+                  className={`h-full transition-all ${
+                    hud.inVehicle.isBurning ? 'bg-red-500' : 'bg-emerald-400'
+                  }`}
+                  style={{
+                    width: `${Math.max(0, Math.min(100, (hud.inVehicle.hp / hud.inVehicle.maxHp) * 100))}%`,
+                  }}
+                />
+              </div>
+              <span className="text-[9px] font-mono text-neutral-300 tabular-nums">
+                {Math.ceil(hud.inVehicle.hp)}/{hud.inVehicle.maxHp}
+              </span>
+            </div>
+            <div className="w-full flex items-center justify-between text-[10px] font-mono">
+              <span className={hud.inVehicle.isBurning ? 'text-red-400 font-black' : 'text-neutral-400'}>
+                {hud.inVehicle.isBurning
+                  ? 'CARRO EM CHAMAS!'
+                  : `${hud.inVehicle.passengerCount} a bordo`}
+              </span>
+              <button
+                type="button"
+                onClick={onToggleVehicle}
+                className="px-2.5 py-1 bg-red-600 hover:bg-red-500 text-white font-black uppercase cursor-pointer"
+              >
+                SAIR [E]
+              </button>
+            </div>
+          </div>
         )}
 
         {isGroundCombat && (hud.isPlacingGloo || hud.isHoldingGrenade) && (
@@ -1491,47 +1659,174 @@ export const GameHud: React.FC<GameHudProps> = ({
         )}
       </div>
 
-      {/* CUSTOMIZABLE MOBILE VIRTUAL JOYSTICK, SPRINT, LEFT-FIRE & RIGHT BUTTON CLUSTER */}
-      {showTouchHud && isGroundCombat && !isPaused && (
+      {/* FREE FIRE MULTI-SLOT INDIVIDUAL LOOT LIST (CLICK ANY SLOT OR PRESS E) */}
+      {isGroundCombat &&
+        !hud.isDead &&
+        !isPaused &&
+        !isBackpackOpen &&
+        !hud.inVehicle &&
+        hud.nearbyLoots.length > 0 && (
+          <div className="pointer-events-auto absolute right-2 sm:right-4 top-[42%] -translate-y-1/2 z-20 flex flex-col gap-1 w-48 sm:w-56">
+            {hud.nearbyLoots.map((slot, idx) => {
+              const renderSlotIcon = () => {
+                if (slot.weaponId) {
+                  return <WeaponIcon weaponId={slot.weaponId} className="w-10 h-4 shrink-0" />;
+                }
+                if (slot.kind === 'coin') return <IconCoinSvg className="w-4 h-4 shrink-0" />;
+                if (slot.kind === 'medkit') return <IconMedkitSvg className="w-4 h-4 text-emerald-400 shrink-0" />;
+                if (slot.kind === 'gloo') return <IconGlooSvg className="w-4 h-4 text-cyan-400 shrink-0" />;
+                if (slot.kind === 'grenade') return <IconGrenadeSvg className="w-4 h-4 text-red-400 shrink-0" />;
+                if (slot.kind === 'vest') return <IconVestSvg className="w-4 h-4 text-amber-300 shrink-0" />;
+                if (slot.kind === 'helmet') return <IconHelmetSvg className="w-4 h-4 text-amber-300 shrink-0" />;
+                if (slot.kind === 'backpack') return <IconBackpackSvg className="w-4 h-4 text-amber-300 shrink-0" />;
+                if (slot.kind === 'scope') return <IconScopeSvg className="w-4 h-4 text-sky-300 shrink-0" />;
+                if (slot.kind === 'airdrop') return <Trophy className="w-4 h-4 text-amber-400 shrink-0" />;
+                return <IconBackpackSvg className="w-4 h-4 text-neutral-300 shrink-0" />;
+              };
+
+              return (
+                <button
+                  key={slot.id}
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    onCollectLoot(slot.id);
+                  }}
+                  className={`flex items-center justify-between gap-2 px-2 py-1.5 border text-left shadow-lg cursor-pointer transition-colors ${
+                    idx === 0
+                      ? 'bg-[#1a222c]/92 hover:bg-amber-500/25 border-amber-400 text-white'
+                      : 'bg-black/82 hover:bg-[#1f2937]/90 border-white/25 text-neutral-100'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-9 h-6 bg-black/55 border border-white/10 flex items-center justify-center shrink-0">
+                      {renderSlotIcon()}
+                    </div>
+                    <div className="min-w-0 leading-tight">
+                      <div className="text-[11px] font-bold truncate">{slot.label}</div>
+                      {slot.subLabel && (
+                        <div className="text-[9px] font-mono text-amber-300">
+                          {slot.subLabel}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  {idx === 0 && (
+                    <span className="px-1 py-0.5 bg-amber-400 text-black text-[9px] font-black font-mono shrink-0">
+                      E
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+      {/* MOBILE VEHICLE TOUCH PEDALS & STEERING WHEN DRIVING */}
+      {showTouchHud && isGroundCombat && !isPaused && hud.inVehicle && (
         <>
-          {/* Left Sprint Toggle + Left Fire Circle above Joystick (Classic Free Fire Layout) */}
-          <div className="pointer-events-auto absolute left-[14%] sm:left-[15%] bottom-[29%] z-20 flex items-center gap-2.5">
+          <div className="pointer-events-auto absolute left-4 bottom-8 z-20 flex items-center gap-2">
             <button
               type="button"
               onPointerDown={(e) => {
                 e.stopPropagation();
                 e.preventDefault();
-                const next = !autoSprintActive;
-                setAutoSprintActive(next);
-                input.setTouchAutoSprint(next);
+                setVehAxis('x', -1);
               }}
-              className={`touch-none w-11 h-11 rounded-full border-2 flex items-center justify-center shadow-lg cursor-pointer ${
-                autoSprintActive || hud.isSprinting
-                  ? 'bg-white/85 border-white text-black'
-                  : 'bg-black/45 border-white/55 text-white'
-              }`}
-              title="Correr Automático"
+              onPointerUp={() => setVehAxis('x', 0)}
+              onPointerCancel={() => setVehAxis('x', 0)}
+              className="touch-none w-14 h-14 bg-black/65 border-2 border-white/60 text-white font-black text-lg cursor-pointer active:bg-amber-500 active:text-black"
             >
-              <IconSprintSvg className="w-6 h-6" />
+              ◀
             </button>
-
             <button
               type="button"
-              onContextMenu={(e) => e.preventDefault()}
-              onPointerDown={beginFirePointer}
-              onPointerMove={moveFirePointer}
-              onPointerUp={endFirePointer}
-              onPointerCancel={endFirePointer}
-              onLostPointerCapture={() => {
-                fireDragRef.current = null;
-                input.setTouchFire(false);
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                setVehAxis('x', 1);
               }}
-              className="touch-none w-12 h-12 rounded-full bg-black/45 active:bg-white/30 border-[1.5px] border-white/60 flex items-center justify-center text-white shadow-lg cursor-pointer"
-              title="Atirar Esquerdo"
+              onPointerUp={() => setVehAxis('x', 0)}
+              onPointerCancel={() => setVehAxis('x', 0)}
+              className="touch-none w-14 h-14 bg-black/65 border-2 border-white/60 text-white font-black text-lg cursor-pointer active:bg-amber-500 active:text-black"
             >
-              <IconFireBurstSvg className="w-7 h-7 text-white" />
+              ▶
             </button>
           </div>
+          <div className="pointer-events-auto absolute right-4 bottom-8 z-20 flex items-center gap-2">
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                setVehAxis('y', 1);
+              }}
+              onPointerUp={() => setVehAxis('y', 0)}
+              onPointerCancel={() => setVehAxis('y', 0)}
+              className="touch-none px-4 h-14 bg-red-900/75 border-2 border-red-400 text-white font-black text-xs uppercase cursor-pointer active:bg-red-500"
+            >
+              RÉ
+            </button>
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                setVehAxis('y', -1);
+              }}
+              onPointerUp={() => setVehAxis('y', 0)}
+              onPointerCancel={() => setVehAxis('y', 0)}
+              className="touch-none px-4 h-14 bg-emerald-700/80 border-2 border-emerald-300 text-white font-black text-xs uppercase cursor-pointer active:bg-emerald-500"
+            >
+              ACELERAR
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* CUSTOMIZABLE MOBILE VIRTUAL JOYSTICK, SPRINT, LEFT-FIRE & RIGHT BUTTON CLUSTER */}
+      {showTouchHud && isGroundCombat && !isPaused && !hud.inVehicle && (
+        <>
+          {/* Sprint Toggle (customizable) */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              const next = !autoSprintActive;
+              setAutoSprintActive(next);
+              input.setTouchAutoSprint(next);
+            }}
+            style={layoutStyle(hudLayout.sprintBtn)}
+            className={`pointer-events-auto touch-none absolute z-20 w-11 h-11 rounded-full border-2 flex items-center justify-center shadow-lg cursor-pointer ${
+              autoSprintActive || hud.isSprinting
+                ? 'bg-white/85 border-white text-black'
+                : 'bg-black/45 border-white/55 text-white'
+            }`}
+            title="Correr Automático"
+          >
+            <IconSprintSvg className="w-6 h-6" />
+          </button>
+
+          {/* Left Fire Button (customizable) */}
+          <button
+            type="button"
+            onContextMenu={(e) => e.preventDefault()}
+            onPointerDown={beginFirePointer}
+            onPointerMove={moveFirePointer}
+            onPointerUp={endFirePointer}
+            onPointerCancel={endFirePointer}
+            onLostPointerCapture={() => {
+              fireDragRef.current = null;
+              input.setTouchFire(false);
+            }}
+            style={layoutStyle(hudLayout.leftFireBtn)}
+            className="pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full bg-black/45 active:bg-white/30 border-[1.5px] border-white/60 flex items-center justify-center text-white shadow-lg cursor-pointer"
+            title="Atirar Esquerdo"
+          >
+            <IconFireBurstSvg className="w-7 h-7 text-white" />
+          </button>
 
           {/* Left Virtual Joystick */}
           <div

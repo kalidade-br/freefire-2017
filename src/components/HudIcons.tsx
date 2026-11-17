@@ -249,3 +249,62 @@ export const IconVestSvg: React.FC<IconProps> = ({ className = 'w-3.5 h-3.5' }) 
     <path d="M8.5 12H15.5M8.5 15.5H15.5" stroke="#181c22" strokeWidth="1.5" strokeLinecap="round" />
   </svg>
 );
+
+export const IconCoinSvg: React.FC<IconProps> = ({ className = 'w-4 h-4' }) => (
+  <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+    <circle cx="12" cy="12" r="9.5" fill="#f59e0b" stroke="#fef08a" strokeWidth="1.6" />
+    <circle cx="12" cy="12" r="6.5" stroke="#92400e" strokeWidth="1.3" />
+    <path
+      d="M9.5 8.5H14.5M9.5 12H13.6M9.5 8.5V16"
+      stroke="#78350f"
+      strokeWidth="2.1"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+export const IconVendingSvg: React.FC<IconProps> = ({ className = 'w-5 h-5' }) => (
+  <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+    <rect x="4" y="2.5" width="16" height="19" rx="2" fill="currentColor" />
+    <rect x="6.5" y="5" width="7.5" height="9" rx="1" fill="#0f172a" />
+    <rect x="15.5" y="5" width="2" height="5" rx="0.5" fill="#facc15" />
+    <rect x="6.5" y="16" width="11" height="3" rx="0.8" fill="#0f172a" />
+  </svg>
+);
+
+export const IconVehicleSvg: React.FC<IconProps> = ({ className = 'w-5 h-5' }) => (
+  <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+    <path
+      d="M5 11L7 6.5C7.4 5.6 8.2 5 9.2 5H14.8C15.8 5 16.6 5.6 17 6.5L19 11V17.5C19 18.1 18.5 18.5 17.9 18.5H16.8C16.2 18.5 15.8 18.1 15.8 17.5V16.5H8.2V17.5C8.2 18.1 7.8 18.5 7.2 18.5H6.1C5.5 18.5 5 18.1 5 17.5V11Z"
+      fill="currentColor"
+    />
+    <path d="M7.5 10.5L8.6 7.2H15.4L16.5 10.5H7.5Z" fill="#0f172a" />
+    <circle cx="8" cy="13.5" r="1.2" fill="#fde047" />
+    <circle cx="16" cy="13.5" r="1.2" fill="#fde047" />
+  </svg>
+);
+
+export const RankEmblemSvg: React.FC<{
+  color: string;
+  accent: string;
+  className?: string;
+}> = ({ color, accent, className = 'w-8 h-8' }) => (
+  <svg viewBox="0 0 40 40" fill="none" className={className} aria-hidden="true">
+    <path
+      d="M20 3L34 10V22C34 29.5 27.8 35.4 20 38C12.2 35.4 6 29.5 6 22V10L20 3Z"
+      fill={color}
+      stroke={accent}
+      strokeWidth="2.2"
+    />
+    <path
+      d="M20 8L29 12.8V21.5C29 26.8 25 31.2 20 33.2C15 31.2 11 26.8 11 21.5V12.8L20 8Z"
+      fill="#11161d"
+      fillOpacity="0.65"
+    />
+    <path
+      d="M20 11.5L22.5 17L28.5 17.6L23.8 21.5L25.3 27.3L20 24.1L14.7 27.3L16.2 21.5L11.5 17.6L17.5 17L20 11.5Z"
+      fill={accent}
+    />
+  </svg>
+);

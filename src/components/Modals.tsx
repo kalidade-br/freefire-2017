@@ -6,8 +6,10 @@ import {
   ControlMode,
   GameSettings,
   GraphicsQuality,
+  WEAPONS,
 } from '../game/types';
 import { DEFAULT_SETTINGS } from '../game/storage';
+import { WeaponIcon } from './WeaponIcon';
 
 interface CharacterModalProps {
   config: CharacterConfig;
@@ -580,3 +582,107 @@ export const CreditsModal: React.FC<{ onClose: () => void }> = ({ onClose }) => 
     </div>
   </div>
 );
+
+export const ArsenalModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const weaponsList = Object.values(WEAPONS);
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-3 sm:p-4 text-white"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-2xl bg-[#14181e] border-2 border-amber-500 shadow-2xl flex flex-col max-h-[86vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 bg-[#1d232c] border-b border-neutral-700">
+          <h2 className="font-black text-sm tracking-widest uppercase text-amber-400">
+            COFRE DE ARMAS · ARSENAL DA ILHA
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 hover:bg-neutral-700 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-2.5 overflow-y-auto flex-1">
+          {weaponsList.map((w) => {
+            const dmgPct = Math.min(100, Math.round((w.damage / 155) * 100));
+            const rngPct = Math.min(100, Math.round((w.range / 390) * 100));
+            const rpm = Math.round(60000 / w.fireRateMs);
+            const rofPct = Math.min(100, Math.round((rpm / 780) * 100));
+            return (
+              <div
+                key={w.id}
+                className="bg-[#181e27] border border-neutral-700 p-3 flex flex-col sm:flex-row items-center gap-3"
+              >
+                <div className="w-32 h-14 bg-black/55 border border-white/10 flex items-center justify-center p-1.5 shrink-0">
+                  <WeaponIcon weaponId={w.id} className="w-28 h-10" />
+                </div>
+                <div className="flex-1 w-full space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-black text-xs uppercase text-white">
+                      {w.name}
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[10px] font-mono">
+                      <span className="px-1.5 py-0.5 bg-amber-500/20 border border-amber-400/40 text-amber-300 font-bold">
+                        {w.category}
+                      </span>
+                      <span className="px-1.5 py-0.5 bg-black/60 border border-white/15 text-neutral-300">
+                        PENTE {w.magSize}
+                      </span>
+                      <span className="px-1.5 py-0.5 bg-black/60 border border-white/15 text-neutral-300">
+                        RECARGA {w.reloadTimeSec.toFixed(2)}s
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-[10px] font-mono">
+                    <div>
+                      <div className="flex justify-between text-neutral-400 mb-0.5">
+                        <span>DANO</span>
+                        <span className="text-amber-300 font-bold">{w.damage * w.pellets}</span>
+                      </div>
+                      <div className="h-1.5 bg-neutral-800">
+                        <div className="h-full bg-amber-400" style={{ width: `${dmgPct}%` }} />
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex justify-between text-neutral-400 mb-0.5">
+                        <span>ALCANCE</span>
+                        <span className="text-sky-300 font-bold">{w.range}m</span>
+                      </div>
+                      <div className="h-1.5 bg-neutral-800">
+                        <div className="h-full bg-sky-400" style={{ width: `${rngPct}%` }} />
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex justify-between text-neutral-400 mb-0.5">
+                        <span>CADÊNCIA</span>
+                        <span className="text-emerald-300 font-bold">{rpm} RPM</span>
+                      </div>
+                      <div className="h-1.5 bg-neutral-800">
+                        <div className="h-full bg-emerald-400" style={{ width: `${rofPct}%` }} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="px-4 py-3 bg-[#1d232c] border-t border-neutral-700 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-6 py-2 bg-amber-500 hover:bg-amber-400 text-black font-black text-xs uppercase tracking-widest cursor-pointer"
+          >
+            FECHAR
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};

@@ -8,6 +8,7 @@ import {
   MinimapRoad,
   PoiMarker,
   ScopeType,
+  VehicleKind,
   WalkablePlatform,
   WeaponId,
   WorldObbCollider,
@@ -54,12 +55,17 @@ export interface TargetDummy {
   weaponId: WeaponId;
   medkits: number;
   healTimer: number;
+  gloos: number;
+  glooCooldown: number;
+  revivingMateId: string | null;
+  reviveTimer: number;
+  huntTimer: number;
   airState: 'inPlane' | 'skydiving' | 'parachuting' | 'ground';
   dropProgress: number;
   landX: number;
   landZ: number;
   vy: number;
-  aiState: 'roam' | 'loot' | 'combat' | 'heal';
+  aiState: 'roam' | 'loot' | 'combat' | 'heal' | 'revive';
   goalX: number;
   goalZ: number;
   aiTimer: number;
@@ -82,6 +88,63 @@ export interface LootVisual {
   isDynamic?: boolean;
 }
 
+export interface ExplosiveBarrel {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  exploded: boolean;
+  instanceIdx: number;
+}
+
+export interface LaunchPadProp {
+  x: number;
+  y: number;
+  z: number;
+  dirX: number;
+  dirY: number;
+  dirZ: number;
+  label: string;
+}
+
+export interface VendingMachineProp {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  label: string;
+}
+
+export interface VehicleEntity {
+  id: string;
+  kind: VehicleKind;
+  name: string;
+  group: THREE.Group;
+  chassisGroup: THREE.Group;
+  burnedGroup: THREE.Group;
+  steerFL: THREE.Group;
+  steerFR: THREE.Group;
+  wheelFL: THREE.Mesh;
+  wheelFR: THREE.Mesh;
+  wheelRL: THREE.Mesh;
+  wheelRR: THREE.Mesh;
+  smokeMeshes: THREE.Mesh[];
+  collider: WorldObbCollider;
+  spawnX: number;
+  spawnZ: number;
+  spawnRotY: number;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  speed: number;
+  hp: number;
+  maxHp: number;
+  destroyed: boolean;
+  driverIsPlayer: boolean;
+  passengerIds: string[];
+}
+
 export interface WorldHandle {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
@@ -97,6 +160,13 @@ export interface WorldHandle {
   pois: PoiMarker[];
   targets: TargetDummy[];
   loots: LootVisual[];
+  explosiveBarrels: ExplosiveBarrel[];
+  launchPads: LaunchPadProp[];
+  vendingMachines: VendingMachineProp[];
+  vehicles: VehicleEntity[];
+  hideExplosiveBarrel: (idx: number) => void;
+  resetExplosiveBarrels: () => void;
+  resetVehicles: () => void;
   groundHeightAt: (x: number, z: number) => number;
   spawnDroppedLoot: (item: Omit<LootItem, 'id' | 'collected'>) => void;
   clearDroppedLoots: () => void;
@@ -111,15 +181,20 @@ export interface WorldHandle {
 }
 
 export const POIS: PoiMarker[] = [
-  { name: 'VILA CENTRAL', x: 0, z: -45, radius: 58 },
-  { name: 'GALPÕES LESTE', x: 225, z: -45, radius: 55 },
-  { name: 'PORTO CONTÊINER', x: -235, z: 205, radius: 56 },
-  { name: 'OBSERVATÓRIO NORTE', x: 135, z: -245, radius: 48 },
-  { name: 'FAZENDA SUL', x: 195, z: 220, radius: 55 },
-  { name: 'POSTO DE ESPERA', x: -215, z: -205, radius: 58 },
-  { name: 'CIDADE DO VALE', x: -260, z: 22, radius: 56 },
-  { name: 'BASE MILITAR SUL', x: -20, z: 290, radius: 58 },
-  { name: 'COLINA DO FAROL', x: 285, z: 115, radius: 48 },
+  { name: 'CLOCK TOWER', x: 0, z: -65, radius: 58 },
+  { name: 'PEAK', x: 118, z: -145, radius: 52 },
+  { name: 'BIMASAKTI STRIP', x: -5, z: 165, radius: 56 },
+  { name: 'FACTORY', x: -175, z: -105, radius: 58 },
+  { name: 'MILL LESTE', x: 255, z: -75, radius: 54 },
+  { name: 'OBSERVATÓRIO', x: 135, z: -265, radius: 46 },
+  { name: 'POCHINOK', x: 165, z: 225, radius: 56 },
+  { name: 'SHIPYARD PORTO', x: -245, z: 215, radius: 56 },
+  { name: 'KOTA TUA', x: -275, z: 22, radius: 56 },
+  { name: 'MARS ELECTRIC', x: -25, z: 305, radius: 58 },
+  { name: 'CAPETOWN', x: 305, z: 115, radius: 48 },
+  { name: 'PISTA DE ESPERA', x: -215, z: -230, radius: 54 },
+  { name: 'HANGAR NORTE', x: -105, z: -255, radius: 46 },
+  { name: 'RIM NAM VILA', x: -330, z: 120, radius: 46 },
   { name: 'PONTE VELHA', x: 0, z: 52, radius: 28 },
   { name: 'PONTE LESTE', x: 195, z: 85.4, radius: 26 },
   { name: 'PONTE OESTE', x: -185, z: 18.5, radius: 26 },
@@ -136,15 +211,20 @@ const BRIDGE_BANKS = [
 ];
 
 const COMPOUNDS = [
-  { x: 0, z: -45, r: 48, targetH: 3.3 }, // Vila Central
-  { x: 225, z: -45, r: 45, targetH: 3.5 }, // Galpões Leste
-  { x: -235, z: 205, r: 46, targetH: 2.1 }, // Porto Contêiner
-  { x: 135, z: -245, r: 36, targetH: 12.2 }, // Observatório Norte (hilltop)
-  { x: 195, z: 220, r: 45, targetH: 3.7 }, // Fazenda Sul
-  { x: -215, z: -205, r: 52, targetH: 3.1 }, // Posto de Espera / Pista
-  { x: -260, z: 22, r: 46, targetH: 3.4 }, // Cidade do Vale
-  { x: -20, z: 290, r: 48, targetH: 3.8 }, // Base Militar Sul
-  { x: 285, z: 115, r: 34, targetH: 9.8 }, // Colina do Farol
+  { x: 0, z: -65, r: 50, targetH: 3.4 }, // Clock Tower
+  { x: 118, z: -145, r: 42, targetH: 10.6 }, // Peak (high hilltop)
+  { x: -5, z: 165, r: 48, targetH: 3.5 }, // Bimasakti Strip
+  { x: -175, z: -105, r: 46, targetH: 3.4 }, // Factory
+  { x: 255, z: -75, r: 44, targetH: 4.2 }, // Mill Leste
+  { x: 135, z: -265, r: 36, targetH: 12.2 }, // Observatório
+  { x: 165, z: 225, r: 48, targetH: 3.7 }, // Pochinok
+  { x: -245, z: 215, r: 46, targetH: 2.1 }, // Shipyard Porto
+  { x: -275, z: 22, r: 46, targetH: 3.4 }, // Kota Tua
+  { x: -25, z: 305, r: 48, targetH: 3.8 }, // Mars Electric
+  { x: 305, z: 115, r: 36, targetH: 8.8 }, // Capetown
+  { x: -215, z: -230, r: 48, targetH: 3.1 }, // Pista de Espera
+  { x: -105, z: -255, r: 38, targetH: 3.6 }, // Hangar Norte
+  { x: -330, z: 120, r: 36, targetH: 2.4 }, // Rim Nam Vila
 ];
 
 export function sampleGroundHeight(x: number, z: number): number {
@@ -253,14 +333,13 @@ function createEnterableHouse(
   const doorW = 1.7;
   const floorH = 0.24;
 
-  // Interior floor & porch slab
+  // Interior floor & porch slab (only 1 mesh + merged walls + merged roof + merged trim = 4 draw calls total!)
   const slab = new THREE.Mesh(
     new THREE.BoxGeometry(w + 0.3, floorH, d + 0.3),
     floorMat,
   );
   slab.position.y = floorH * 0.5;
   slab.receiveShadow = true;
-  slab.castShadow = true;
   group.add(slab);
 
   platforms.push({
@@ -273,27 +352,40 @@ function createEnterableHouse(
     minY: y - 0.5,
   });
 
-  const makeWall = (
+  const wallGeos: THREE.BufferGeometry[] = [];
+  const trimGeos: THREE.BufferGeometry[] = [];
+  const roofGeos: THREE.BufferGeometry[] = [];
+
+  const pushBox = (
+    list: THREE.BufferGeometry[],
     lx: number,
     ly: number,
     lz: number,
     ww: number,
     wh: number,
     wd: number,
-    mat: THREE.Material,
+    rx = 0,
+  ) => {
+    const g = new THREE.BoxGeometry(ww, wh, wd);
+    if (rx !== 0) g.rotateX(rx);
+    g.translate(lx, ly, lz);
+    list.push(g);
+  };
+
+  const addWallBox = (
+    lx: number,
+    ly: number,
+    lz: number,
+    ww: number,
+    wh: number,
+    wd: number,
     registerCollider = true,
     colliderTag = 'house-wall',
   ) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(ww, wh, wd), mat);
-    m.position.set(lx, ly, lz);
-    m.castShadow = true;
-    m.receiveShadow = true;
-    group.add(m);
-    obstacleMeshes.push(m);
+    pushBox(wallGeos, lx, ly, lz, ww, wh, wd);
     if (registerCollider) {
       addLocalObb(colliders, x, y, z, rotY, lx, lz, ww, wd, ly - wh * 0.5, ly + wh * 0.5, colliderTag);
     }
-    return m;
   };
 
   const baseH = floorH + h * 0.5;
@@ -305,82 +397,66 @@ function createEnterableHouse(
   // Back wall (-Z) with vaultable center window
   const backSideLen = Math.max(0.9, (w - winW) * 0.5);
   const backSideOff = winW * 0.5 + backSideLen * 0.5;
-  makeWall(-backSideOff, baseH, -d * 0.5 + wallT * 0.5, backSideLen, h, wallT, wallMat);
-  makeWall(backSideOff, baseH, -d * 0.5 + wallT * 0.5, backSideLen, h, wallT, wallMat);
-  makeWall(0, floorH + sillH * 0.5, -d * 0.5 + wallT * 0.5, winW, sillH, wallT, wallMat, true, 'house-window-sill');
-  makeWall(0, floorH + winOpenTop + headerH * 0.5, -d * 0.5 + wallT * 0.5, winW, headerH, wallT, wallMat, false);
+  addWallBox(-backSideOff, baseH, -d * 0.5 + wallT * 0.5, backSideLen, h, wallT);
+  addWallBox(backSideOff, baseH, -d * 0.5 + wallT * 0.5, backSideLen, h, wallT);
+  addWallBox(0, floorH + sillH * 0.5, -d * 0.5 + wallT * 0.5, winW, sillH, wallT, true, 'house-window-sill');
+  addWallBox(0, floorH + winOpenTop + headerH * 0.5, -d * 0.5 + wallT * 0.5, winW, headerH, wallT, false);
 
-  // Left & Right walls (-X / +X) with real vaultable windows!
+  // Left & Right walls (-X / +X) with real vaultable windows
   const sideWallTotal = d - wallT * 2;
   const wingLen = Math.max(0.75, (sideWallTotal - winW) * 0.5);
   const wingOff = winW * 0.5 + wingLen * 0.5;
   [-1, 1].forEach((sideSign) => {
     const wx = sideSign * (w * 0.5 - wallT * 0.5);
-    makeWall(wx, baseH, -wingOff, wallT, h, wingLen, wallMat);
-    makeWall(wx, baseH, wingOff, wallT, h, wingLen, wallMat);
-    makeWall(wx, floorH + sillH * 0.5, 0, wallT, sillH, winW, wallMat, true, 'house-window-sill');
-    makeWall(wx, floorH + winOpenTop + headerH * 0.5, 0, wallT, headerH, winW, wallMat, false);
-
-    // Window sill wooden ledge highlight
-    const ledge = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.08, winW + 0.1), trimMat);
-    ledge.position.set(wx, floorH + sillH + 0.02, 0);
-    group.add(ledge);
+    addWallBox(wx, baseH, -wingOff, wallT, h, wingLen);
+    addWallBox(wx, baseH, wingOff, wallT, h, wingLen);
+    addWallBox(wx, floorH + sillH * 0.5, 0, wallT, sillH, winW, true, 'house-window-sill');
+    addWallBox(wx, floorH + winOpenTop + headerH * 0.5, 0, wallT, headerH, winW, false);
+    pushBox(trimGeos, wx, floorH + sillH + 0.02, 0, 0.42, 0.08, winW + 0.1);
   });
 
-  // Back window sill wooden ledge highlight
-  const backLedge = new THREE.Mesh(new THREE.BoxGeometry(winW + 0.1, 0.08, 0.42), trimMat);
-  backLedge.position.set(0, floorH + sillH + 0.02, -d * 0.5 + wallT * 0.5);
-  group.add(backLedge);
+  pushBox(trimGeos, 0, floorH + sillH + 0.02, -d * 0.5 + wallT * 0.5, winW + 0.1, 0.08, 0.42);
 
   // Front wall split around open doorway (+Z side)
   const sideSpan = Math.max(0.8, (w - doorW) * 0.5);
   const sideCenter = doorW * 0.5 + sideSpan * 0.5;
-  makeWall(-sideCenter, baseH, d * 0.5 - wallT * 0.5, sideSpan, h, wallT, wallMat);
-  makeWall(sideCenter, baseH, d * 0.5 - wallT * 0.5, sideSpan, h, wallT, wallMat);
-  // Door lintel above doorway (no player collider since above head)
-  makeWall(0, floorH + h - 0.45, d * 0.5 - wallT * 0.5, doorW, 0.9, wallT, wallMat, false);
+  addWallBox(-sideCenter, baseH, d * 0.5 - wallT * 0.5, sideSpan, h, wallT);
+  addWallBox(sideCenter, baseH, d * 0.5 - wallT * 0.5, sideSpan, h, wallT);
+  addWallBox(0, floorH + h - 0.45, d * 0.5 - wallT * 0.5, doorW, 0.9, wallT, false);
 
-  const doorStep = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.14, 0.9), trimMat);
-  doorStep.position.set(0, 0.07, d * 0.5 + 0.45);
-  group.add(doorStep);
-
-  // Interior table/crate cover inside the house
-  const table = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.8, 0.8), trimMat);
-  table.position.set(-w * 0.22, floorH + 0.4, -d * 0.18);
-  table.castShadow = true;
-  table.receiveShadow = true;
-  group.add(table);
+  pushBox(trimGeos, 0, 0.07, d * 0.5 + 0.45, 2.1, 0.14, 0.9);
+  pushBox(trimGeos, -w * 0.22, floorH + 0.4, -d * 0.18, 1.4, 0.8, 0.8);
   addLocalObb(colliders, x, y, z, rotY, -w * 0.22, -d * 0.18, 1.4, 0.8, floorH, floorH + 0.9, 'interior-prop');
 
-  // Pitched prism roof (two sloped eaves + gable fill)
+  // Pitched prism roof (merged into 1 roof draw call!)
   const roofPitch = 0.46;
   const roofSlopeLen = (d * 0.5 + 0.65) / Math.cos(roofPitch);
   const roofY = floorH + h + d * 0.13;
-  const roofL = new THREE.Mesh(
-    new THREE.BoxGeometry(w + 0.8, 0.16, roofSlopeLen),
-    roofMat,
-  );
-  roofL.position.set(0, roofY, -d * 0.25);
-  roofL.rotation.x = -roofPitch;
-  roofL.castShadow = true;
-  roofL.receiveShadow = true;
+  pushBox(roofGeos, 0, roofY, -d * 0.25, w + 0.8, 0.16, roofSlopeLen, -roofPitch);
+  pushBox(roofGeos, 0, roofY, d * 0.25, w + 0.8, 0.16, roofSlopeLen, roofPitch);
+  pushBox(trimGeos, 0, roofY + Math.sin(roofPitch) * roofSlopeLen * 0.48, 0, w + 0.85, 0.2, 0.25);
 
-  const roofR = new THREE.Mesh(
-    new THREE.BoxGeometry(w + 0.8, 0.16, roofSlopeLen),
-    roofMat,
-  );
-  roofR.position.set(0, roofY, d * 0.25);
-  roofR.rotation.x = roofPitch;
-  roofR.castShadow = true;
-  roofR.receiveShadow = true;
+  const wallGeoMerged = mergeGeometries(wallGeos, false);
+  wallGeos.forEach((g) => g.dispose());
+  const wallMesh = new THREE.Mesh(wallGeoMerged, wallMat);
+  wallMesh.castShadow = true;
+  wallMesh.receiveShadow = true;
+  group.add(wallMesh);
+  obstacleMeshes.push(wallMesh);
 
-  const ridgeBeam = new THREE.Mesh(
-    new THREE.BoxGeometry(w + 0.85, 0.2, 0.25),
-    trimMat,
-  );
-  ridgeBeam.position.set(0, roofY + Math.sin(roofPitch) * roofSlopeLen * 0.48, 0);
-  group.add(roofL, roofR, ridgeBeam);
-  obstacleMeshes.push(roofL, roofR);
+  const trimGeoMerged = mergeGeometries(trimGeos, false);
+  trimGeos.forEach((g) => g.dispose());
+  const trimMesh = new THREE.Mesh(trimGeoMerged, trimMat);
+  trimMesh.receiveShadow = true;
+  group.add(trimMesh);
+
+  const roofGeoMerged = mergeGeometries(roofGeos, false);
+  roofGeos.forEach((g) => g.dispose());
+  const roofMesh = new THREE.Mesh(roofGeoMerged, roofMat);
+  roofMesh.castShadow = true;
+  roofMesh.receiveShadow = true;
+  group.add(roofMesh);
+  obstacleMeshes.push(roofMesh);
 
   return group;
 }
@@ -648,85 +724,303 @@ function createWatchTowerLOD(
   return lod;
 }
 
-function createJeepProp(
+function createVendingMachineProp(
+  id: string,
   x: number,
   z: number,
   rotY: number,
+  label: string,
   colliders: WorldObbCollider[],
   obstacleMeshes: THREE.Object3D[],
-): THREE.Group {
+): { group: THREE.Group; data: VendingMachineProp } {
   const group = new THREE.Group();
   const y = sampleGroundHeight(x, z);
   group.position.set(x, y, z);
   group.rotation.y = rotY;
 
-  const oliveMat = new THREE.MeshStandardMaterial({
-    color: 0x4b5336,
-    roughness: 0.72,
-    metalness: 0.25,
+  const cabinetMat = new THREE.MeshStandardMaterial({
+    color: 0x162231,
+    roughness: 0.45,
+    metalness: 0.55,
   });
-  const tireMat = new THREE.MeshStandardMaterial({
-    color: 0x1b1c1f,
-    roughness: 0.9,
-    metalness: 0.05,
+  const trimMat = new THREE.MeshStandardMaterial({
+    color: 0xf59e0b,
+    roughness: 0.35,
+    metalness: 0.4,
+    emissive: 0xd97706,
+    emissiveIntensity: 0.25,
   });
-  const glassMat = new THREE.MeshStandardMaterial({
-    color: 0x6b8496,
+  const screenMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdf8,
+    emissive: 0x0ea5e9,
+    emissiveIntensity: 0.78,
     roughness: 0.2,
-    metalness: 0.6,
+    metalness: 0.1,
   });
 
-  const chassis = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.75, 3.8), oliveMat);
-  chassis.position.y = 0.78;
-  chassis.castShadow = true;
-  chassis.receiveShadow = true;
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.35, 2.3, 0.95), cabinetMat);
+  body.position.y = 1.15;
+  body.castShadow = true;
+  body.receiveShadow = true;
 
-  const hood = new THREE.Mesh(new THREE.BoxGeometry(1.75, 0.45, 1.3), oliveMat);
-  hood.position.set(0, 1.05, 1.15);
-  hood.castShadow = true;
+  const screen = new THREE.Mesh(new THREE.BoxGeometry(0.96, 1.02, 0.08), screenMat);
+  screen.position.set(0, 1.38, 0.47);
 
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.78, 0.85, 2.0), oliveMat);
-  cabin.position.set(0, 1.52, -0.55);
-  cabin.castShadow = true;
+  const marquee = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.3, 1.02), trimMat);
+  marquee.position.set(0, 2.38, 0);
 
-  const windshield = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.55, 0.08), glassMat);
-  windshield.position.set(0, 1.55, 0.44);
-  windshield.rotation.x = -0.18;
+  const pillarL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.25, 1.0), trimMat);
+  pillarL.position.set(-0.66, 1.13, 0);
+  const pillarR = pillarL.clone();
+  pillarR.position.set(0.66, 1.13, 0);
 
-  group.add(chassis, hood, cabin, windshield);
-  obstacleMeshes.push(chassis, cabin);
+  const tray = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.34, 0.16), trimMat);
+  tray.position.set(0, 0.46, 0.46);
 
-  const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.3, 10);
-  wheelGeo.rotateZ(Math.PI / 2);
-  [
-    [-0.98, 0.42, 1.2],
-    [0.98, 0.42, 1.2],
-    [-0.98, 0.42, -1.2],
-    [0.98, 0.42, -1.2],
-  ].forEach(([wx, wy, wz]) => {
-    const wheel = new THREE.Mesh(wheelGeo, tireMat);
-    wheel.position.set(wx, wy, wz);
-    wheel.castShadow = true;
-    group.add(wheel);
-  });
-
-  const spare = new THREE.Mesh(wheelGeo, tireMat);
-  spare.rotation.y = Math.PI / 2;
-  spare.position.set(0, 0.95, -1.98);
-  group.add(spare);
+  group.add(body, screen, marquee, pillarL, pillarR, tray);
+  obstacleMeshes.push(body);
 
   colliders.push({
     cx: x,
     cz: z,
-    halfW: 1.05,
-    halfD: 2.0,
+    halfW: 0.72,
+    halfD: 0.52,
     rotY,
     minY: y,
-    maxY: y + 2.1,
-    tag: 'jeep',
+    maxY: y + 2.5,
+    tag: `vending-${id}`,
   });
 
-  return group;
+  return {
+    group,
+    data: { id, x, y, z, label },
+  };
+}
+
+function createDrivableVehicle(
+  id: string,
+  kind: VehicleKind,
+  x: number,
+  z: number,
+  rotY: number,
+  colliders: WorldObbCollider[],
+  obstacleMeshes: THREE.Object3D[],
+): VehicleEntity {
+  const isSports = kind === 'sport';
+  const maxHp = isSports ? 420 : 620;
+  const y = sampleGroundHeight(x, z);
+
+  const group = new THREE.Group();
+  group.position.set(x, y, z);
+  group.rotation.y = rotY;
+
+  const chassisGroup = new THREE.Group();
+  group.add(chassisGroup);
+
+  const bodyColor = isSports ? 0x2563eb : 0x4b5336;
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: bodyColor,
+    roughness: isSports ? 0.32 : 0.68,
+    metalness: isSports ? 0.58 : 0.25,
+  });
+  const accentMat = new THREE.MeshStandardMaterial({
+    color: isSports ? 0x111827 : 0x2b3022,
+    roughness: 0.55,
+    metalness: 0.45,
+  });
+  const tireMat = new THREE.MeshStandardMaterial({
+    color: 0x18191d,
+    roughness: 0.88,
+    metalness: 0.08,
+  });
+  const rimMat = new THREE.MeshStandardMaterial({
+    color: 0xcbd5e1,
+    roughness: 0.3,
+    metalness: 0.75,
+  });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x7dd3fc,
+    roughness: 0.16,
+    metalness: 0.65,
+    transparent: true,
+    opacity: 0.72,
+  });
+  const headLightMat = new THREE.MeshStandardMaterial({
+    color: 0xfef08a,
+    emissive: 0xfacc15,
+    emissiveIntensity: 0.6,
+  });
+
+  const hull = new THREE.Mesh(
+    new THREE.BoxGeometry(isSports ? 1.98 : 1.96, isSports ? 0.62 : 0.74, isSports ? 4.1 : 3.9),
+    bodyMat,
+  );
+  hull.position.y = isSports ? 0.64 : 0.78;
+  hull.castShadow = true;
+  hull.receiveShadow = true;
+  hull.userData.vehicleId = id;
+
+  const hood = new THREE.Mesh(
+    new THREE.BoxGeometry(isSports ? 1.82 : 1.76, isSports ? 0.36 : 0.44, isSports ? 1.45 : 1.3),
+    bodyMat,
+  );
+  hood.position.set(0, isSports ? 0.84 : 1.05, isSports ? 1.2 : 1.15);
+  hood.castShadow = true;
+  hood.userData.vehicleId = id;
+
+  const cabin = new THREE.Mesh(
+    new THREE.BoxGeometry(isSports ? 1.72 : 1.82, isSports ? 0.62 : 0.84, isSports ? 1.75 : 2.0),
+    isSports ? accentMat : bodyMat,
+  );
+  cabin.position.set(0, isSports ? 1.2 : 1.52, isSports ? -0.35 : -0.52);
+  cabin.castShadow = true;
+  cabin.userData.vehicleId = id;
+
+  const windshield = new THREE.Mesh(
+    new THREE.BoxGeometry(1.56, isSports ? 0.45 : 0.55, 0.08),
+    glassMat,
+  );
+  windshield.position.set(0, isSports ? 1.22 : 1.54, isSports ? 0.54 : 0.46);
+  windshield.rotation.x = isSports ? -0.35 : -0.18;
+
+  const bumperF = new THREE.Mesh(new THREE.BoxGeometry(1.94, 0.24, 0.22), accentMat);
+  bumperF.position.set(0, 0.45, isSports ? 2.08 : 1.98);
+  const bumperR = bumperF.clone();
+  bumperR.position.set(0, 0.48, isSports ? -2.08 : -1.98);
+
+  const hlL = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.08), headLightMat);
+  hlL.position.set(-0.68, isSports ? 0.72 : 0.86, isSports ? 2.06 : 1.96);
+  const hlR = hlL.clone();
+  hlR.position.x = 0.68;
+
+  chassisGroup.add(hull, hood, cabin, windshield, bumperF, bumperR, hlL, hlR);
+
+  if (isSports) {
+    const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.86, 0.1, 0.34), accentMat);
+    spoiler.position.set(0, 1.28, -1.86);
+    chassisGroup.add(spoiler);
+  } else {
+    const spareTire = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 0.24, 10), tireMat);
+    spareTire.rotation.x = Math.PI / 2;
+    spareTire.position.set(0, 0.96, -2.02);
+    chassisGroup.add(spareTire);
+  }
+
+  obstacleMeshes.push(hull, cabin);
+
+  // Wheels + Front Steering Pivots
+  const wheelRadius = isSports ? 0.36 : 0.42;
+  const wheelGeo = new THREE.CylinderGeometry(wheelRadius, wheelRadius, 0.3, 12);
+  wheelGeo.rotateZ(Math.PI / 2);
+  const hubGeo = new THREE.CylinderGeometry(wheelRadius * 0.52, wheelRadius * 0.52, 0.32, 8);
+  hubGeo.rotateZ(Math.PI / 2);
+
+  const buildWheelMesh = () => {
+    const wMesh = new THREE.Mesh(wheelGeo, tireMat);
+    wMesh.castShadow = true;
+    const hub = new THREE.Mesh(hubGeo, rimMat);
+    wMesh.add(hub);
+    return wMesh;
+  };
+
+  const frontZ = isSports ? 1.26 : 1.2;
+  const rearZ = isSports ? -1.26 : -1.2;
+  const trackX = 0.99;
+
+  const steerFL = new THREE.Group();
+  steerFL.position.set(-trackX, wheelRadius, frontZ);
+  const wheelFL = buildWheelMesh();
+  steerFL.add(wheelFL);
+
+  const steerFR = new THREE.Group();
+  steerFR.position.set(trackX, wheelRadius, frontZ);
+  const wheelFR = buildWheelMesh();
+  steerFR.add(wheelFR);
+
+  const wheelRL = buildWheelMesh();
+  wheelRL.position.set(-trackX, wheelRadius, rearZ);
+
+  const wheelRR = buildWheelMesh();
+  wheelRR.position.set(trackX, wheelRadius, rearZ);
+
+  chassisGroup.add(steerFL, steerFR, wheelRL, wheelRR);
+
+  // Smoke & flame puff spheres over engine hood (<35% HP)
+  const smokeMeshes: THREE.Mesh[] = [];
+  const smokeGeo = new THREE.SphereGeometry(0.42, 8, 6);
+  for (let s = 0; s < 3; s++) {
+    const sMat = new THREE.MeshBasicMaterial({
+      color: s === 0 ? 0xf97316 : 0x262626,
+      transparent: true,
+      opacity: 0.72,
+    });
+    const sm = new THREE.Mesh(smokeGeo, sMat);
+    sm.position.set((s - 1) * 0.25, 1.35 + s * 0.42, 1.25);
+    sm.visible = false;
+    chassisGroup.add(sm);
+    smokeMeshes.push(sm);
+  }
+
+  // Charred Wreck shown on 0 HP destruction
+  const burnedGroup = new THREE.Group();
+  burnedGroup.visible = false;
+  const charMat = new THREE.MeshStandardMaterial({
+    color: 0x18181b,
+    roughness: 0.95,
+    metalness: 0.15,
+  });
+  const wreckedHull = new THREE.Mesh(new THREE.BoxGeometry(1.94, 0.72, 3.85), charMat);
+  wreckedHull.position.y = 0.45;
+  wreckedHull.rotation.z = 0.04;
+  wreckedHull.userData.vehicleId = id;
+  const wreckedCab = new THREE.Mesh(new THREE.BoxGeometry(1.74, 0.65, 1.85), charMat);
+  wreckedCab.position.set(0, 1.02, -0.45);
+  wreckedCab.rotation.z = -0.05;
+  wreckedCab.userData.vehicleId = id;
+  burnedGroup.add(wreckedHull, wreckedCab);
+  group.add(burnedGroup);
+
+  const collider: WorldObbCollider = {
+    cx: x,
+    cz: z,
+    halfW: 1.05,
+    halfD: isSports ? 2.08 : 2.0,
+    rotY,
+    minY: y,
+    maxY: y + 2.05,
+    tag: `vehicle-${id}`,
+  };
+  colliders.push(collider);
+
+  return {
+    id,
+    kind,
+    name: isSports ? 'Esportivo Turbo' : 'Jipe Militar',
+    group,
+    chassisGroup,
+    burnedGroup,
+    steerFL,
+    steerFR,
+    wheelFL,
+    wheelFR,
+    wheelRL,
+    wheelRR,
+    smokeMeshes,
+    collider,
+    spawnX: x,
+    spawnZ: z,
+    spawnRotY: rotY,
+    x,
+    y,
+    z,
+    yaw: rotY,
+    speed: 0,
+    hp: maxHp,
+    maxHp,
+    destroyed: false,
+    driverIsPlayer: false,
+    passengerIds: [],
+  };
 }
 
 const BOT_SHIRT_PALETTE = [
@@ -910,8 +1204,13 @@ function createBotEntity(
     helmetMaxHp,
     helmetMesh,
     weaponId,
-    medkits: 1,
+    medkits: 2,
     healTimer: 0,
+    gloos: 2,
+    glooCooldown: 0,
+    revivingMateId: null,
+    reviveTimer: 0,
+    huntTimer: 1 + (idx % 4) * 0.6,
     airState: 'ground',
     dropProgress: 0.1 + (idx / 50) * 0.78,
     landX: x,
@@ -924,7 +1223,7 @@ function createBotEntity(
     fireCooldown: 0.6 + (idx % 4) * 0.2,
     targetId: null,
     walkPhase: idx * 0.7,
-    moveSpeed: 4.4 + (idx % 3) * 0.6,
+    moveSpeed: 4.8 + (idx % 3) * 0.55,
     patrolOriginX: x,
     patrolOriginZ: z,
     patrolAxisX: 0,
@@ -1128,28 +1427,38 @@ export function createIslandWorld(
   }> = [];
 
   const roads: MinimapRoad[] = [
-    // Main North-South Paved Highway across Ponte Velha
-    { x1: 0, z1: -275, x2: 0, z2: 290, width: 8.0, kind: 'asphalt' },
-    // Crossroad Posto de Espera (NW) -> Vila Central -> Galpões Leste
-    { x1: -215, z1: -205, x2: 0, z2: -45, width: 6.4, kind: 'dirt' },
-    { x1: 0, z1: -45, x2: 225, z2: -45, width: 7.2, kind: 'asphalt' },
-    // East route across Ponte Leste -> Fazenda Sul & Colina do Farol
-    { x1: 225, z1: -45, x2: 195, z2: 85, width: 6.4, kind: 'dirt' },
-    { x1: 195, z1: 85, x2: 195, z2: 220, width: 6.4, kind: 'dirt' },
-    { x1: 195, z1: 85, x2: 285, z2: 115, width: 5.5, kind: 'dirt' },
-    // South Highway across Base Militar Sul -> Fazenda Sul & Porto Contêiner
-    { x1: -20, z1: 290, x2: 195, z2: 220, width: 6.2, kind: 'dirt' },
-    { x1: -20, z1: 290, x2: -235, z2: 205, width: 6.8, kind: 'asphalt' },
-    // West route Posto de Espera -> Cidade do Vale -> Ponte Oeste -> Porto Contêiner
-    { x1: -215, z1: -205, x2: -260, z2: 22, width: 6.0, kind: 'dirt' },
-    { x1: -260, z1: 22, x2: -185, z2: 19, width: 6.4, kind: 'asphalt' },
-    { x1: -185, z1: 19, x2: -235, z2: 205, width: 6.0, kind: 'dirt' },
-    // Observatório Norte
-    { x1: 0, z1: -45, x2: 135, z2: -245, width: 5.8, kind: 'dirt' },
+    // Main North-South Paved Highway (Clock Tower -> Ponte Velha -> Bimasakti Strip -> Mars Electric)
+    { x1: 0, z1: -275, x2: 0, z2: 36, width: 8.4, kind: 'asphalt' },
+    { x1: 0, z1: 68, x2: -5, z2: 165, width: 8.4, kind: 'asphalt' },
+    { x1: -5, z1: 165, x2: -25, z2: 305, width: 8.0, kind: 'asphalt' },
+    // West Highway Ring (Pista de Espera -> Factory -> Kota Tua -> Ponte Oeste -> Rim Nam -> Shipyard)
+    { x1: -215, z1: -230, x2: -175, z2: -105, width: 7.2, kind: 'asphalt' },
+    { x1: -175, z1: -105, x2: -275, z2: 22, width: 7.2, kind: 'asphalt' },
+    { x1: -275, z1: 22, x2: -185, z2: 4, width: 7.2, kind: 'asphalt' },
+    { x1: -185, z1: 35, x2: -245, z2: 215, width: 7.2, kind: 'asphalt' },
+    { x1: -275, z1: 22, x2: -330, z2: 120, width: 5.8, kind: 'dirt' },
+    { x1: -330, z1: 120, x2: -245, z2: 215, width: 5.8, kind: 'dirt' },
+    // Cross-island West-to-Center & East-to-Center links
+    { x1: -175, z1: -105, x2: 0, z2: -65, width: 7.2, kind: 'asphalt' },
+    { x1: 0, z1: -65, x2: 255, z2: -75, width: 7.4, kind: 'asphalt' },
+    // North Ring (Hangar Norte <-> Observatório <-> Peak <-> Clock Tower)
+    { x1: -215, z1: -230, x2: -105, z2: -255, width: 6.4, kind: 'dirt' },
+    { x1: -105, z1: -255, x2: 135, z2: -265, width: 6.4, kind: 'dirt' },
+    { x1: 135, z1: -265, x2: 118, z2: -145, width: 6.2, kind: 'dirt' },
+    { x1: 118, z1: -145, x2: 0, z2: -65, width: 6.6, kind: 'dirt' },
+    { x1: 118, z1: -145, x2: 255, z2: -75, width: 6.2, kind: 'dirt' },
+    // East Highway across Ponte Leste -> Capetown & Pochinok
+    { x1: 255, z1: -75, x2: 195, z2: 69, width: 7.0, kind: 'asphalt' },
+    { x1: 195, z1: 101, x2: 165, z2: 225, width: 7.0, kind: 'asphalt' },
+    { x1: 195, z1: 101, x2: 305, z2: 115, width: 6.0, kind: 'dirt' },
+    // Southern Ring (Shipyard <-> Mars Electric <-> Bimasakti <-> Pochinok)
+    { x1: -245, z1: 215, x2: -25, z2: 305, width: 7.2, kind: 'asphalt' },
+    { x1: -25, z1: 305, x2: 165, z2: 225, width: 6.8, kind: 'asphalt' },
+    { x1: -5, z1: 165, x2: 165, z2: 225, width: 6.4, kind: 'dirt' },
   ];
 
-  // 1. Large 1180m x 1180m Terrain Mesh (128x128 segments -> smooth rounded hills with fast vertex throughput)
-  const terrainGeo = new THREE.PlaneGeometry(1180, 1180, 128, 128);
+  // 1. Large 1180m x 1180m Terrain Mesh (112x112 smooth rounded relief with crisp performance)
+  const terrainGeo = new THREE.PlaneGeometry(1180, 1180, 112, 112);
   terrainGeo.rotateX(-Math.PI / 2);
   const posAttr = terrainGeo.attributes.position;
   const colors = new Float32Array(posAttr.count * 3);
@@ -1214,8 +1523,8 @@ export function createIslandWorld(
     roughness: 0.95,
     flatShading: false,
   });
-  const mountainGeo = new THREE.SphereGeometry(86, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55);
-  const mountainCount = 40;
+  const mountainGeo = new THREE.SphereGeometry(86, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.55);
+  const mountainCount = 32;
   const mountains = new THREE.InstancedMesh(mountainGeo, mountainMat, mountainCount);
   const dummy = new THREE.Object3D();
   for (let i = 0; i < mountainCount; i++) {
@@ -1231,7 +1540,7 @@ export function createIslandWorld(
   mountains.computeBoundingSphere();
   scene.add(mountains);
 
-  // 4. Dirt & Asphalt Road Segments conforming to terrain
+  // 4. Seamless Terrain-Conforming Continuous Ribbon Roads (merged into 2 total draw calls!)
   const dirtRoadMat = new THREE.MeshStandardMaterial({
     map: textures.dirtRoad,
     roughness: 0.92,
@@ -1249,32 +1558,85 @@ export function createIslandWorld(
   });
   applyDistanceTextureLod(asphaltRoadMat, [0.3, 0.32, 0.34]);
 
-  roads.forEach((r) => {
+  const buildRoadStripGeo = (r: MinimapRoad): THREE.BufferGeometry | null => {
     const dx = r.x2 - r.x1;
     const dz = r.z2 - r.z1;
     const len = Math.hypot(dx, dz);
-    const steps = Math.ceil(len / 9);
-    const segLen = len / steps;
-    const yaw = Math.atan2(dx, dz);
-    const mat = r.kind === 'asphalt' ? asphaltRoadMat : dirtRoadMat;
+    if (len < 1) return null;
+    const steps = Math.max(4, Math.ceil(len / 7.5));
+    const nx = -dz / len;
+    const nz = dx / len;
+    const hw = r.width * 0.5;
 
-    for (let s = 0; s < steps; s++) {
-      const t = (s + 0.5) / steps;
-      const rx = r.x1 + dx * t;
-      const rz = r.z1 + dz * t;
-      const ry = sampleGroundHeight(rx, rz);
-      if (ry < 0.15) continue;
-      const seg = new THREE.Mesh(
-        new THREE.PlaneGeometry(r.width, segLen + 0.65),
-        mat,
-      );
-      seg.rotation.x = -Math.PI / 2;
-      seg.rotation.z = -yaw;
-      seg.position.set(rx, ry + 0.05, rz);
-      seg.receiveShadow = true;
-      scene.add(seg);
+    const verts: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
+    let prevValid = false;
+
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const cx = r.x1 + dx * t;
+      const cz = r.z1 + dz * t;
+      const lx = cx - nx * hw;
+      const lz = cz - nz * hw;
+      const rx = cx + nx * hw;
+      const rz = cz + nz * hw;
+      const hC = sampleGroundHeight(cx, cz);
+      const hL = sampleGroundHeight(lx, lz);
+      const hR = sampleGroundHeight(rx, rz);
+      const riverDist = Math.abs(cz - riverCenterZ(cx));
+
+      // Clip ribbon cleanly when dipping into river water outside bridge decks
+      if (hC < 0.4 && riverDist < 14) {
+        prevValid = false;
+        continue;
+      }
+
+      const vBase = verts.length / 3;
+      verts.push(lx, Math.max(hL, hC) + 0.08, lz);
+      verts.push(rx, Math.max(hR, hC) + 0.08, rz);
+      const vCoord = (t * len) / 6;
+      uvs.push(0, vCoord, 1, vCoord);
+
+      if (prevValid) {
+        const p0 = vBase - 2;
+        const p1 = vBase - 1;
+        const p2 = vBase;
+        const p3 = vBase + 1;
+        indices.push(p0, p2, p1, p1, p2, p3);
+      }
+      prevValid = true;
     }
+
+    if (indices.length === 0) return null;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    return geo;
+  };
+
+  const asphaltGeos: THREE.BufferGeometry[] = [];
+  const dirtGeos: THREE.BufferGeometry[] = [];
+  roads.forEach((r) => {
+    const g = buildRoadStripGeo(r);
+    if (!g) return;
+    if (r.kind === 'asphalt') asphaltGeos.push(g);
+    else dirtGeos.push(g);
   });
+  if (asphaltGeos.length > 0) {
+    const mAsphalt = new THREE.Mesh(mergeGeometries(asphaltGeos, false), asphaltRoadMat);
+    mAsphalt.receiveShadow = true;
+    scene.add(mAsphalt);
+    asphaltGeos.forEach((g) => g.dispose());
+  }
+  if (dirtGeos.length > 0) {
+    const mDirt = new THREE.Mesh(mergeGeometries(dirtGeos, false), dirtRoadMat);
+    mDirt.receiveShadow = true;
+    scene.add(mDirt);
+    dirtGeos.forEach((g) => g.dispose());
+  }
 
   // Shared Architectural Materials (with distance texture LOD)
   const stuccoWallMat = new THREE.MeshStandardMaterial({
@@ -1326,7 +1688,7 @@ export function createIslandWorld(
   });
   applyDistanceTextureLod(rustContainerMat, [0.48, 0.25, 0.16]);
 
-  // 5. Bridges over the River (3 crossings)
+  // 5. Bridges over the River (3 crossings aligned seamlessly with highways)
   const ponteVelhaZ = riverCenterZ(0);
   scene.add(
     createBridge(0, ponteVelhaZ, 9.6, 36, 2.75, 0, concreteMat, concreteMat, colliders, platforms, obstacleMeshes),
@@ -1338,45 +1700,146 @@ export function createIslandWorld(
 
   const ponteLesteZ = riverCenterZ(195);
   scene.add(
-    createBridge(195, ponteLesteZ, 7.8, 32, 2.75, 0.12, woodWallMat, steelMat, colliders, platforms, obstacleMeshes),
+    createBridge(195, ponteLesteZ, 8.2, 34, 2.75, 0, woodWallMat, steelMat, colliders, platforms, obstacleMeshes),
   );
-  buildings.push({ x: 195, z: ponteLesteZ, w: 7.8, d: 32, rotY: 0.12, kind: 'bridge' });
+  buildings.push({ x: 195, z: ponteLesteZ, w: 8.2, d: 34, rotY: 0, kind: 'bridge' });
 
   const ponteOesteZ = riverCenterZ(-185);
   scene.add(
-    createBridge(-185, ponteOesteZ, 7.8, 32, 2.75, -0.1, concreteMat, steelMat, colliders, platforms, obstacleMeshes),
+    createBridge(-185, ponteOesteZ, 8.2, 34, 2.75, 0, concreteMat, steelMat, colliders, platforms, obstacleMeshes),
   );
-  buildings.push({ x: -185, z: ponteOesteZ, w: 7.8, d: 32, rotY: -0.1, kind: 'bridge' });
+  buildings.push({ x: -185, z: ponteOesteZ, w: 8.2, d: 34, rotY: 0, kind: 'bridge' });
 
-  // 6. Enterable Houses with Real Vaultable Windows across all Towns & Compounds
+  // 5b. ICONIC FREE FIRE CLOCK TOWER LANDMARK at (0, -65)
+  {
+    const ctX = 0;
+    const ctZ = -65;
+    const ctY = sampleGroundHeight(ctX, ctZ);
+    const ctGroup = new THREE.Group();
+    ctGroup.position.set(ctX, ctY, ctZ);
+
+    const ctPlinth = new THREE.Mesh(new THREE.BoxGeometry(11.5, 0.4, 11.5), concreteMat);
+    ctPlinth.position.y = 0.2;
+    ctPlinth.receiveShadow = true;
+    ctGroup.add(ctPlinth);
+
+    const ctPillarPositions: Array<[number, number]> = [
+      [-3.2, -3.2],
+      [3.2, -3.2],
+      [-3.2, 3.2],
+      [3.2, 3.2],
+    ];
+    ctPillarPositions.forEach(([px, pz]) => {
+      const pil = new THREE.Mesh(new THREE.BoxGeometry(1.5, 5.2, 1.5), concreteMat);
+      pil.position.set(px, 2.8, pz);
+      pil.castShadow = true;
+      pil.receiveShadow = true;
+      ctGroup.add(pil);
+      obstacleMeshes.push(pil);
+      colliders.push({
+        cx: ctX + px,
+        cz: ctZ + pz,
+        halfW: 0.78,
+        halfD: 0.78,
+        rotY: 0,
+        minY: ctY,
+        maxY: ctY + 5.6,
+        tag: 'clocktower-pillar',
+      });
+    });
+
+    const ctShaft = new THREE.Mesh(new THREE.BoxGeometry(6.2, 12.5, 6.2), stuccoWallMat);
+    ctShaft.position.y = 11.4;
+    ctShaft.castShadow = true;
+    ctGroup.add(ctShaft);
+    obstacleMeshes.push(ctShaft);
+
+    const ctRoof = new THREE.Mesh(new THREE.ConeGeometry(4.8, 4.4, 4), roofMat);
+    ctRoof.position.y = 19.8;
+    ctRoof.rotation.y = Math.PI / 4;
+    ctGroup.add(ctRoof);
+
+    // 4 Glowing Clock Faces
+    const faceMat = new THREE.MeshBasicMaterial({ color: 0xfef3c7 });
+    const faceGeo = new THREE.CircleGeometry(1.45, 16);
+    [
+      [0, 14.5, 3.15, 0],
+      [0, 14.5, -3.15, Math.PI],
+      [3.15, 14.5, 0, Math.PI / 2],
+      [-3.15, 14.5, 0, -Math.PI / 2],
+    ].forEach(([fx, fy, fz, fry]) => {
+      const face = new THREE.Mesh(faceGeo, faceMat);
+      face.position.set(fx, fy, fz);
+      face.rotation.y = fry;
+      ctGroup.add(face);
+    });
+
+    scene.add(ctGroup);
+    cullableStructures.push({ obj: ctGroup, x: ctX, z: ctZ, radiusScale: 1.4 });
+    buildings.push({ x: ctX, z: ctZ, w: 11.5, d: 11.5, rotY: 0, kind: 'tower' });
+  }
+
+  // 6. 46 Enterable Houses across 14 Free Fire Cities & Compounds (cleanly offset from roads!)
   const houseSpecs: Array<[number, number, number, number, number, number, boolean]> = [
-    // Vila Central
-    [-18, -60, 8.6, 7.0, 3.4, 0.1, false],
-    [18, -62, 9.0, 7.2, 3.5, -0.15, true],
-    [-22, -28, 7.8, 6.6, 3.3, 1.5, true],
-    [22, -28, 8.4, 6.6, 3.4, -1.55, false],
-    [-34, -46, 8.0, 6.4, 3.3, 0.05, false],
-    [34, -46, 8.0, 6.6, 3.4, 3.1, true],
-    // Cidade do Vale (West town)
-    [-275, 10, 8.8, 7.0, 3.4, 0.15, false],
-    [-245, 12, 8.2, 6.6, 3.3, -0.25, true],
-    [-272, 36, 7.8, 6.4, 3.3, 1.55, true],
-    [-242, 38, 8.6, 6.8, 3.4, -1.5, false],
-    // Fazenda Sul
-    [202, 232, 11.5, 8.8, 4.4, 0.22, true],
-    [176, 210, 8.0, 6.6, 3.3, -0.35, false],
-    [214, 206, 7.6, 6.2, 3.2, 2.9, true],
-    // Posto de Espera (NW compound)
-    [-232, -196, 8.4, 6.6, 3.3, 0.25, false],
-    [-198, -218, 7.6, 6.2, 3.2, -0.4, true],
-    // Observatório Norte Guardhouses
-    [118, -238, 7.4, 6.0, 3.2, 0.4, false],
-    [148, -234, 7.4, 6.0, 3.2, -0.4, true],
-    // Base Militar Sul Barracks
-    [-38, 282, 9.0, 7.2, 3.5, 0.05, false],
-    [6, 282, 9.0, 7.2, 3.5, -0.05, false],
-    // Colina do Farol
-    [280, 104, 7.6, 6.2, 3.2, 0.5, true],
+    // CLOCK TOWER (6 houses framing the plaza)
+    [-22, -84, 8.8, 7.0, 3.4, 0.05, false],
+    [22, -84, 9.0, 7.2, 3.5, -0.05, true],
+    [-26, -42, 8.2, 6.8, 3.4, 1.55, false],
+    [26, -42, 8.4, 6.8, 3.4, -1.55, true],
+    [-38, -64, 8.0, 6.4, 3.3, 0.1, false],
+    [38, -64, 8.0, 6.6, 3.4, 3.1, true],
+    // PEAK (Hilltop Manor & 4 ridge houses)
+    [118, -124, 11.5, 8.6, 4.2, 0.0, false],
+    [94, -152, 8.2, 6.6, 3.3, 1.4, true],
+    [142, -150, 8.4, 6.8, 3.4, -1.5, false],
+    [116, -172, 8.6, 6.8, 3.4, 3.14, true],
+    // BIMASAKTI STRIP (Street of 6 townhouses flanking main road x=-5)
+    [-24, 146, 8.6, 6.8, 3.4, 1.57, false],
+    [16, 146, 8.6, 6.8, 3.4, -1.57, true],
+    [-24, 166, 8.2, 6.6, 3.4, 1.57, true],
+    [16, 166, 8.8, 7.0, 3.5, -1.57, false],
+    [-24, 186, 8.4, 6.8, 3.4, 1.57, false],
+    [16, 186, 8.2, 6.6, 3.3, -1.57, true],
+    // FACTORY (3 barracks/control houses near hangars)
+    [-198, -88, 8.4, 6.6, 3.4, 0.2, false],
+    [-156, -126, 8.0, 6.4, 3.3, -0.3, true],
+    [-196, -124, 8.2, 6.6, 3.3, 1.5, false],
+    // MILL LESTE (3 ridge houses overlooking hangars)
+    [238, -96, 8.4, 6.6, 3.3, 0.1, false],
+    [274, -92, 8.0, 6.4, 3.3, -0.4, true],
+    [276, -54, 8.4, 6.6, 3.4, 2.9, false],
+    // OBSERVATÓRIO NORTE
+    [115, -252, 7.8, 6.2, 3.2, 0.35, false],
+    [154, -250, 7.8, 6.2, 3.2, -0.35, true],
+    // POCHINOK (Dense Southern Village of 5 houses)
+    [146, 206, 8.6, 6.8, 3.4, 0.15, false],
+    [184, 208, 8.8, 7.0, 3.5, -0.2, true],
+    [144, 242, 8.2, 6.6, 3.3, 1.5, true],
+    [186, 242, 9.2, 7.4, 3.6, -1.5, false],
+    [165, 256, 8.4, 6.6, 3.4, 3.1, true],
+    // SHIPYARD PORTO
+    [-268, 198, 8.2, 6.4, 3.3, 0.1, false],
+    [-216, 232, 8.4, 6.6, 3.3, -0.25, true],
+    // KOTA TUA (West Town Square)
+    [-292, 6, 8.8, 7.0, 3.4, 0.1, false],
+    [-254, 4, 8.2, 6.6, 3.3, -0.2, true],
+    [-292, 38, 8.0, 6.4, 3.3, 1.55, true],
+    [-254, 38, 8.6, 6.8, 3.4, -1.5, false],
+    // MARS ELECTRIC (Southern Compound)
+    [-48, 288, 9.0, 7.2, 3.5, 0.05, false],
+    [4, 288, 9.0, 7.2, 3.5, -0.05, false],
+    [-46, 324, 8.4, 6.6, 3.4, 3.1, true],
+    // CAPETOWN
+    [295, 98, 8.0, 6.4, 3.3, 0.45, true],
+    [318, 132, 8.2, 6.4, 3.3, -0.5, false],
+    // PISTA DE ESPERA & HANGAR NORTE
+    [-236, -214, 8.4, 6.6, 3.3, 0.2, false],
+    [-194, -242, 8.0, 6.4, 3.2, -0.3, true],
+    [-86, -244, 8.2, 6.6, 3.3, 0.1, false],
+    // RIM NAM VILA (Beachside stilt/wood village)
+    [-345, 106, 7.8, 6.2, 3.2, 0.4, true],
+    [-316, 136, 7.8, 6.2, 3.2, -0.3, true],
+    [-346, 138, 7.6, 6.0, 3.2, 1.5, true],
   ];
 
   houseSpecs.forEach(([hx, hz, hw, hd, hh, hrot, isWood]) => {
@@ -1407,14 +1870,16 @@ export function createIslandWorld(
     });
   });
 
-  // 7. Industrial Sheds & Hangars
+  // 7. Industrial Sheds & Hangars (Factory, Mill, Mars Electric, Shipyard, Hangar Norte, Pista)
   const shedSpecs: Array<[number, number, number, number, number, number]> = [
-    [220, -30, 11.5, 16.5, 4.8, 0.0],
-    [244, -50, 10.8, 15.0, 4.6, 1.57],
-    [206, -62, 9.8, 13.5, 4.3, 0.2],
-    [-218, -184, 11.0, 15.5, 4.6, 0.0], // Hangar at Posto de Espera
-    [-220, 190, 10.5, 14.5, 4.4, 0.3], // Harbor Warehouse at Porto Contêiner
-    [-16, 306, 12.0, 17.0, 4.9, 1.57], // Base Militar Sul Hangar
+    [-176, -106, 13.0, 18.5, 5.2, 0.0], // Giant Factory Main Hangar
+    [-196, -106, 10.5, 14.5, 4.6, 0.0], // Factory Wing 2
+    [250, -60, 11.5, 16.5, 4.8, 0.0], // Mill Hangar 1
+    [266, -86, 10.8, 15.0, 4.6, 1.57], // Mill Hangar 2
+    [-220, -210, 11.0, 15.5, 4.6, 0.0], // Pista Hangar
+    [-112, -264, 11.5, 16.0, 4.8, 1.57], // Hangar Norte
+    [-234, 194, 10.5, 14.5, 4.4, 0.3], // Shipyard Warehouse
+    [-22, 318, 12.5, 17.5, 5.0, 1.57], // Mars Electric Hangar
   ];
   shedSpecs.forEach(([sx, sz, sw, sd, sh, srot]) => {
     const shedObj = createIndustrialShed(
@@ -1437,18 +1902,18 @@ export function createIslandWorld(
     buildings.push({ x: sx, z: sz, w: sw, d: sd, rotY: srot, kind: 'shed' });
   });
 
-  // Concrete Airstrip Runway at Posto de Espera
-  const runwayY = sampleGroundHeight(-215, -215);
+  // Concrete Airstrip Runway at Pista de Espera
+  const runwayY = sampleGroundHeight(-215, -238);
   const runway = new THREE.Mesh(
     new THREE.BoxGeometry(12, 0.16, 66),
     concreteMat,
   );
-  runway.position.set(-215, runwayY + 0.04, -225);
+  runway.position.set(-215, runwayY + 0.04, -242);
   runway.receiveShadow = true;
   scene.add(runway);
   platforms.push({
     cx: -215,
-    cz: -225,
+    cz: -242,
     halfW: 6,
     halfD: 33,
     rotY: 0,
@@ -1456,17 +1921,16 @@ export function createIslandWorld(
     minY: runwayY - 1,
   });
 
-  // 8. PORTO CONTÊINER (Dock Pier + Stacked Shipping Containers)
+  // 8. SHIPYARD PORTO (Dock Pier + Stacked Shipping Containers across Porto/Factory/Mill/Mars)
   const pierY = 2.2;
-  const pier = new THREE.Mesh(new THREE.BoxGeometry(32, 0.6, 20), concreteMat);
-  pier.position.set(-246, pierY - 0.3, 218);
-  pier.castShadow = true;
+  const pier = new THREE.Mesh(new THREE.BoxGeometry(34, 0.6, 20), concreteMat);
+  pier.position.set(-254, pierY - 0.3, 224);
   pier.receiveShadow = true;
   scene.add(pier);
   platforms.push({
-    cx: -246,
-    cz: 218,
-    halfW: 16,
+    cx: -254,
+    cz: 224,
+    halfW: 17,
     halfD: 10,
     rotY: 0,
     topY: pierY,
@@ -1474,16 +1938,18 @@ export function createIslandWorld(
   });
 
   const containerSpecs: Array<[number, number, number, boolean, number]> = [
-    [-238, 210, 0.05, true, 0],
-    [-242, 210, 0.05, false, 0],
-    [-240, 210, 0.05, true, 2.7],
-    [-228, 218, 1.5, false, 0],
-    [-250, 198, -0.35, true, 0],
-    [-224, 200, 0.15, false, 0],
-    [224, -44, 0.4, true, 0],
-    [234, -30, 1.57, false, 0],
-    [-24, 272, 0.0, true, 0],
-    [-10, 272, 0.0, false, 0],
+    [-242, 214, 0.05, true, 0],
+    [-246, 214, 0.05, false, 0],
+    [-244, 214, 0.05, true, 2.7],
+    [-232, 222, 1.5, false, 0],
+    [-258, 204, -0.35, true, 0],
+    [-226, 204, 0.15, false, 0],
+    [-166, -98, 0.2, true, 0],
+    [-184, -120, 1.57, false, 0],
+    [244, -74, 0.4, true, 0],
+    [258, -94, 1.57, false, 0],
+    [-30, 294, 0.0, true, 0],
+    [-12, 294, 0.0, false, 0],
   ];
   containerSpecs.forEach(([cx, cz, crot, isBlue, yOff]) => {
     const cObj = createContainer(
@@ -1501,51 +1967,86 @@ export function createIslandWorld(
     buildings.push({ x: cx, z: cz, w: 2.6, d: 6.2, rotY: crot, kind: 'container' });
   });
 
-  // 9. Watchtowers (Observatório Norte + Colina do Farol + Base Militar Sul)
-  const wt1 = createWatchTowerLOD(135, -245, concreteMat, steelMat, colliders, obstacleMeshes);
-  scene.add(wt1);
-  cullableStructures.push({ obj: wt1, x: 135, z: -245, radiusScale: 1.25 });
-  buildings.push({ x: 135, z: -245, w: 7.2, d: 7.2, rotY: 0, kind: 'tower' });
-
-  const wt2 = createWatchTowerLOD(288, 120, concreteMat, steelMat, colliders, obstacleMeshes);
-  scene.add(wt2);
-  cullableStructures.push({ obj: wt2, x: 288, z: 120, radiusScale: 1.25 });
-  buildings.push({ x: 288, z: 120, w: 7.2, d: 7.2, rotY: 0, kind: 'tower' });
-
-  const wt3 = createWatchTowerLOD(-26, 294, concreteMat, steelMat, colliders, obstacleMeshes);
-  scene.add(wt3);
-  cullableStructures.push({ obj: wt3, x: -26, z: 294, radiusScale: 1.25 });
-  buildings.push({ x: -26, z: 294, w: 7.2, d: 7.2, rotY: 0, kind: 'tower' });
-
-  // 10. Military Jeeps across POIs
-  const jeepSpecs: Array<[number, number, number]> = [
-    [182, 216, -0.85],
-    [-4, -42, 0.65],
-    [214, -36, -1.2],
-    [-208, -202, 0.4],
-    [-256, 24, 1.1],
-    [-12, 286, -0.5],
+  // 9. Watchtowers (Observatório + Capetown + Mars Electric + Peak)
+  const wtCoords: Array<[number, number]> = [
+    [135, -265],
+    [308, 120],
+    [-32, 312],
+    [104, -138],
   ];
-  jeepSpecs.forEach(([jx, jz, jrot]) => {
-    const jObj = createJeepProp(jx, jz, jrot, colliders, obstacleMeshes);
-    scene.add(jObj);
-    cullableStructures.push({ obj: jObj, x: jx, z: jz, radiusScale: 0.75 });
+  wtCoords.forEach(([wx, wz]) => {
+    const wt = createWatchTowerLOD(wx, wz, concreteMat, steelMat, colliders, obstacleMeshes);
+    scene.add(wt);
+    cullableStructures.push({ obj: wt, x: wx, z: wz, radiusScale: 1.25 });
+    buildings.push({ x: wx, z: wz, w: 7.2, d: 7.2, rotY: 0, kind: 'tower' });
   });
 
-  // 11. Instanced Cover Obstacles (Concrete Barriers, Wooden Crates, Oil Barrels)
+  // 10. Drivable Vehicles across Roads & POIs + 8 Vending Machines (Lojinhas)
+  const vehicleSpecs: Array<{ id: string; kind: VehicleKind; x: number; z: number; rotY: number }> = [
+    { id: 'veh_0', kind: 'jeep', x: 160, z: 214, rotY: -0.85 },
+    { id: 'veh_1', kind: 'jeep', x: -12, z: -46, rotY: 0.55 },
+    { id: 'veh_2', kind: 'sport', x: -5, z: 146, rotY: 0.05 },
+    { id: 'veh_3', kind: 'jeep', x: 240, z: -68, rotY: -1.2 },
+    { id: 'veh_4', kind: 'sport', x: -206, z: -220, rotY: 0.35 },
+    { id: 'veh_5', kind: 'jeep', x: -272, z: 24, rotY: 1.1 },
+  ];
+  const vehicles: VehicleEntity[] = vehicleSpecs.map((spec) => {
+    const v = createDrivableVehicle(
+      spec.id,
+      spec.kind,
+      spec.x,
+      spec.z,
+      spec.rotY,
+      colliders,
+      obstacleMeshes,
+    );
+    scene.add(v.group);
+    return v;
+  });
+
+  const vendingSpecs: Array<{ id: string; x: number; z: number; rotY: number; label: string }> = [
+    { id: 'vm_clock', x: 18, z: -62, rotY: -1.57, label: 'Lojinha Clock Tower' },
+    { id: 'vm_peak', x: 108, z: -142, rotY: 0.4, label: 'Lojinha Peak' },
+    { id: 'vm_bima', x: -16, z: 162, rotY: 1.57, label: 'Lojinha Bimasakti' },
+    { id: 'vm_factory', x: -164, z: -108, rotY: -0.8, label: 'Lojinha Factory' },
+    { id: 'vm_mill', x: 246, z: -80, rotY: 0.2, label: 'Lojinha Mill Leste' },
+    { id: 'vm_pochinok', x: 156, z: 218, rotY: 0.6, label: 'Lojinha Pochinok' },
+    { id: 'vm_ship', x: -238, z: 206, rotY: -0.5, label: 'Lojinha Shipyard' },
+    { id: 'vm_mars', x: -16, z: 294, rotY: 0.0, label: 'Lojinha Mars Electric' },
+  ];
+  const vendingMachines: VendingMachineProp[] = vendingSpecs.map((vs) => {
+    const vm = createVendingMachineProp(
+      vs.id,
+      vs.x,
+      vs.z,
+      vs.rotY,
+      vs.label,
+      colliders,
+      obstacleMeshes,
+    );
+    scene.add(vm.group);
+    cullableStructures.push({ obj: vm.group, x: vs.x, z: vs.z, radiusScale: 0.7 });
+    return vm.data;
+  });
+
+  // 11. Free Fire Tactical Gameplay Props: Concrete Street Barriers, Wooden Crates, EXPLOSIVE RED BARRELS, & LAUNCH PADS!
   const barrierCoords: Array<[number, number, number]> = [
-    [-6, -45, 0],
-    [6, -45, 0],
-    [0, -32, 1.57],
-    [0, -58, 1.57],
+    [-10, -65, 0],
+    [10, -65, 0],
+    [0, -48, 1.57],
+    [0, -82, 1.57],
     [0, ponteVelhaZ + 11, 0.3],
     [0, ponteVelhaZ - 11, -0.25],
-    [126, -238, 0.8],
-    [142, -240, -0.6],
-    [-232, 202, 0.5],
-    [216, -48, 0.2],
-    [-258, 22, 0.9],
-    [-20, 276, 0.1],
+    [-5, 156, 0.2],
+    [-5, 174, -0.2],
+    [118, -136, 0.4],
+    [130, -256, -0.6],
+    [-242, 210, 0.5],
+    [248, -72, 0.2],
+    [-275, 22, 0.9],
+    [-25, 295, 0.1],
+    [-175, -96, 0.0],
+    [162, 222, -0.3],
   ];
   const barrierGeo = new THREE.BoxGeometry(2.6, 1.15, 0.55);
   const barrierInst = new THREE.InstancedMesh(barrierGeo, concreteMat, barrierCoords.length);
@@ -1574,18 +2075,20 @@ export function createIslandWorld(
   obstacleMeshes.push(barrierInst);
 
   const crateCoords: Array<[number, number, number]> = [
-    [-206, -198, 0.2],
-    [-204, -196, 0.7],
-    [-220, -206, -0.3],
-    [8, -40, 0.1],
-    [-8, -50, 0.5],
-    [226, -38, 0.4],
-    [228, -40, 0.9],
-    [-230, 212, 0.2],
-    [192, 224, -0.4],
-    [130, -250, 0.3],
-    [-252, 28, 0.4],
-    [-18, 294, -0.2],
+    [-206, -220, 0.2],
+    [-204, -218, 0.7],
+    [12, -58, 0.1],
+    [-12, -72, 0.5],
+    [252, -66, 0.4],
+    [-236, 212, 0.2],
+    [168, 228, -0.4],
+    [128, -260, 0.3],
+    [-268, 28, 0.4],
+    [-20, 304, -0.2],
+    [114, -142, 0.5],
+    [-172, -112, 0.2],
+    [-10, 162, -0.3],
+    [0, 170, 0.4],
   ];
   const crateGeo = new THREE.BoxGeometry(1.4, 1.4, 1.4);
   const crateInst = new THREE.InstancedMesh(crateGeo, woodWallMat, crateCoords.length);
@@ -1613,262 +2116,157 @@ export function createIslandWorld(
   scene.add(crateInst);
   obstacleMeshes.push(crateInst);
 
+  // Iconic Free Fire Explosive RED Oil Barrels (shoot to detonate!)
   const barrelCoords: Array<[number, number]> = [
-    [218, -26],
-    [219.2, -26.4],
-    [238, -46],
-    [-224, 196],
-    [-223, 197.4],
-    [188, 212],
-    [129, -242],
-    [-212, -192],
-    [-264, 16],
-    [-14, 300],
+    [10, -64],
+    [-14, -68],
+    [122, -138],
+    [110, -148],
+    [-12, 158],
+    [8, 172],
+    [-168, -98],
+    [-184, -114],
+    [244, -66],
+    [262, -80],
+    [130, -258],
+    [156, 218],
+    [174, 232],
+    [-238, 206],
+    [-268, 18],
+    [-18, 298],
+    [-32, 308],
+    [298, 112],
+    [-212, -222],
+    [-102, -252],
+    [-332, 116],
+    [2, ponteVelhaZ + 6],
   ];
-  const barrelGeo = new THREE.CylinderGeometry(0.42, 0.42, 1.15, 8);
-  const barrelMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0.45 });
+  const barrelGeo = new THREE.CylinderGeometry(0.45, 0.45, 1.25, 10);
+  const barrelMat = new THREE.MeshStandardMaterial({
+    color: 0xdc2626,
+    emissive: 0x7f1d1d,
+    emissiveIntensity: 0.35,
+    roughness: 0.45,
+    metalness: 0.42,
+  });
   const barrelInst = new THREE.InstancedMesh(barrelGeo, barrelMat, barrelCoords.length);
   barrelInst.castShadow = true;
   barrelInst.receiveShadow = true;
+  barrelInst.userData.isExplosiveBarrelInst = true;
+
+  const explosiveBarrels: ExplosiveBarrel[] = [];
+  const barrelColliders: WorldObbCollider[] = [];
   barrelCoords.forEach(([bx, bz], idx) => {
     const by = sampleGroundHeight(bx, bz);
-    dummy.position.set(bx, by + 0.58, bz);
-    dummy.rotation.set(0, idx, 0);
+    dummy.position.set(bx, by + 0.625, bz);
+    dummy.rotation.set(0, idx * 0.5, 0);
     dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
     barrelInst.setMatrixAt(idx, dummy.matrix);
-    barrelInst.setColorAt(idx, tmpColor.setHex(idx % 2 === 0 ? 0xa63429 : 0x455939));
-    colliders.push({
+    explosiveBarrels.push({
+      id: `barrel_${idx}`,
+      x: bx,
+      y: by + 0.625,
+      z: bz,
+      exploded: false,
+      instanceIdx: idx,
+    });
+    const col: WorldObbCollider = {
       cx: bx,
       cz: bz,
-      halfW: 0.45,
-      halfD: 0.45,
+      halfW: 0.48,
+      halfD: 0.48,
       rotY: 0,
       minY: by,
-      maxY: by + 1.2,
+      maxY: by + 1.28,
       tag: 'barrel',
-    });
+    };
+    colliders.push(col);
+    barrelColliders.push(col);
   });
   barrelInst.computeBoundingSphere();
-  if (barrelInst.instanceColor) barrelInst.instanceColor.needsUpdate = true;
   scene.add(barrelInst);
   obstacleMeshes.push(barrelInst);
 
-  // 12. Varied Forests across expanded 520m island (InstancedMesh)
-  const isClearOfPoiAndRoads = (x: number, z: number): boolean => {
-    const tooClosePoi = POIS.some((p) => Math.hypot(x - p.x, z - p.z) < p.radius * 0.72);
-    if (tooClosePoi) return false;
-    if (Math.abs(x) < 8 && Math.abs(z) < 285) return false;
-    if (Math.abs(z - riverCenterZ(x)) < 18) return false;
-    return true;
+  const hideExplosiveBarrel = (idx: number) => {
+    const eb = explosiveBarrels[idx];
+    if (!eb || eb.exploded) return;
+    eb.exploded = true;
+    dummy.position.set(eb.x, -50, eb.z);
+    dummy.scale.set(0.001, 0.001, 0.001);
+    dummy.updateMatrix();
+    barrelInst.setMatrixAt(idx, dummy.matrix);
+    barrelInst.instanceMatrix.needsUpdate = true;
+    const col = barrelColliders[idx];
+    if (col) {
+      col.minY = -99;
+      col.maxY = -98;
+    }
+  };
+  const resetExplosiveBarrels = () => {
+    for (let i = 0; i < explosiveBarrels.length; i++) {
+      const eb = explosiveBarrels[i];
+      eb.exploded = false;
+      dummy.position.set(eb.x, eb.y, eb.z);
+      dummy.rotation.set(0, i * 0.5, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      barrelInst.setMatrixAt(i, dummy.matrix);
+      const col = barrelColliders[i];
+      if (col) {
+        col.minY = eb.y - 0.625;
+        col.maxY = eb.y + 0.655;
+      }
+    }
+    barrelInst.instanceMatrix.needsUpdate = true;
   };
 
-  // A) Pine Trees
-  const pineList: Array<[number, number, number]> = [];
-  for (let i = 0; i < 650 && pineList.length < 320; i++) {
-    const angle = i * 2.39996;
-    const rad = 58 + Math.sqrt(i / 650) * 405;
-    const tx = Math.cos(angle) * rad;
-    const tz = Math.sin(angle) * rad;
-    const ty = sampleGroundHeight(tx, tz);
-    if (ty < 2.0) continue;
-    if (!isClearOfPoiAndRoads(tx, tz)) continue;
-    if (tz > 165 && (i % 3 !== 0)) continue;
-    pineList.push([tx, ty, tz]);
-  }
-
-  const pineTrunkGeo = new THREE.CylinderGeometry(0.24, 0.38, 3.4, 8);
-  pineTrunkGeo.translate(0, 1.7, 0);
-  const trunkMat = new THREE.MeshStandardMaterial({
-    map: textures.woodPlank,
-    color: 0x7c5a3e,
-    roughness: 0.9,
-  });
-  applyDistanceTextureLod(trunkMat, [0.54, 0.4, 0.28]);
-  const pineLowerGeo = new THREE.ConeGeometry(2.05, 3.6, 10);
-  pineLowerGeo.translate(0, 4.1, 0);
-  const pineUpperGeo = new THREE.ConeGeometry(1.45, 3.2, 10);
-  pineUpperGeo.translate(0, 6.1, 0);
-  const foliageMat = new THREE.MeshStandardMaterial({
-    map: textures.foliage,
-    color: 0xffffff,
-    roughness: 0.84,
-    flatShading: false,
-  });
-  applyDistanceTextureLod(foliageMat, [0.4, 0.56, 0.24]);
-
-  const pineTrunkInst = new THREE.InstancedMesh(pineTrunkGeo, trunkMat, pineList.length);
-  const pineLowInst = new THREE.InstancedMesh(pineLowerGeo, foliageMat, pineList.length);
-  const pineTopInst = new THREE.InstancedMesh(pineUpperGeo, foliageMat, pineList.length);
-  pineTrunkInst.castShadow = true;
-  pineLowInst.castShadow = true;
-  pineTopInst.castShadow = true;
-
-  const pineColors = [
-    new THREE.Color(0x527d3e),
-    new THREE.Color(0x618d48),
-    new THREE.Color(0x456e35),
-    new THREE.Color(0x6d9950),
+  // Classic Free Fire Launch Pads ("Lançadores") between major cities
+  const launchPadSpecs: Array<[number, number, number, number, string]> = [
+    [16, -65, 118, -145, 'LANÇADOR -> PEAK'],
+    [104, -145, 0, -65, 'LANÇADOR -> CLOCK TOWER'],
+    [-156, -102, 0, -65, 'LANÇADOR -> CLOCK TOWER'],
+    [12, 166, 165, 225, 'LANÇADOR -> POCHINOK'],
+    [244, -84, 118, -145, 'LANÇADOR -> PEAK'],
+    [-35, 290, -245, 215, 'LANÇADOR -> SHIPYARD'],
+    [135, -246, 255, -75, 'LANÇADOR -> MILL LESTE'],
+    [-256, 20, -175, -105, 'LANÇADOR -> FACTORY'],
   ];
-
-  pineList.forEach(([tx, ty, tz], idx) => {
-    const s = 0.85 + ((idx * 17) % 35) / 100;
-    dummy.position.set(tx, ty - 0.1, tz);
-    dummy.rotation.set(0, idx * 1.1, 0);
-    dummy.scale.set(s, s * (0.95 + (idx % 3) * 0.14), s);
-    dummy.updateMatrix();
-    pineTrunkInst.setMatrixAt(idx, dummy.matrix);
-    pineLowInst.setMatrixAt(idx, dummy.matrix);
-    pineTopInst.setMatrixAt(idx, dummy.matrix);
-    const col = pineColors[idx % pineColors.length];
-    pineLowInst.setColorAt(idx, col);
-    pineTopInst.setColorAt(idx, col);
-
-    colliders.push({
-      cx: tx,
-      cz: tz,
-      halfW: 0.42 * s,
-      halfD: 0.42 * s,
-      rotY: 0,
-      minY: ty,
-      maxY: ty + 4.0 * s,
-      tag: 'tree-pine',
+  const launchPads: LaunchPadProp[] = [];
+  const padBaseGeo = new THREE.CylinderGeometry(1.15, 1.35, 0.25, 14);
+  const padPlateGeo = new THREE.BoxGeometry(1.3, 0.14, 1.6);
+  const padBaseMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5, metalness: 0.6 });
+  const padGlowMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+  launchPadSpecs.forEach(([lx, lz, tx, tz, label]) => {
+    const ly = sampleGroundHeight(lx, lz);
+    const dx = tx - lx;
+    const dz = tz - lz;
+    const horiz = Math.hypot(dx, dz) || 1;
+    const yaw = Math.atan2(dx, dz);
+    const padG = new THREE.Group();
+    padG.position.set(lx, ly + 0.12, lz);
+    padG.rotation.y = yaw;
+    const base = new THREE.Mesh(padBaseGeo, padBaseMat);
+    const plate = new THREE.Mesh(padPlateGeo, padGlowMat);
+    plate.position.set(0, 0.26, 0.15);
+    plate.rotation.x = -0.48;
+    padG.add(base, plate);
+    scene.add(padG);
+    cullableStructures.push({ obj: padG, x: lx, z: lz, radiusScale: 0.7 });
+    launchPads.push({
+      x: lx,
+      y: ly,
+      z: lz,
+      dirX: dx / horiz,
+      dirY: 0.72,
+      dirZ: dz / horiz,
+      label,
     });
   });
-  pineTrunkInst.computeBoundingSphere();
-  pineLowInst.computeBoundingSphere();
-  pineTopInst.computeBoundingSphere();
-  if (pineLowInst.instanceColor) pineLowInst.instanceColor.needsUpdate = true;
-  if (pineTopInst.instanceColor) pineTopInst.instanceColor.needsUpdate = true;
-  scene.add(pineTrunkInst, pineLowInst, pineTopInst);
-  obstacleMeshes.push(pineTrunkInst);
 
-  // B) Broadleaf Trees (Smooth rounded undulating canopy spheres!)
-  const broadList: Array<[number, number, number]> = [];
-  for (let i = 0; i < 540 && broadList.length < 245; i++) {
-    const angle = i * 2.39996 + 0.85;
-    const rad = 52 + Math.sqrt(i / 540) * 395;
-    const tx = Math.cos(angle) * rad;
-    const tz = Math.sin(angle) * rad;
-    const ty = sampleGroundHeight(tx, tz);
-    if (ty < 1.3 || ty > 8.5) continue;
-    if (!isClearOfPoiAndRoads(tx, tz)) continue;
-    broadList.push([tx, ty, tz]);
-  }
-  const broadTrunkGeo = new THREE.CylinderGeometry(0.26, 0.42, 3.0, 8);
-  broadTrunkGeo.translate(0, 1.5, 0);
-  const broadCrownGeo = new THREE.SphereGeometry(2.15, 11, 8);
-  const broadCrownPos = broadCrownGeo.attributes.position;
-  for (let v = 0; v < broadCrownPos.count; v++) {
-    const vx = broadCrownPos.getX(v);
-    const vy = broadCrownPos.getY(v);
-    const vz = broadCrownPos.getZ(v);
-    const ripple = 1 + Math.sin(vx * 2.4 + vz * 1.9) * 0.09 + Math.cos(vy * 3.1) * 0.07;
-    broadCrownPos.setXYZ(v, vx * ripple, vy * ripple * 0.85, vz * ripple);
-  }
-  broadCrownGeo.computeVertexNormals();
-  broadCrownGeo.translate(0, 4.3, 0);
-
-  const broadTrunkInst = new THREE.InstancedMesh(broadTrunkGeo, trunkMat, broadList.length);
-  const broadCrownInst = new THREE.InstancedMesh(broadCrownGeo, foliageMat, broadList.length);
-  broadTrunkInst.castShadow = true;
-  broadCrownInst.castShadow = true;
-
-  const broadColors = [
-    new THREE.Color(0x6c9648),
-    new THREE.Color(0x7ca654),
-    new THREE.Color(0x88a852),
-    new THREE.Color(0x5c8440),
-  ];
-
-  broadList.forEach(([tx, ty, tz], idx) => {
-    const s = 0.85 + ((idx * 19) % 35) / 100;
-    dummy.position.set(tx, ty - 0.1, tz);
-    dummy.rotation.set(0, idx * 0.7, 0);
-    dummy.scale.set(s, s * 1.08, s);
-    dummy.updateMatrix();
-    broadTrunkInst.setMatrixAt(idx, dummy.matrix);
-    broadCrownInst.setMatrixAt(idx, dummy.matrix);
-    broadCrownInst.setColorAt(idx, broadColors[idx % broadColors.length]);
-
-    colliders.push({
-      cx: tx,
-      cz: tz,
-      halfW: 0.44 * s,
-      halfD: 0.44 * s,
-      rotY: 0,
-      minY: ty,
-      maxY: ty + 3.6 * s,
-      tag: 'tree-broad',
-    });
-  });
-  broadTrunkInst.computeBoundingSphere();
-  broadCrownInst.computeBoundingSphere();
-  if (broadCrownInst.instanceColor) broadCrownInst.instanceColor.needsUpdate = true;
-  scene.add(broadTrunkInst, broadCrownInst);
-  obstacleMeshes.push(broadTrunkInst);
-
-  // C) Coastal Tropical Palm Trees (rounded trunks + arched 6-frond layered canopy!)
-  const palmList: Array<[number, number, number]> = [];
-  for (let i = 0; i < 160 && palmList.length < 96; i++) {
-    const a = (i / 160) * Math.PI * 2;
-    const r = 455 + (i % 5) * 11;
-    const tx = Math.cos(a) * r;
-    const tz = Math.sin(a) * r;
-    const ty = sampleGroundHeight(tx, tz);
-    if (ty < 0.2 || ty > 2.8) continue;
-    palmList.push([tx, ty, tz]);
-  }
-  const palmTrunkGeo = new THREE.CylinderGeometry(0.15, 0.28, 5.4, 8);
-  palmTrunkGeo.translate(0, 2.7, 0);
-
-  const palmFrondParts: THREE.BufferGeometry[] = [];
-  const crownHub = new THREE.SphereGeometry(0.45, 8, 6);
-  crownHub.translate(0, 5.45, 0);
-  palmFrondParts.push(crownHub);
-  for (let f = 0; f < 6; f++) {
-    const fa = (f / 6) * Math.PI * 2;
-    const blade = new THREE.SphereGeometry(1.15, 8, 6);
-    blade.scale(0.42, 0.14, 1.35);
-    blade.rotateX(0.32);
-    blade.translate(0, 5.25, 1.25);
-    blade.rotateY(fa);
-    palmFrondParts.push(blade);
-  }
-  const palmCrownGeo = mergeGeometries(palmFrondParts, false);
-  palmFrondParts.forEach((g) => g.dispose());
-
-  const palmTrunkInst = new THREE.InstancedMesh(palmTrunkGeo, trunkMat, palmList.length);
-  const palmCrownInst = new THREE.InstancedMesh(palmCrownGeo, foliageMat, palmList.length);
-  palmTrunkInst.castShadow = true;
-  palmCrownInst.castShadow = true;
-  palmList.forEach(([tx, ty, tz], idx) => {
-    const s = 0.9 + (idx % 4) * 0.14;
-    dummy.position.set(tx, ty - 0.1, tz);
-    dummy.rotation.set(0.08, idx * 1.4, 0.06);
-    dummy.scale.set(s, s, s);
-    dummy.updateMatrix();
-    palmTrunkInst.setMatrixAt(idx, dummy.matrix);
-    palmCrownInst.setMatrixAt(idx, dummy.matrix);
-    palmCrownInst.setColorAt(idx, tmpColor.setHex(idx % 2 === 0 ? 0x6fa246 : 0x82b254));
-    colliders.push({
-      cx: tx,
-      cz: tz,
-      halfW: 0.35 * s,
-      halfD: 0.35 * s,
-      rotY: 0,
-      minY: ty,
-      maxY: ty + 5.0 * s,
-      tag: 'tree-palm',
-    });
-  });
-  palmTrunkInst.computeBoundingSphere();
-  palmCrownInst.computeBoundingSphere();
-  if (palmCrownInst.instanceColor) palmCrownInst.instanceColor.needsUpdate = true;
-  scene.add(palmTrunkInst, palmCrownInst);
-
-  // 13. Smooth Rounded Wavy Rocks & Boulders (InstancedMesh)
-  const rockGeo = new THREE.IcosahedronGeometry(1.25, 2);
+  // 12. ALL TREES REMOVED FOR MAXIMUM FPS & CLEAN FREE FIRE COMBAT SIGHTLINES!
+  // Smooth Rounded Wavy Rocks & Boulders (lightweight InstancedMesh cover)
+  const rockGeo = new THREE.IcosahedronGeometry(1.25, 1);
   const rockPos = rockGeo.attributes.position;
   for (let v = 0; v < rockPos.count; v++) {
     const vx = rockPos.getX(v);
@@ -1885,8 +2283,15 @@ export function createIslandWorld(
     flatShading: false,
   });
   applyDistanceTextureLod(rockMat, [0.49, 0.48, 0.45]);
+  const isClearOfPoiAndRoads = (x: number, z: number): boolean => {
+    const tooClosePoi = POIS.some((p) => Math.hypot(x - p.x, z - p.z) < p.radius * 0.72);
+    if (tooClosePoi) return false;
+    if (Math.abs(x) < 10 && Math.abs(z) < 310) return false;
+    if (Math.abs(z - riverCenterZ(x)) < 18) return false;
+    return true;
+  };
   const rockList: Array<[number, number, number, number]> = [];
-  for (let i = 0; i < 310 && rockList.length < 210; i++) {
+  for (let i = 0; i < 190 && rockList.length < 130; i++) {
     const a = i * 1.77 + 0.5;
     const r = 46 + ((i * 47) % 415);
     const rx = Math.cos(a) * r;
@@ -1924,31 +2329,29 @@ export function createIslandWorld(
   scene.add(rockInst);
   obstacleMeshes.push(rockInst);
 
-  // 14. Rounded Wavy Tactical Bushes & Grass Tufts (InstancedMesh)
-  const bushGeo = new THREE.SphereGeometry(0.92, 9, 7);
-  const bushPos = bushGeo.attributes.position;
-  for (let v = 0; v < bushPos.count; v++) {
-    const vx = bushPos.getX(v);
-    const vy = bushPos.getY(v);
-    const vz = bushPos.getZ(v);
-    const w = 1 + Math.sin(vx * 3.4 + vz * 2.8) * 0.12;
-    bushPos.setXYZ(v, vx * w, vy * 0.76, vz * w);
-  }
-  bushGeo.computeVertexNormals();
-  bushGeo.translate(0, 0.48, 0);
-  const bushInst = new THREE.InstancedMesh(bushGeo, foliageMat, 200);
+  // Lightweight Tactical Low Bushes (only visible on Medium/Ultra; zero heavy grass meshes)
+  const bushGeo = new THREE.SphereGeometry(0.9, 7, 5);
+  bushGeo.scale(1.2, 0.72, 1.0);
+  bushGeo.translate(0, 0.42, 0);
+  const foliageMat = new THREE.MeshStandardMaterial({
+    map: textures.foliage,
+    color: 0xffffff,
+    roughness: 0.86,
+  });
+  applyDistanceTextureLod(foliageMat, [0.42, 0.58, 0.26]);
+  const bushInst = new THREE.InstancedMesh(bushGeo, foliageMat, 110);
   let placedBushes = 0;
-  for (let i = 0; i < 290 && placedBushes < 200; i++) {
+  for (let i = 0; i < 180 && placedBushes < 110; i++) {
     const a = i * 2.71;
     const r = 24 + ((i * 41) % 430);
     const bx = Math.cos(a) * r;
     const bz = Math.sin(a) * r;
     const by = sampleGroundHeight(bx, bz);
-    if (by < 1.1) continue;
+    if (by < 1.1 || !isClearOfPoiAndRoads(bx, bz)) continue;
     dummy.position.set(bx, by, bz);
     dummy.rotation.set(0, i * 0.8, 0);
-    const bs = 0.85 + (i % 4) * 0.2;
-    dummy.scale.set(bs * 1.2, bs * 0.85, bs);
+    const bs = 0.85 + (i % 4) * 0.18;
+    dummy.scale.set(bs, bs, bs);
     dummy.updateMatrix();
     bushInst.setMatrixAt(placedBushes, dummy.matrix);
     bushInst.setColorAt(placedBushes, tmpColor.setHex(i % 2 === 0 ? 0x649440 : 0x76a64c));
@@ -1959,43 +2362,7 @@ export function createIslandWorld(
   if (bushInst.instanceColor) bushInst.instanceColor.needsUpdate = true;
   scene.add(bushInst);
 
-  const grassBladeGeo = new THREE.ConeGeometry(0.28, 0.55, 4);
-  grassBladeGeo.translate(0, 0.27, 0);
-  const grassMat = new THREE.MeshStandardMaterial({
-    map: textures.foliage,
-    color: 0xffffff,
-    roughness: 0.9,
-    flatShading: false,
-  });
-  applyDistanceTextureLod(grassMat, [0.5, 0.65, 0.28]);
-  const grassCount = 1050;
-  const grassInst = new THREE.InstancedMesh(grassBladeGeo, grassMat, grassCount);
-  let placedGrass = 0;
-  for (let i = 0; i < grassCount; i++) {
-    const a = i * 2.13;
-    const r = 12 + ((i * 53) % 445);
-    const gx = Math.cos(a) * r;
-    const gz = Math.sin(a) * r;
-    const gy = sampleGroundHeight(gx, gz);
-    if (gy < 1.0) continue;
-    dummy.position.set(gx, gy, gz);
-    dummy.rotation.set(0, i * 0.5, 0);
-    const gs = 0.85 + (i % 4) * 0.2;
-    dummy.scale.set(gs, gs, gs);
-    dummy.updateMatrix();
-    grassInst.setMatrixAt(placedGrass, dummy.matrix);
-    grassInst.setColorAt(
-      placedGrass,
-      tmpColor.setHex(i % 2 === 0 ? 0x7da446 : 0x90b452),
-    );
-    placedGrass++;
-  }
-  grassInst.count = placedGrass;
-  grassInst.computeBoundingSphere();
-  if (grassInst.instanceColor) grassInst.instanceColor.needsUpdate = true;
-  scene.add(grassInst);
-
-  // 15. 50 Real Parachuting, Looting & Sight-Based Combat AI Bots!
+  // 13. 50 Real Parachuting, Looting & Tactical Combat AI Bots!
   const BOT_NICKS = [
     'LuanPro_17', 'xX_Braga_Xx', 'Gabriel_07', 'YuriRush', 'CAPA_MESTRE',
     'Pedro_BR', 'BielCapa', 'Kauan_FF', 'Matheus_RJ', 'Davi_Gelo',
@@ -2020,9 +2387,9 @@ export function createIslandWorld(
       lx = poi.x;
       lz = poi.z;
     }
-    // Wait island spawn around Posto de Espera (-215, -205)
+    // Wait island spawn around Pista de Espera (-215, -230)
     const waitX = -215 + Math.cos(idx * 0.7) * (10 + (idx % 5) * 4);
-    const waitZ = -205 + Math.sin(idx * 0.7) * (10 + (idx % 5) * 4);
+    const waitZ = -230 + Math.sin(idx * 0.7) * (10 + (idx % 5) * 4);
     const bot = createBotEntity(
       `bot_${idx + 1}`,
       nick,
@@ -2042,7 +2409,7 @@ export function createIslandWorld(
   });
   targets.forEach((t) => scene.add(t.group));
 
-  // 16. Comprehensive World Loot inside Houses, Sheds, Containers, Towers & POIs
+  // 14. Comprehensive World Loot inside Houses, Sheds, Containers, Towers & POIs
   const lootDefs: Array<{
     x: number;
     z: number;
@@ -2056,6 +2423,7 @@ export function createIslandWorld(
     grenadeAmount?: number;
     deathLoot?: LootItem['deathLoot'];
     ammoAmount?: number;
+    coinAmount?: number;
     label: string;
   }> = [];
 
@@ -2203,6 +2571,16 @@ export function createIslandWorld(
         label: 'Munição +45',
       });
     }
+    // 5. Gold FF Coins inside houses
+    const p5 = toWorld(-hw * 0.24, -hd * 0.22);
+    lootDefs.push({
+      x: p5.x,
+      z: p5.z,
+      yOverride: houseBaseY,
+      kind: 'coin',
+      coinAmount: idx % 3 === 0 ? 200 : 100,
+      label: idx % 3 === 0 ? '200 Moedas FF' : '100 Moedas FF',
+    });
   });
 
   // Spawn loot INSIDE every shed & around POIs
@@ -2240,6 +2618,14 @@ export function createIslandWorld(
       kind: 'backpack',
       level: 3,
       label: 'Mochila Nível 3',
+    });
+    lootDefs.push({
+      x: sx + 1.5,
+      z: sz - 2.0,
+      yOverride: shedY,
+      kind: 'coin',
+      coinAmount: 200,
+      label: '200 Moedas FF',
     });
   });
 
@@ -2280,6 +2666,13 @@ export function createIslandWorld(
       level: ((idx % 3) + 1) as 1 | 2 | 3,
       label: `Capacete Nível ${(idx % 3) + 1}`,
     });
+    lootDefs.push({
+      x: poi.x - 2,
+      z: poi.z + 1.8,
+      kind: 'coin',
+      coinAmount: 100,
+      label: '100 Moedas FF',
+    });
   });
 
   // Shared pooled geometries & materials for ALL loot items (cuts GPU draw overhead dramatically)
@@ -2287,6 +2680,8 @@ export function createIslandWorld(
   const lootGlooGeo = new THREE.BoxGeometry(0.46, 0.56, 0.18);
   const lootDeathGeo = new THREE.BoxGeometry(0.76, 0.44, 0.52);
   const lootCylGeo = new THREE.CylinderGeometry(0.17, 0.17, 0.44, 10);
+  const lootCoinGeo = new THREE.CylinderGeometry(0.24, 0.24, 0.08, 12);
+  lootCoinGeo.rotateZ(Math.PI / 2);
   const lootSphereGeo = new THREE.SphereGeometry(0.24, 10, 8);
   const lootGrenadeGeo = new THREE.SphereGeometry(0.2, 10, 8);
   const lootRingGeo = new THREE.RingGeometry(0.42, 0.54, 14);
@@ -2336,6 +2731,7 @@ export function createIslandWorld(
       ammoAmount?: number;
       glooAmount?: number;
       grenadeAmount?: number;
+      coinAmount?: number;
       deathLoot?: LootItem['deathLoot'];
       label: string;
     },
@@ -2346,42 +2742,46 @@ export function createIslandWorld(
     g.position.set(ld.x, ly + 0.25, ld.z);
 
     const boxColor =
-      ld.kind === 'deathbox'
-        ? 0xf59e0b
-        : ld.kind === 'gloo'
-          ? 0x22d3ee
-          : ld.kind === 'grenade'
-            ? 0x84cc16
-            : ld.kind === 'medkit'
-              ? 0xd93838
-              : ld.kind === 'ammo'
-                ? 0xd69f2b
-                : ld.kind === 'scope'
-                  ? 0x10b981
-                  : ld.kind === 'vest'
-                    ? 0x0ea5e9
-                    : ld.kind === 'helmet'
-                      ? 0x38bdf8
-                      : ld.kind === 'backpack'
-                        ? 0xf59e0b
-                        : ld.kind === 'attachment'
-                          ? 0xf43f5e
-                          : ld.weaponId === 'awm'
-                            ? 0xa855f7
-                            : 0x3b82f6;
+      ld.kind === 'coin'
+        ? 0xfacc15
+        : ld.kind === 'deathbox'
+          ? 0xf59e0b
+          : ld.kind === 'gloo'
+            ? 0x22d3ee
+            : ld.kind === 'grenade'
+              ? 0x84cc16
+              : ld.kind === 'medkit'
+                ? 0xd93838
+                : ld.kind === 'ammo'
+                  ? 0xd69f2b
+                  : ld.kind === 'scope'
+                    ? 0x10b981
+                    : ld.kind === 'vest'
+                      ? 0x0ea5e9
+                      : ld.kind === 'helmet'
+                        ? 0x38bdf8
+                        : ld.kind === 'backpack'
+                          ? 0xf59e0b
+                          : ld.kind === 'attachment'
+                            ? 0xf43f5e
+                            : ld.weaponId === 'awm'
+                              ? 0xa855f7
+                              : 0x3b82f6;
 
     const itemGeo =
-      ld.kind === 'deathbox'
-        ? lootDeathGeo
-        : ld.kind === 'gloo'
-          ? lootGlooGeo
-          : ld.kind === 'grenade'
-            ? lootGrenadeGeo
-            : ld.kind === 'scope' || ld.kind === 'attachment'
-              ? lootCylGeo
-              : ld.kind === 'helmet'
-                ? lootSphereGeo
-                : lootBoxGeo;
+      ld.kind === 'coin'
+        ? lootCoinGeo
+        : ld.kind === 'deathbox'
+          ? lootDeathGeo
+          : ld.kind === 'gloo'
+            ? lootGlooGeo
+            : ld.kind === 'grenade'
+              ? lootGrenadeGeo
+              : ld.kind === 'scope' || ld.kind === 'attachment'
+                ? lootCylGeo
+                : ld.kind === 'helmet'
+                  ? lootSphereGeo
+                  : lootBoxGeo;
 
     const itemMesh = new THREE.Mesh(itemGeo, getLootMat(boxColor));
     if (ld.kind === 'scope' || ld.kind === 'attachment') {
@@ -2410,6 +2810,7 @@ export function createIslandWorld(
         ammoAmount: ld.ammoAmount,
         glooAmount: ld.glooAmount,
         grenadeAmount: ld.grenadeAmount,
+        coinAmount: ld.coinAmount,
         deathLoot: ld.deathLoot,
         label: ld.label,
         collected: false,
@@ -2475,6 +2876,7 @@ export function createIslandWorld(
     camera,
     ...targets.map((t) => t.group),
     ...loots.map((l) => l.mesh),
+    ...vehicles.map((v) => v.group),
   ]);
   for (let i = 0; i < scene.children.length; i++) {
     const ch = scene.children[i];
@@ -2494,7 +2896,6 @@ export function createIslandWorld(
       fog.near = 88;
       fog.far = 260;
       structureCullDist = 175;
-      grassInst.visible = false;
       bushInst.visible = false;
       sunLight.castShadow = false;
       sunLight.shadow.mapSize.set(512, 512);
@@ -2509,7 +2910,6 @@ export function createIslandWorld(
       fog.near = 145;
       fog.far = 430;
       structureCullDist = 265;
-      grassInst.visible = false;
       bushInst.visible = true;
       sunLight.castShadow = true;
       sunLight.shadow.mapSize.set(1024, 1024);
@@ -2524,7 +2924,6 @@ export function createIslandWorld(
       fog.near = 205;
       fog.far = 640;
       structureCullDist = 390;
-      grassInst.visible = true;
       bushInst.visible = true;
       sunLight.castShadow = true;
       sunLight.shadow.mapSize.set(2048, 2048);
@@ -2620,6 +3019,36 @@ export function createIslandWorld(
     });
   };
 
+  const resetVehicles = () => {
+    vehicles.forEach((v) => {
+      const sy = sampleGroundHeight(v.spawnX, v.spawnZ);
+      v.x = v.spawnX;
+      v.y = sy;
+      v.z = v.spawnZ;
+      v.yaw = v.spawnRotY;
+      v.speed = 0;
+      v.hp = v.maxHp;
+      v.destroyed = false;
+      v.driverIsPlayer = false;
+      v.passengerIds = [];
+      v.group.position.set(v.x, v.y, v.z);
+      v.group.rotation.set(0, v.yaw, 0);
+      v.chassisGroup.rotation.set(0, 0, 0);
+      v.chassisGroup.visible = true;
+      v.burnedGroup.visible = false;
+      v.steerFL.rotation.y = 0;
+      v.steerFR.rotation.y = 0;
+      v.smokeMeshes.forEach((sm) => {
+        sm.visible = false;
+      });
+      v.collider.cx = v.x;
+      v.collider.cz = v.z;
+      v.collider.rotY = v.yaw;
+      v.collider.minY = v.y;
+      v.collider.maxY = v.y + 2.05;
+    });
+  };
+
   return {
     scene,
     camera,
@@ -2635,6 +3064,13 @@ export function createIslandWorld(
     pois: POIS,
     targets,
     loots,
+    explosiveBarrels,
+    launchPads,
+    vendingMachines,
+    vehicles,
+    hideExplosiveBarrel,
+    resetExplosiveBarrels,
+    resetVehicles,
     groundHeightAt: sampleGroundHeight,
     spawnDroppedLoot,
     clearDroppedLoots,

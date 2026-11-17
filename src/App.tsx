@@ -19,11 +19,13 @@ import {
   MinimapRoad,
   PlayerProfile,
   PoiMarker,
+  computeRankedPointDelta,
 } from './game/types';
 import { BootAndLoadingScreen } from './components/BootAndLoadingScreen';
 import { MainMenuScreen } from './components/MainMenuScreen';
 import { LobbyScreen } from './components/LobbyScreen';
 import {
+  ArsenalModal,
   CharacterModal,
   CreditsModal,
   SettingsModal,
@@ -33,6 +35,8 @@ import { GameHud } from './components/GameHud';
 import { EndMatchModal } from './components/EndMatchModal';
 import { HudEditorModal } from './components/HudEditorModal';
 import { BackpackModal } from './components/BackpackModal';
+import { VendingShopModal } from './components/VendingShopModal';
+import { RankModal } from './components/RankModal';
 
 const INITIAL_HUD: HudSnapshot = {
   hp: 200,
@@ -49,6 +53,8 @@ const INITIAL_HUD: HudSnapshot = {
   medkitCount: 1,
   glooCount: 2,
   grenadeCount: 2,
+  ffCoins: 100,
+  isRanked: false,
   isPlacingGloo: false,
   isHoldingGrenade: false,
   usingMedkit: false,
@@ -104,6 +110,12 @@ const INITIAL_HUD: HudSnapshot = {
   canOpenParachute: false,
   canVaultWindow: false,
   nearbyLootLabel: null,
+  nearbyLoots: [],
+  nearbyVending: null,
+  nearbyVehicle: null,
+  inVehicle: null,
+  vendingLocations: [],
+  vehicleLocations: [],
   hitmarkerActive: false,
   headshotFlashActive: false,
   aimLockedTarget: false,
@@ -119,6 +131,8 @@ const INITIAL_HUD: HudSnapshot = {
   reviveTarget: null,
   reviveProgress: 0,
   teamMembers: [],
+  airDrops: [],
+  airDropNotice: null,
 };
 
 export default function App() {
@@ -129,6 +143,9 @@ export default function App() {
   const [loadProgress, setLoadProgress] = useState(0);
   const [loadText, setLoadText] = useState('Inicializando...');
   const [hud, setHud] = useState<HudSnapshot>(INITIAL_HUD);
+  const hudRef = useRef<HudSnapshot>(INITIAL_HUD);
+  hudRef.current = hud;
+
   const [mapMeta, setMapMeta] = useState<{
     buildings: MinimapBuilding[];
     roads: MinimapRoad[];
@@ -142,23 +159,28 @@ export default function App() {
   const [profile, setProfile] = useState<PlayerProfile>(() => loadProfile());
 
   const [showCharModal, setShowCharModal] = useState(false);
+  const [showArsenalModal, setShowArsenalModal] = useState(false);
+  const [showRankModal, setShowRankModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showHudEditor, setShowHudEditor] = useState(false);
   const [showCreditsModal, setShowCreditsModal] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isBackpackOpen, setIsBackpackOpen] = useState(false);
+  const [isShopOpen, setIsShopOpen] = useState(false);
   const [matchMode, setMatchMode] = useState<MatchMode>('solo');
+  const [isRanked, setIsRanked] = useState(false);
+  const [lastRankDelta, setLastRankDelta] = useState<number | null>(null);
 
   const prevBackpackOpenRef = useRef(false);
 
-  // Release pointer lock when Backpack / Pause modal opens & allow closing Backpack with Tab/B/Esc
+  // Release pointer lock when Backpack / Shop / Pause opens & handle keyboard shortcuts to close
   useEffect(() => {
     if (isBackpackOpen && !prevBackpackOpenRef.current) {
       soundEngine.playBackpackOpen();
     }
     prevBackpackOpenRef.current = isBackpackOpen;
 
-    if (isBackpackOpen || isPaused) {
+    if (isBackpackOpen || isPaused || isShopOpen) {
       soundEngine.stopRunAudio();
       if (document.pointerLockElement) {
         document.exitPointerLock?.();
@@ -173,16 +195,21 @@ export default function App() {
       engineRef.current?.input.setGameplayActive(true);
     }
 
-    if (!isBackpackOpen) return;
+    if (!isBackpackOpen && !isShopOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === 'Tab' || e.code === 'KeyB' || e.code === 'Escape') {
+      if (isShopOpen && e.code === 'Escape') {
+        e.preventDefault();
+        setIsShopOpen(false);
+        return;
+      }
+      if (isBackpackOpen && (e.code === 'Tab' || e.code === 'KeyB' || e.code === 'Escape')) {
         e.preventDefault();
         setIsBackpackOpen(false);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isBackpackOpen, isPaused, gameState]);
+  }, [isBackpackOpen, isPaused, isShopOpen, gameState]);
 
   // Mount WebGLRenderer once inside isolated container
   useEffect(() => {
@@ -196,9 +223,17 @@ export default function App() {
       (snap) => setHud(snap),
       () => {
         setIsBackpackOpen(false);
+        setIsShopOpen(false);
         setIsPaused((p) => !p);
       },
-      () => setIsBackpackOpen((b) => !b),
+      () => {
+        setIsShopOpen(false);
+        setIsBackpackOpen((b) => !b);
+      },
+      () => {
+        setIsBackpackOpen(false);
+        setIsShopOpen(true);
+      },
     );
     engineRef.current = engine;
     engine.setPlayerNickname(profile.nickname);
@@ -208,13 +243,42 @@ export default function App() {
       setGameState(next);
       setIsPaused(false);
       setIsBackpackOpen(false);
+      setIsShopOpen(false);
+
+      if (next === GameState.LOBBY || next === GameState.MATCHMAKING) {
+        setLastRankDelta(null);
+      }
+
       if (next === GameState.WIN || next === GameState.GAMEOVER) {
+        const snap = hudRef.current;
+        const rankedActive = engine.getRankedMode();
+        const isWin = next === GameState.WIN;
+        const placement = isWin ? 1 : Math.max(2, snap.aliveCount);
+
         setProfile((prev) => {
+          let delta = 0;
+          if (rankedActive) {
+            delta = computeRankedPointDelta({
+              isWin,
+              placement,
+              kills: snap.kills,
+              damageDealt: snap.damageDealt,
+              currentPoints: prev.rankPoints,
+            });
+            setLastRankDelta(delta);
+          } else {
+            setLastRankDelta(null);
+          }
+
           const updated: PlayerProfile = {
             ...prev,
             matchesPlayed: prev.matchesPlayed + 1,
-            wins: next === GameState.WIN ? prev.wins + 1 : prev.wins,
-            gold: prev.gold + (next === GameState.WIN ? 250 : 60),
+            wins: isWin ? prev.wins + 1 : prev.wins,
+            gold: prev.gold + (isWin ? 250 : 60),
+            rankPoints: rankedActive ? Math.max(0, prev.rankPoints + delta) : prev.rankPoints,
+            rankedMatches: rankedActive ? prev.rankedMatches + 1 : prev.rankedMatches,
+            rankedWins: rankedActive && isWin ? prev.rankedWins + 1 : prev.rankedWins,
+            totalKills: prev.totalKills + snap.kills,
           };
           saveProfile(updated);
           return updated;
@@ -270,20 +334,19 @@ export default function App() {
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-black">
-      {/* Nostalgic Bermuda Lobby Image behind transparent 3D character canvas */}
+      {/* Fullscreen Nostalgic Bermuda Lobby Backdrop behind transparent 3D character canvas */}
       {gameState === GameState.LOBBY && (
-        <div className="fixed inset-0 z-0 flex items-center justify-center bg-black pointer-events-none">
-          <div className="relative w-full h-full max-w-[177.78vh] max-h-[56.25vw] overflow-hidden">
-            <img
-              src="/assets/lobby_bg_clean.jpg"
-              alt="Lobby Free Fire Bermuda"
-              className="w-full h-full object-cover object-center"
-            />
-          </div>
+        <div className="fixed inset-0 z-0 pointer-events-none">
+          <img
+            src="/assets/lobby_bg_clean.jpg"
+            alt="Lobby Free Fire Bermuda"
+            className="w-full h-full object-cover object-center"
+          />
+          <div className="absolute inset-0 bg-gradient-to-b from-black/35 via-transparent to-black/45" />
         </div>
       )}
 
-      {/* Isolated WebGL Canvas Mount (transparent in LOBBY so character stands on the beach path) */}
+      {/* Isolated WebGL Canvas Mount */}
       <div
         ref={canvasMountRef}
         className="absolute inset-0 z-10 w-full h-full"
@@ -330,10 +393,16 @@ export default function App() {
           profile={profile}
           character={character}
           matchMode={matchMode}
+          isRanked={isRanked}
           onChangeMatchMode={(mode) => {
             setMatchMode(mode);
             engineRef.current?.setMatchMode(mode);
           }}
+          onChangeRanked={(ranked) => {
+            setIsRanked(ranked);
+            engineRef.current?.setRankedMode(ranked);
+          }}
+          onChangeNickname={handleUpdateNickname}
           muted={settings.muted}
           onToggleMute={handleToggleMute}
           onStartMatch={() => engineRef.current?.startMatchmaking()}
@@ -342,9 +411,21 @@ export default function App() {
             soundEngine.playUiClick();
             setShowCharModal(true);
           }}
+          onOpenArsenal={() => {
+            soundEngine.playUiClick();
+            setShowArsenalModal(true);
+          }}
+          onOpenRankModal={() => {
+            soundEngine.playUiClick();
+            setShowRankModal(true);
+          }}
           onOpenSettings={() => {
             soundEngine.playUiClick();
             setShowSettingsModal(true);
+          }}
+          onOpenHudEditor={() => {
+            soundEngine.playUiClick();
+            setShowHudEditor(true);
           }}
           onOpenCredits={() => {
             soundEngine.playUiClick();
@@ -383,12 +464,17 @@ export default function App() {
           onTogglePause={() => {
             soundEngine.playUiClick();
             setIsBackpackOpen(false);
+            setIsShopOpen(false);
             setIsPaused((p) => !p);
           }}
           onToggleBackpack={() => {
+            setIsShopOpen(false);
             setIsBackpackOpen((b) => !b);
           }}
           onUseMedkit={() => engineRef.current?.useMedkit()}
+          onCollectLoot={(id) => engineRef.current?.collectLootById(id)}
+          onOpenVending={() => engineRef.current?.openNearbyVending()}
+          onToggleVehicle={() => engineRef.current?.toggleVehicle()}
           onOpenSettings={() => {
             soundEngine.playUiClick();
             setShowSettingsModal(true);
@@ -404,6 +490,7 @@ export default function App() {
           onReturnLobby={() => {
             setIsPaused(false);
             setIsBackpackOpen(false);
+            setIsShopOpen(false);
             engineRef.current?.returnToLobby();
           }}
           onTestDamage={() => engineRef.current?.applyTestDamage(55)}
@@ -427,11 +514,25 @@ export default function App() {
         />
       )}
 
+      {inGameplayHud && isShopOpen && !isPaused && engineRef.current && (
+        <VendingShopModal
+          ffCoins={hud.ffCoins}
+          teamMembers={hud.teamMembers}
+          onBuyOffer={(offerId, reviveAllyId) =>
+            engineRef.current?.buyVendingOffer(offerId, reviveAllyId) ?? false
+          }
+          onClose={() => setIsShopOpen(false)}
+        />
+      )}
+
       {/* 11. WIN & 12. GAMEOVER */}
       {(gameState === GameState.WIN || gameState === GameState.GAMEOVER) && (
         <EndMatchModal
           state={gameState}
           hud={hud}
+          isRanked={isRanked || hud.isRanked}
+          rankPoints={profile.rankPoints}
+          rankDelta={lastRankDelta}
           onPlayAgain={() => engineRef.current?.startMatchmaking()}
           onReturnLobby={() => engineRef.current?.returnToLobby()}
         />
@@ -445,6 +546,25 @@ export default function App() {
           onClose={() => {
             soundEngine.playUiClick();
             setShowCharModal(false);
+          }}
+        />
+      )}
+
+      {showArsenalModal && (
+        <ArsenalModal
+          onClose={() => {
+            soundEngine.playUiClick();
+            setShowArsenalModal(false);
+          }}
+        />
+      )}
+
+      {showRankModal && (
+        <RankModal
+          profile={profile}
+          onClose={() => {
+            soundEngine.playUiClick();
+            setShowRankModal(false);
           }}
         />
       )}

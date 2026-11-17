@@ -178,6 +178,10 @@ class SoundEngine {
   private medkitGain: GainNode | null = null;
   private medkitActive = false;
   private stanceSource: AudioBufferSourceNode | null = null;
+  private vehicleOsc: OscillatorNode | null = null;
+  private vehicleSubOsc: OscillatorNode | null = null;
+  private vehicleGain: GainNode | null = null;
+  private vehicleFilter: BiquadFilterNode | null = null;
 
   // Lobby 2017 Music
   private lobbyAudio: HTMLAudioElement | null = null;
@@ -198,6 +202,7 @@ class SoundEngine {
     if (this.muted || this.volume <= 0.001) {
       this.stopRunAudio();
       this.stopMedkitAudio();
+      this.stopVehicleAudio();
     }
     this.syncLobbyMusicPlayback();
   }
@@ -550,8 +555,8 @@ class SoundEngine {
     const now = this.ctx.currentTime;
     [
       { freq: 340, delay: 0 },
-      { freq: 520, delay: 0.22 },
-      { freq: 720, delay: 0.48 },
+      { freq: 520, delay: 0.14 },
+      { freq: 720, delay: 0.3 },
     ].forEach(({ freq, delay }) => {
       if (!this.ctx || !this.masterGain) return;
       const osc = this.ctx.createOscillator();
@@ -1172,6 +1177,171 @@ class SoundEngine {
       this.ambientGain.gain.setTargetAtTime(0.0, now, 0.08);
       this.propGain.gain.setTargetAtTime(0.0, now, 0.08);
     }
+  }
+
+  public playCoinPickup(): void {
+    if (!this.ready() || !this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+    [987.77, 1318.5].forEach((freq, idx) => {
+      if (!this.ctx || !this.masterGain) return;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      const t = now + idx * 0.055;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.15, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+      osc.connect(g);
+      g.connect(this.masterGain);
+      osc.start(t);
+      osc.stop(t + 0.15);
+    });
+  }
+
+  public playShopBuy(): void {
+    if (!this.ready() || !this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+    [587.3, 783.99, 1046.5].forEach((freq, idx) => {
+      if (!this.ctx || !this.masterGain) return;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'triangle';
+      const t = now + idx * 0.05;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.16, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      osc.connect(g);
+      g.connect(this.masterGain);
+      osc.start(t);
+      osc.stop(t + 0.18);
+    });
+  }
+
+  public playVehicleEnter(): void {
+    if (!this.ready() || !this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(68, now);
+    osc.frequency.exponentialRampToValueAtTime(140, now + 0.18);
+    osc.frequency.exponentialRampToValueAtTime(86, now + 0.34);
+    g.gain.setValueAtTime(0.16, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
+    osc.connect(g);
+    g.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.38);
+  }
+
+  public updateVehicleEngineAudio(active: boolean, speedRatio: number): void {
+    if (!active || this.muted || this.volume <= 0.001) {
+      this.stopVehicleAudio();
+      return;
+    }
+    if (!this.ready() || !this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+    if (!this.vehicleOsc || !this.vehicleSubOsc || !this.vehicleGain || !this.vehicleFilter) {
+      const osc = this.ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = 46;
+
+      const sub = this.ctx.createOscillator();
+      sub.type = 'triangle';
+      sub.frequency.value = 23;
+
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 220;
+
+      const gain = this.ctx.createGain();
+      gain.gain.value = 0.001;
+
+      osc.connect(filter);
+      sub.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start();
+      sub.start();
+
+      this.vehicleOsc = osc;
+      this.vehicleSubOsc = sub;
+      this.vehicleFilter = filter;
+      this.vehicleGain = gain;
+    }
+
+    const r = Math.max(0, Math.min(1.2, speedRatio));
+    const baseHz = 44 + r * 68;
+    this.vehicleOsc.frequency.setTargetAtTime(baseHz, now, 0.06);
+    this.vehicleSubOsc.frequency.setTargetAtTime(baseHz * 0.5, now, 0.06);
+    this.vehicleFilter.frequency.setTargetAtTime(175 + r * 360, now, 0.07);
+    this.vehicleGain.gain.setTargetAtTime(0.08 + r * 0.11, now, 0.06);
+  }
+
+  public stopVehicleAudio(): void {
+    const osc = this.vehicleOsc;
+    const sub = this.vehicleSubOsc;
+    const gain = this.vehicleGain;
+    this.vehicleOsc = null;
+    this.vehicleSubOsc = null;
+    this.vehicleGain = null;
+    this.vehicleFilter = null;
+    if (!osc || !sub || !gain || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    try {
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setTargetAtTime(0.0001, now, 0.02);
+      osc.stop(now + 0.06);
+      sub.stop(now + 0.06);
+    } catch {
+      // ignore
+    }
+  }
+
+  public playVehicleCrash(intensity = 0.6): void {
+    if (!this.ready() || !this.ctx || !this.masterGain || !this.noiseBuffer) return;
+    const now = this.ctx.currentTime;
+    const clamped = Math.max(0.15, Math.min(1.0, intensity));
+    const thud = this.ctx.createOscillator();
+    const tg = this.ctx.createGain();
+    thud.type = 'sine';
+    thud.frequency.setValueAtTime(98, now);
+    thud.frequency.exponentialRampToValueAtTime(32, now + 0.18);
+    tg.gain.setValueAtTime(0.32 * clamped, now);
+    tg.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+    thud.connect(tg);
+    tg.connect(this.masterGain);
+    thud.start(now);
+    thud.stop(now + 0.22);
+
+    const n = this.ctx.createBufferSource();
+    n.buffer = this.noiseBuffer;
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.value = 640;
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.24 * clamped, now);
+    ng.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    n.connect(f);
+    f.connect(ng);
+    ng.connect(this.masterGain);
+    n.start(now, 0, 0.18);
+  }
+
+  public playRunOver(): void {
+    if (!this.ready() || !this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(145, now);
+    osc.frequency.exponentialRampToValueAtTime(42, now + 0.16);
+    g.gain.setValueAtTime(0.42, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    osc.connect(g);
+    g.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.2);
   }
 }
 
