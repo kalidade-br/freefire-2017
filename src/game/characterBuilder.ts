@@ -408,8 +408,10 @@ function createAdamCharacterRig(
 
     if (n.includes('superhero') || n.includes('sphere') || (!n.includes('eye') && (mesh as THREE.SkinnedMesh).isSkinnedMesh)) {
       bodyMat = clonedMat;
-      clonedMat.roughness = 0.72;
-      clonedMat.metalness = 0.04;
+      clonedMat.normalMap = null;
+      clonedMat.roughnessMap = null;
+      clonedMat.roughness = 0.78;
+      clonedMat.metalness = 0.02;
     } else if (n === 'eyebrows' || n === 'face') {
       eyebrowMat = clonedMat;
     }

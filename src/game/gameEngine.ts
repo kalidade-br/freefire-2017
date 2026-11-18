@@ -39,8 +39,11 @@ import {
 } from './types';
 import { preloadAdamAssets } from './adamAssets';
 import {
+  botSurfaceHeightAt,
   createIslandWorld,
   LootVisual,
+  nearestBridgePos,
+  riverCenterZ,
   setBotAdamClip,
   TargetDummy,
   upgradeBotsToAdam,
@@ -142,6 +145,7 @@ export class BattleRoyaleEngine {
   private container: HTMLElement;
   private renderer: THREE.WebGLRenderer;
   private isSoftwareGl: boolean;
+  private contextLost = false;
   private textures: ProceduralTextureSet;
   private envMap: THREE.Texture;
 
@@ -162,6 +166,8 @@ export class BattleRoyaleEngine {
   private solidObstaclesNoTerrain: THREE.Object3D[] = [];
   private scratchTargetMeshes: THREE.Object3D[] = [];
   private targetById = new Map<string, TargetDummy>();
+  private botOrderScratch: number[] = [];
+  private botDistSqScratch = new Float64Array(64);
   private crosshairCheckAccum = 0;
   private lastSunSnapX = Number.NaN;
   private lastSunSnapZ = Number.NaN;
@@ -430,28 +436,17 @@ export class BattleRoyaleEngine {
     this.onBackpackRequest = onBackpackRequest;
     this.onOpenShopRequest = onOpenShopRequest;
 
-    // 1. Software WebGL detection
-    this.isSoftwareGl = (() => {
-      const probe = document.createElement('canvas').getContext('webgl2');
-      if (!probe) return true;
-      const ext = probe.getExtension('WEBGL_debug_renderer_info');
-      const param = ext ? ext.UNMASKED_RENDERER_WEBGL : probe.RENDERER;
-      const gpu = String(probe.getParameter(param));
-      probe.getExtension('WEBGL_lose_context')?.loseContext();
-      return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
-    })();
-
-    // 2. Renderer setup (alpha enabled so nostalgic Lobby backdrop shows through 3D character)
-    this.renderer = new THREE.WebGLRenderer({
-      antialias: !this.isSoftwareGl && initialSettings.quality !== 'low',
-      powerPreference: 'high-performance',
-      alpha: true,
-    });
+    // 1. Create a single WebGLRenderer with progressive fallbacks (never trigger WEBGL_lose_context on a probe!)
+    const { renderer, isSoftwareGl } = this.createSafeRenderer(initialSettings);
+    this.renderer = renderer;
+    this.isSoftwareGl = isSoftwareGl;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
     this.applyQualitySettings(initialSettings);
     this.renderer.setSize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
+    this.renderer.domElement.addEventListener('webglcontextlost', this.onWebGLContextLost);
+    this.renderer.domElement.addEventListener('webglcontextrestored', this.onWebGLContextRestored);
     container.appendChild(this.renderer.domElement);
 
     // 3. Studio IBL environment
@@ -540,7 +535,6 @@ export class BattleRoyaleEngine {
 
     if (!this.isSoftwareGl) {
       this.renderer.compile(this.lobbyScene.scene, this.lobbyScene.camera);
-      this.renderer.compile(this.world.scene, this.world.camera);
     }
 
     // Attach input
@@ -564,6 +558,76 @@ export class BattleRoyaleEngine {
     this.resetPlayerForWaiting();
     this.startLoop();
   }
+
+  private createSafeRenderer(initialSettings: GameSettings): {
+    renderer: THREE.WebGLRenderer;
+    isSoftwareGl: boolean;
+  } {
+    const attempts: THREE.WebGLRendererParameters[] = [
+      {
+        antialias: initialSettings.quality !== 'low',
+        powerPreference: 'high-performance',
+        alpha: true,
+      },
+      {
+        antialias: false,
+        powerPreference: 'default',
+        alpha: true,
+        failIfMajorPerformanceCaveat: false,
+      },
+      {
+        antialias: false,
+        powerPreference: 'low-power',
+        alpha: true,
+        failIfMajorPerformanceCaveat: false,
+      },
+    ];
+
+    let renderer: THREE.WebGLRenderer | null = null;
+    let lastError: unknown = null;
+    for (let i = 0; i < attempts.length; i++) {
+      try {
+        renderer = new THREE.WebGLRenderer(attempts[i]);
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    if (!renderer) {
+      throw lastError instanceof Error
+        ? lastError
+        : new Error('Falha ao inicializar contexto WebGL.');
+    }
+
+    let isSoftwareGl = false;
+    try {
+      const gl = renderer.getContext();
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
+      const gpu = String(gl.getParameter(param) ?? '');
+      isSoftwareGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
+    } catch {
+      isSoftwareGl = false;
+    }
+
+    return { renderer, isSoftwareGl };
+  }
+
+  private onWebGLContextLost = (e: Event): void => {
+    e.preventDefault();
+    this.contextLost = true;
+    cancelAnimationFrame(this.frameId);
+    clearTimeout(this.frameId);
+  };
+
+  private onWebGLContextRestored = (): void => {
+    this.contextLost = false;
+    this.applyQualitySettings(this.settings);
+    if (!this.disposed) {
+      this.startLoop();
+    }
+  };
 
   public setPlayerNickname(nick: string): void {
     const clean = nick.trim();
@@ -610,7 +674,8 @@ export class BattleRoyaleEngine {
             : Math.min(window.devicePixelRatio, 1.35);
     this.renderer.setPixelRatio(scale);
     this.renderer.shadowMap.enabled = !this.isSoftwareGl && settings.quality !== 'low';
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type =
+      settings.quality === 'high' ? THREE.PCFShadowMap : THREE.BasicShadowMap;
     this.renderer.toneMappingExposure =
       settings.quality === 'low' ? 1.02 : settings.quality === 'high' ? 1.14 : 1.08;
     if (this.world) {
@@ -693,9 +758,8 @@ export class BattleRoyaleEngine {
         onProgress(86, 'Montando personagens 3D e equipamentos...');
         this.rebuildPlayerAndLobbyRigs();
 
-        if (!this.isSoftwareGl) {
+        if (!this.isSoftwareGl && !this.contextLost) {
           this.renderer.compile(this.lobbyScene.scene, this.lobbyScene.camera);
-          this.renderer.compile(this.world.scene, this.world.camera);
         }
 
         onProgress(100, 'Pronto para sobreviver!');
@@ -1408,7 +1472,7 @@ export class BattleRoyaleEngine {
     const fz = -Math.cos(this.yaw);
     const dx = THREE.MathUtils.clamp(this.pos.x + fx * 1.45, -505, 505);
     const dz = THREE.MathUtils.clamp(this.pos.z + fz * 1.45, -505, 505);
-    const dy = this.resolveFloorHeight(dx, dz, this.pos.y + 0.5) + 0.28;
+    const dy = this.resolveFloorHeight(dx, dz, this.pos.y + 0.5) + 0.04;
     this.world.spawnDroppedLoot({
       ...partial,
       x: dx,
@@ -1687,21 +1751,23 @@ export class BattleRoyaleEngine {
       const rad = this.matchMode === 'solo' ? 10 + (i % 6) * 8 : 6 + (i % 4) * 5;
       let lx = poi.x + Math.cos(ang) * rad;
       let lz = poi.z + Math.sin(ang) * rad;
-      if (this.world.groundHeightAt(lx, lz) < 0.75) {
+      if (botSurfaceHeightAt(lx, lz).inWater || this.world.groundHeightAt(lx, lz) < 0.75) {
         lx = poi.x;
         lz = poi.z;
       }
       b.landX = lx;
       b.landZ = lz;
+      b.animAccum = (i % 4) * 0.02;
 
       if (isWaitingLobby) {
         b.airState = 'ground';
         const wx = -215 + Math.cos(ang) * (8 + (i % 5) * 6);
         const wz = -205 + Math.sin(ang) * (8 + (i % 5) * 6);
-        const sy = Math.max(1.0, this.world.groundHeightAt(wx, wz));
+        const ws = botSurfaceHeightAt(wx, wz);
+        const sy = Math.max(1.0, ws.y);
         b.group.position.set(wx, sy, wz);
         b.group.rotation.set(0, (i * 1.1) % (Math.PI * 2), 0);
-        b.group.visible = true;
+        b.group.visible = i < 16;
         if (b.parachuteMesh) b.parachuteMesh.visible = false;
         b.aiState = 'roam';
         b.goalX = wx + Math.cos(i) * 14;
@@ -1710,7 +1776,8 @@ export class BattleRoyaleEngine {
         b.airState = 'ground';
         const gx = b.isAlly ? startX + ((i === 0 ? -3.4 : i === 1 ? 3.4 : 0)) : lx;
         const gz = b.isAlly ? startZ + 4.0 : lz;
-        const gy = Math.max(0.8, this.world.groundHeightAt(gx, gz));
+        const gs = botSurfaceHeightAt(gx, gz);
+        const gy = Math.max(0.8, gs.y);
         b.group.position.set(gx, gy, gz);
         b.group.rotation.set(0, 0, 0);
         b.group.visible = true;
@@ -1768,7 +1835,7 @@ export class BattleRoyaleEngine {
 
   private startLoop(): void {
     const tick = () => {
-      if (this.disposed) return;
+      if (this.disposed || this.contextLost) return;
       const rawDt = this.clock.getDelta();
       const dt = Math.min(rawDt, 0.05);
       this.elapsed += dt;
@@ -4399,7 +4466,41 @@ export class BattleRoyaleEngine {
       }
     }
 
-    for (let i = 0; i < bots.length; i++) {
+    const activeVeh = this.activeVehicleId
+      ? this.world.vehicles.find((v) => v.id === this.activeVehicleId) ?? null
+      : null;
+
+    const maxVisibleBots =
+      this.settings.quality === 'low' ? 10 : this.settings.quality === 'high' ? 28 : 18;
+    const maxFullAnimBots =
+      this.settings.quality === 'low' ? 6 : this.settings.quality === 'high' ? 16 : 10;
+    let visibleBotCount = 0;
+    let animatedBotCount = 0;
+    let aiBudget = 8;
+
+    if (this.botDistSqScratch.length < bots.length) {
+      this.botDistSqScratch = new Float64Array(bots.length);
+    }
+    this.botOrderScratch.length = bots.length;
+    for (let idx = 0; idx < bots.length; idx++) {
+      this.botOrderScratch[idx] = idx;
+      const b = bots[idx];
+      if (b.eliminated) {
+        this.botDistSqScratch[idx] = Infinity;
+      } else if (b.isAlly) {
+        this.botDistSqScratch[idx] = 0;
+      } else {
+        const ddx = b.group.position.x - this.pos.x;
+        const ddz = b.group.position.z - this.pos.z;
+        this.botDistSqScratch[idx] = ddx * ddx + ddz * ddz;
+      }
+    }
+    this.botOrderScratch.sort(
+      (a, b) => this.botDistSqScratch[a] - this.botDistSqScratch[b],
+    );
+
+    for (let ord = 0; ord < this.botOrderScratch.length; ord++) {
+      const i = this.botOrderScratch[ord];
       const bot = bots[i];
       if (bot.eliminated) continue;
 
@@ -4607,7 +4708,8 @@ export class BattleRoyaleEngine {
             bot.group.position.z += (dz / dist) * steer;
             bot.group.rotation.y = this.yaw + Math.PI;
           }
-          const gy = Math.max(0.4, this.world.groundHeightAt(bot.group.position.x, bot.group.position.z));
+          const gSurf = botSurfaceHeightAt(bot.group.position.x, bot.group.position.z);
+          const gy = Math.max(0.4, gSurf.y);
           const targetY = Math.max(gy, this.pos.y - 0.4);
           bot.group.position.y = THREE.MathUtils.damp(bot.group.position.y, targetY, 8, dt);
           if (!isChute && (state === GameState.PARACHUTE || bot.group.position.y - gy <= 28)) {
@@ -4646,7 +4748,8 @@ export class BattleRoyaleEngine {
         bot.vy = THREE.MathUtils.damp(bot.vy, isChute ? -8.5 : -25, 3.2, dt);
         bot.group.position.y += bot.vy * dt;
 
-        const gy = Math.max(0.4, this.world.groundHeightAt(bot.group.position.x, bot.group.position.z));
+        const gSurf = botSurfaceHeightAt(bot.group.position.x, bot.group.position.z);
+        const gy = Math.max(0.4, gSurf.y);
         if (!isChute && bot.group.position.y - gy <= 46) {
           bot.airState = 'parachuting';
           if (bot.parachuteMesh) bot.parachuteMesh.visible = true;
@@ -4659,20 +4762,21 @@ export class BattleRoyaleEngine {
           bot.goalX = bot.landX;
           bot.goalZ = bot.landZ;
         }
-        if (
-          bot.isAdam &&
-          bot.mixer &&
-          (bot.group.position.x - this.pos.x) ** 2 + (bot.group.position.z - this.pos.z) ** 2 < 85 * 85
-        ) {
-          setBotAdamClip(bot, 'Jump_Loop', 0.85, 0.2);
-          bot.mixer.update(dt);
+        const skyDistSq =
+          (bot.group.position.x - this.pos.x) ** 2 + (bot.group.position.z - this.pos.z) ** 2;
+        const showSky = skyDistSq <= effectiveRenderDistSq && visibleBotCount < maxVisibleBots;
+        bot.group.visible = showSky;
+        if (showSky) {
+          visibleBotCount++;
+          if (bot.isAdam && bot.mixer && skyDistSq < 85 * 85 && animatedBotCount < maxFullAnimBots) {
+            setBotAdamClip(bot, 'Jump_Loop', 0.85, 0.2);
+            bot.mixer.update(dt);
+            animatedBotCount++;
+          }
         }
         continue;
       }
 
-      const activeVeh = this.activeVehicleId
-        ? this.world.vehicles.find((v) => v.id === this.activeVehicleId) ?? null
-        : null;
       if (activeVeh && activeVeh.passengerIds.includes(bot.id)) {
         bot.group.position.set(activeVeh.x, activeVeh.y + 0.5, activeVeh.z);
         bot.group.visible = false;
@@ -4692,8 +4796,11 @@ export class BattleRoyaleEngine {
       const botCamDistSq =
         (bx - this.pos.x) * (bx - this.pos.x) + (bz - this.pos.z) * (bz - this.pos.z);
       const allyVisDist = Math.max(effectiveRenderDist, 165);
-      const inRenderRange = botCamDistSq <= (bot.isAlly ? allyVisDist * allyVisDist : effectiveRenderDistSq);
+      const wantRender =
+        botCamDistSq <= (bot.isAlly ? allyVisDist * allyVisDist : effectiveRenderDistSq);
+      const inRenderRange = wantRender && (bot.isAlly || visibleBotCount < maxVisibleBots);
       bot.group.visible = inRenderRange;
+      if (inRenderRange) visibleBotCount++;
 
       // Downed crawling state ("posição de 4") in Duo / Squad
       if (bot.isDowned) {
@@ -4731,10 +4838,11 @@ export class BattleRoyaleEngine {
         cdx /= cdist;
         cdz /= cdist;
         const crawlSpeed = movingCrawl ? 1.25 : 0;
-        const nx = THREE.MathUtils.clamp(bx + cdx * crawlSpeed * dt, -490, 490);
-        const nz = THREE.MathUtils.clamp(bz + cdz * crawlSpeed * dt, -490, 490);
-        const ny = this.world.groundHeightAt(nx, nz);
-        if (ny >= 0.35 && movingCrawl) {
+        const nx = THREE.MathUtils.clamp(bx + cdx * crawlSpeed * dt, -485, 485);
+        const nz = THREE.MathUtils.clamp(bz + cdz * crawlSpeed * dt, -485, 485);
+        const crawlSurf = botSurfaceHeightAt(nx, nz);
+        const ny = Math.max(0.18, crawlSurf.y);
+        if (movingCrawl) {
           bot.group.position.set(nx, ny, nz);
           bot.group.rotation.y = Math.atan2(cdx, cdz);
         }
@@ -4825,7 +4933,8 @@ export class BattleRoyaleEngine {
       }
 
       // 1. Periodic staggered sight-based AI decision
-      if (bot.aiTimer <= 0) {
+      if (bot.aiTimer <= 0 && (bot.isAlly || aiBudget > 0)) {
+        if (!bot.isAlly) aiBudget--;
         bot.aiTimer = 0.5 + ((i * 17) % 10) * 0.04;
         bot.targetId = null;
 
@@ -4934,14 +5043,17 @@ export class BattleRoyaleEngine {
           bot.aiState = 'roam';
           const ang = (i * 1.47 + this.elapsed * 0.2) % (Math.PI * 2);
           const rr = Math.min(this.zoneNextRadius * 0.65, 110);
-          bot.goalX = this.zoneNextX + Math.cos(ang) * rr;
-          bot.goalZ = this.zoneNextZ + Math.sin(ang) * rr;
+          let gx = this.zoneNextX + Math.cos(ang) * rr;
+          let gz = this.zoneNextZ + Math.sin(ang) * rr;
+          if (botSurfaceHeightAt(gx, gz).inWater || gx * gx + gz * gz > 445 * 445) {
+            gx = this.zoneCurrentX;
+            gz = this.zoneCurrentZ;
+          }
+          bot.goalX = gx;
+          bot.goalZ = gz;
         } else if (bot.isAlly && isPlaying) {
           const distToPlayer = Math.hypot(this.pos.x - bx, this.pos.z - bz);
           const distGoal = Math.hypot(bot.goalX - bx, bot.goalZ - bz);
-          const activeVeh = this.activeVehicleId
-            ? this.world.vehicles.find((v) => v.id === this.activeVehicleId) ?? null
-            : null;
 
           if (activeVeh && !activeVeh.destroyed && activeVeh.passengerIds.length < 3 && distToPlayer < 32) {
             bot.aiState = 'roam';
@@ -4961,8 +5073,8 @@ export class BattleRoyaleEngine {
           } else if (distToPlayer > 78) {
             const formAng = curAllySlot * 1.25 + this.yaw + Math.PI;
             bot.aiState = 'roam';
-            bot.goalX = THREE.MathUtils.clamp(this.pos.x + Math.sin(formAng) * 16, -480, 480);
-            bot.goalZ = THREE.MathUtils.clamp(this.pos.z + Math.cos(formAng) * 16, -480, 480);
+            bot.goalX = THREE.MathUtils.clamp(this.pos.x + Math.sin(formAng) * 16, -460, 460);
+            bot.goalZ = THREE.MathUtils.clamp(this.pos.z + Math.cos(formAng) * 16, -460, 460);
           } else {
             let foundAllyLoot = false;
             if (bot.weaponId === 'g18' || bot.vestLevel < 2 || bot.medkits < 2) {
@@ -4990,9 +5102,9 @@ export class BattleRoyaleEngine {
               bot.aiState = 'roam';
               const flankAng = (curAllySlot * 2.1 + this.elapsed * 0.25) % (Math.PI * 2);
               const tacticalR = 14 + (curAllySlot % 3) * 8;
-              let gx = THREE.MathUtils.clamp(this.pos.x + Math.cos(flankAng) * tacticalR, -480, 480);
-              let gz = THREE.MathUtils.clamp(this.pos.z + Math.sin(flankAng) * tacticalR, -480, 480);
-              if (this.world.groundHeightAt(gx, gz) < 0.7) {
+              let gx = THREE.MathUtils.clamp(this.pos.x + Math.cos(flankAng) * tacticalR, -460, 460);
+              let gz = THREE.MathUtils.clamp(this.pos.z + Math.sin(flankAng) * tacticalR, -460, 460);
+              if (botSurfaceHeightAt(gx, gz).inWater || gx * gx + gz * gz > 445 * 445) {
                 gx = this.pos.x;
                 gz = this.pos.z;
               }
@@ -5081,9 +5193,9 @@ export class BattleRoyaleEngine {
                   gx = this.zoneNextX + Math.cos(ang) * Math.min(80, this.zoneNextRadius * 0.6);
                   gz = this.zoneNextZ + Math.sin(ang) * Math.min(80, this.zoneNextRadius * 0.6);
                 }
-                if (this.world.groundHeightAt(gx, gz) < 0.7) {
-                  gx = this.zoneCurrentX;
-                  gz = this.zoneCurrentZ;
+                if (botSurfaceHeightAt(gx, gz).inWater || gx * gx + gz * gz > 445 * 445) {
+                  gx = poi.x;
+                  gz = poi.z;
                 }
                 bot.goalX = gx;
                 bot.goalZ = gz;
@@ -5284,9 +5396,6 @@ export class BattleRoyaleEngine {
 
             if (bot.targetId === 'player') {
               if (dist < 58 && Math.random() < 0.3) {
-                const activeVeh = this.activeVehicleId
-                  ? this.world.vehicles.find((v) => v.id === this.activeVehicleId) ?? null
-                  : null;
                 if (activeVeh && !activeVeh.destroyed && Math.random() < 0.62) {
                   this.damageVehicle(activeVeh, 16);
                 } else {
@@ -5326,8 +5435,22 @@ export class BattleRoyaleEngine {
           }
         }
       } else {
-        const dx = bot.goalX - bx;
-        const dz = bot.goalZ - bz;
+        const curRoamSurf = botSurfaceHeightAt(bx, bz);
+        let targetGoalX = bot.goalX;
+        let targetGoalZ = bot.goalZ;
+        if (
+          (bot.aiState === 'roam' || bot.aiState === 'loot') &&
+          !curRoamSurf.onBridge &&
+          Math.sign(bz - riverCenterZ(bx)) !== Math.sign(targetGoalZ - riverCenterZ(targetGoalX))
+        ) {
+          const bridge = nearestBridgePos(bx);
+          if (Math.hypot(bridge.x - bx, bridge.z - bz) < 125 && Math.abs(bx - bridge.x) > 4.0) {
+            targetGoalX = bridge.x;
+            targetGoalZ = bridge.z;
+          }
+        }
+        const dx = targetGoalX - bx;
+        const dz = targetGoalZ - bz;
         const dist = Math.hypot(dx, dz);
         if (dist > 1.4) {
           moveDirX = dx / dist;
@@ -5400,20 +5523,66 @@ export class BattleRoyaleEngine {
         }
       }
 
-      // 3. Apply locomotion + terrain height (cull animation mixer/limbs past 60m)
+      // 3. Apply locomotion + water/bridge terrain height (cull & stagger distant animations)
       const animateLimbs = inRenderRange && botCamDistSq < 60 * 60;
 
       if (isMoving && !isCrouchingAction) {
-        let nx = bx + moveDirX * bot.moveSpeed * dt;
-        let nz = bz + moveDirZ * bot.moveSpeed * dt;
-        nx = THREE.MathUtils.clamp(nx, -490, 490);
-        nz = THREE.MathUtils.clamp(nz, -490, 490);
-        const ny = this.world.groundHeightAt(nx, nz);
-        if (ny < 0.35) {
-          bot.goalX = -bx * 0.4;
-          bot.goalZ = -bz * 0.4;
+        const curSurf = botSurfaceHeightAt(bx, bz);
+        const speedMul = curSurf.inWater ? 0.78 : 1.0;
+        const stepDist = bot.moveSpeed * speedMul * dt;
+        let nx = THREE.MathUtils.clamp(bx + moveDirX * stepDist, -485, 485);
+        let nz = THREE.MathUtils.clamp(bz + moveDirZ * stepDist, -485, 485);
+
+        const rSq = nx * nx + nz * nz;
+        if (rSq > 460 * 460) {
+          const invR = 460 / Math.sqrt(rSq);
+          nx *= invR;
+          nz *= invR;
+          bot.goalX = 0;
+          bot.goalZ = 0;
+        }
+
+        const nextSurf = botSurfaceHeightAt(nx, nz);
+        if (curSurf.inWater) {
+          // Never freeze in water: wade smoothly and steer goal onto nearest dry ground
+          bot.group.position.set(nx, Math.max(0.14, nextSurf.y), nz);
+          if (nextSurf.inWater) {
+            if (rSq > 395 * 395) {
+              bot.goalX = bx * 0.55;
+              bot.goalZ = bz * 0.55;
+            } else {
+              const northSurf = botSurfaceHeightAt(bx, bz + 18);
+              const southSurf = botSurfaceHeightAt(bx, bz - 18);
+              if (!northSurf.inWater && southSurf.inWater) {
+                bot.goalX = bx;
+                bot.goalZ = bz + 20;
+              } else if (!southSurf.inWater && northSurf.inWater) {
+                bot.goalX = bx;
+                bot.goalZ = bz - 20;
+              } else if (northSurf.y >= southSurf.y) {
+                bot.goalX = bx;
+                bot.goalZ = bz + 20;
+              } else {
+                bot.goalX = bx;
+                bot.goalZ = bz - 20;
+              }
+            }
+          }
+        } else if (nextSurf.inWater && (bot.aiState === 'roam' || bot.aiState === 'loot')) {
+          // Try hugging riverbank along X or Z toward dry ground/bridge; wade cleanly if blocked
+          const tx = THREE.MathUtils.clamp(bx + moveDirX * stepDist * 0.85, -485, 485);
+          const tz = THREE.MathUtils.clamp(bz + moveDirZ * stepDist * 0.85, -485, 485);
+          const surfX = botSurfaceHeightAt(tx, bz);
+          const surfZ = botSurfaceHeightAt(bx, tz);
+          if (!surfX.inWater && Math.abs(tx - bx) > 0.005) {
+            bot.group.position.set(tx, surfX.y, bz);
+          } else if (!surfZ.inWater && Math.abs(tz - bz) > 0.005) {
+            bot.group.position.set(bx, surfZ.y, tz);
+          } else {
+            bot.group.position.set(nx, Math.max(0.14, nextSurf.y), nz);
+          }
         } else {
-          bot.group.position.set(nx, ny, nz);
+          bot.group.position.set(nx, Math.max(0.14, nextSurf.y), nz);
         }
       }
 
@@ -5434,7 +5603,16 @@ export class BattleRoyaleEngine {
           } else {
             setBotAdamClip(bot, 'Idle_Loop', 1.0, 0.18);
           }
-          bot.mixer.update(dt);
+          if (bot.isAlly || animatedBotCount < maxFullAnimBots) {
+            bot.mixer.update(dt);
+            animatedBotCount++;
+          } else {
+            bot.animAccum = (bot.animAccum ?? 0) + dt;
+            if (bot.animAccum >= 0.085) {
+              bot.mixer.update(bot.animAccum);
+              bot.animAccum = 0;
+            }
+          }
         }
       } else if (animateLimbs) {
         if (isCrouchingAction) {
@@ -5587,10 +5765,9 @@ export class BattleRoyaleEngine {
     const beaconMat = new THREE.MeshBasicMaterial({
       color: 0xfacc15,
       transparent: true,
-      opacity: 0.28,
+      opacity: 0.22,
       side: THREE.DoubleSide,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
     });
     const beaconBeam = new THREE.Mesh(this.airDropBeamGeo, beaconMat);
     beaconBeam.position.set(ax, groundY + 82, az);
@@ -5599,13 +5776,14 @@ export class BattleRoyaleEngine {
     const ringMat = new THREE.MeshBasicMaterial({
       color: 0xfde047,
       transparent: true,
-      opacity: 0.72,
+      opacity: 0.5,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
     const beaconRing = new THREE.Mesh(this.airDropRingGeo, ringMat);
     beaconRing.rotation.x = -Math.PI / 2;
     beaconRing.position.set(ax, groundY + 0.08, az);
+    beaconRing.visible = false;
     this.world.scene.add(beaconRing);
 
     this.airDrops.push({
@@ -5663,13 +5841,7 @@ export class BattleRoyaleEngine {
         ad.group.position.set(ad.x, ad.y, ad.z);
       }
 
-      if (ad.state === 'falling' || ad.state === 'landed') {
-        const pulse = 1.0 + 0.26 * Math.sin(this.elapsed * 4.5 + i);
-        ad.beaconRing.scale.set(pulse, pulse, 1);
-        ad.ringMat.opacity = 0.55 + 0.28 * Math.sin(this.elapsed * 4.5 + i);
-        ad.beaconMat.opacity =
-          (ad.state === 'landed' ? 0.36 : 0.24) + 0.08 * Math.sin(this.elapsed * 3.2 + i);
-      } else {
+      if (ad.state !== 'falling' && ad.state !== 'landed') {
         ad.beaconBeam.visible = false;
         ad.beaconRing.visible = false;
       }
@@ -6742,6 +6914,7 @@ export class BattleRoyaleEngine {
   }
 
   private renderActiveScene(): void {
+    if (this.contextLost) return;
     const state = this.stateMachine.getState();
     const isLobbyScene =
       state === GameState.BOOT ||
@@ -6947,10 +7120,16 @@ export class BattleRoyaleEngine {
         if (this.revivingBotId) {
           const revB = this.targetById.get(this.revivingBotId);
           if (revB && revB.isDowned && !revB.eliminated) {
-            const allyIdx = this.world.targets.filter((t) => t.isAlly).indexOf(revB);
+            let allySlot = 2;
+            for (let t = 0; t < this.world.targets.length; t++) {
+              const cand = this.world.targets[t];
+              if (!cand.isAlly) continue;
+              if (cand === revB) break;
+              allySlot++;
+            }
             return {
               id: revB.id,
-              slotNumber: (allyIdx >= 0 ? allyIdx : 0) + 2,
+              slotNumber: allySlot,
               nick: revB.nick,
               bleedHp: Math.round(revB.bleedHp),
             };
@@ -6972,9 +7151,15 @@ export class BattleRoyaleEngine {
         if (!this.isPlayerDowned || !this.playerRevivingAllyId) return null;
         const rescuer = this.targetById.get(this.playerRevivingAllyId);
         if (!rescuer || rescuer.eliminated || rescuer.isDowned) return null;
-        const allyIdx = this.world.targets.filter((t) => t.isAlly).indexOf(rescuer);
+        let allySlot = 2;
+        for (let t = 0; t < this.world.targets.length; t++) {
+          const cand = this.world.targets[t];
+          if (!cand.isAlly) continue;
+          if (cand === rescuer) break;
+          allySlot++;
+        }
         return {
-          slotNumber: (allyIdx >= 0 ? allyIdx : 0) + 2,
+          slotNumber: allySlot,
           nick: rescuer.nick,
           progress: Math.max(0, Math.min(1, rescuer.reviveTimer / 3.0)),
         };
@@ -6982,66 +7167,70 @@ export class BattleRoyaleEngine {
       teamMembers:
         this.matchMode === 'solo'
           ? []
-          : [
-              {
-                id: 'player',
-                slotNumber: 1,
-                nick: this.playerNick,
-                hp: this.isPlayerDowned ? Math.round(this.playerBleedHp) : Math.round(this.hp),
-                maxHp: this.isPlayerDowned ? 100 : this.maxHp,
-                isDowned: this.isPlayerDowned,
-                eliminated: this.isDead,
-              },
-              ...this.world.targets
-                .filter((b) => b.isAlly)
-                .map((b, idx) => {
-                  const elim = b.eliminated || b.downTimer > 0;
-                  let distance: number | undefined;
-                  let onScreen = false;
-                  let screenXPct: number | undefined;
-                  let screenYPct: number | undefined;
-                  let offscreenAngleRad: number | undefined;
-                  const bx = b.group.position.x;
-                  const by = b.group.position.y;
-                  const bz = b.group.position.z;
+          : (() => {
+              const members: HudSnapshot['teamMembers'] = [
+                {
+                  id: 'player',
+                  slotNumber: 1,
+                  nick: this.playerNick,
+                  hp: this.isPlayerDowned ? Math.round(this.playerBleedHp) : Math.round(this.hp),
+                  maxHp: this.isPlayerDowned ? 100 : this.maxHp,
+                  isDowned: this.isPlayerDowned,
+                  eliminated: this.isDead,
+                },
+              ];
+              let allySlot = 2;
+              for (let t = 0; t < this.world.targets.length; t++) {
+                const b = this.world.targets[t];
+                if (!b.isAlly) continue;
+                const elim = b.eliminated || b.downTimer > 0;
+                let distance: number | undefined;
+                let onScreen = false;
+                let screenXPct: number | undefined;
+                let screenYPct: number | undefined;
+                let offscreenAngleRad: number | undefined;
+                const bx = b.group.position.x;
+                const by = b.group.position.y;
+                const bz = b.group.position.z;
 
-                  if (!elim && b.airState !== 'inPlane') {
-                    const dx = bx - this.pos.x;
-                    const dz = bz - this.pos.z;
-                    distance = Math.round(Math.hypot(dx, dz));
-                    const fwdDot = dx * fwdX + dz * fwdZ;
-                    const rightDot = dx * rightX + dz * rightZ;
-                    offscreenAngleRad = Math.atan2(rightDot, fwdDot);
+                if (!elim && b.airState !== 'inPlane') {
+                  const dx = bx - this.pos.x;
+                  const dz = bz - this.pos.z;
+                  distance = Math.round(Math.hypot(dx, dz));
+                  const fwdDot = dx * fwdX + dz * fwdZ;
+                  const rightDot = dx * rightX + dz * rightZ;
+                  offscreenAngleRad = Math.atan2(rightDot, fwdDot);
 
-                    _v1.set(bx, by + (b.isDowned ? 1.05 : 2.15), bz).project(this.world.camera);
-                    const inFront = _v1.z >= -1 && _v1.z <= 1;
-                    const sx = (_v1.x * 0.5 + 0.5) * 100;
-                    const sy = (-_v1.y * 0.5 + 0.5) * 100;
-                    if (inFront && sx >= 4 && sx <= 96 && sy >= 6 && sy <= 92) {
-                      onScreen = true;
-                      screenXPct = sx;
-                      screenYPct = sy;
-                    }
+                  _v1.set(bx, by + (b.isDowned ? 1.05 : 2.15), bz).project(this.world.camera);
+                  const inFront = _v1.z >= -1 && _v1.z <= 1;
+                  const sx = (_v1.x * 0.5 + 0.5) * 100;
+                  const sy = (-_v1.y * 0.5 + 0.5) * 100;
+                  if (inFront && sx >= 4 && sx <= 96 && sy >= 6 && sy <= 92) {
+                    onScreen = true;
+                    screenXPct = sx;
+                    screenYPct = sy;
                   }
+                }
 
-                  return {
-                    id: b.id,
-                    slotNumber: idx + 2,
-                    nick: b.nick,
-                    hp: b.isDowned ? Math.round(b.bleedHp) : Math.round(b.hp),
-                    maxHp: b.isDowned ? 100 : b.maxHp,
-                    isDowned: b.isDowned,
-                    eliminated: elim,
-                    distance,
-                    onScreen,
-                    screenXPct,
-                    screenYPct,
-                    offscreenAngleRad,
-                    worldX: bx,
-                    worldZ: bz,
-                  };
-                }),
-            ],
+                members.push({
+                  id: b.id,
+                  slotNumber: allySlot++,
+                  nick: b.nick,
+                  hp: b.isDowned ? Math.round(b.bleedHp) : Math.round(b.hp),
+                  maxHp: b.isDowned ? 100 : b.maxHp,
+                  isDowned: b.isDowned,
+                  eliminated: elim,
+                  distance,
+                  onScreen,
+                  screenXPct,
+                  screenYPct,
+                  offscreenAngleRad,
+                  worldX: bx,
+                  worldZ: bz,
+                });
+              }
+              return members;
+            })(),
       airDrops: this.airDrops.map((ad) => ({
         id: ad.id,
         x: ad.x,
@@ -7097,6 +7286,8 @@ export class BattleRoyaleEngine {
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
 
+    this.renderer.domElement.removeEventListener('webglcontextlost', this.onWebGLContextLost);
+    this.renderer.domElement.removeEventListener('webglcontextrestored', this.onWebGLContextRestored);
     this.renderer.domElement.removeEventListener('pointerdown', this.onCanvasPointerDown);
     window.removeEventListener('pointermove', this.onWindowPointerMove);
     window.removeEventListener('pointerup', this.onWindowPointerUp);

@@ -173,6 +173,7 @@ export default function App() {
   const [matchMode, setMatchMode] = useState<MatchMode>('solo');
   const [isRanked, setIsRanked] = useState(false);
   const [lastRankDelta, setLastRankDelta] = useState<number | null>(null);
+  const [webglError, setWebglError] = useState<string | null>(null);
 
   const prevBackpackOpenRef = useRef(false);
 
@@ -219,25 +220,33 @@ export default function App() {
     const container = canvasMountRef.current;
     if (!container) return;
 
-    const engine = new BattleRoyaleEngine(
-      container,
-      settings,
-      character,
-      (snap) => setHud(snap),
-      () => {
-        setIsBackpackOpen(false);
-        setIsShopOpen(false);
-        setIsPaused((p) => !p);
-      },
-      () => {
-        setIsShopOpen(false);
-        setIsBackpackOpen((b) => !b);
-      },
-      () => {
-        setIsBackpackOpen(false);
-        setIsShopOpen(true);
-      },
-    );
+    let engine: BattleRoyaleEngine;
+    try {
+      engine = new BattleRoyaleEngine(
+        container,
+        settings,
+        character,
+        (snap) => setHud(snap),
+        () => {
+          setIsBackpackOpen(false);
+          setIsShopOpen(false);
+          setIsPaused((p) => !p);
+        },
+        () => {
+          setIsShopOpen(false);
+          setIsBackpackOpen((b) => !b);
+        },
+        () => {
+          setIsBackpackOpen(false);
+          setIsShopOpen(true);
+        },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro ao criar contexto WebGL.';
+      setWebglError(msg);
+      return;
+    }
+    setWebglError(null);
     engineRef.current = engine;
     engine.setPlayerNickname(profile.nickname);
     setMapMeta(engine.getMapMetadata());
@@ -626,6 +635,27 @@ export default function App() {
             setShowCreditsModal(false);
           }}
         />
+      )}
+
+      {webglError && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-4 text-white">
+          <div className="w-full max-w-md bg-[#14181e] border-2 border-amber-500 p-6 space-y-4 text-center shadow-2xl">
+            <h2 className="text-lg font-black uppercase tracking-wider text-amber-400">
+              Motor 3D (WebGL) Bloqueado
+            </h2>
+            <p className="text-xs text-neutral-300 leading-relaxed">
+              O navegador bloqueou temporariamente a criação do contexto gráfico 3D nesta aba.
+              Recarregue a página para restaurar o WebGL normalmente.
+            </p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-black text-xs uppercase tracking-widest cursor-pointer"
+            >
+              RECARREGAR JOGO
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
