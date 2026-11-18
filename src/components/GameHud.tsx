@@ -7,6 +7,7 @@ import {
   Play,
   Settings,
   Trophy,
+  Wrench,
 } from 'lucide-react';
 import { InputManager } from '../game/inputManager';
 import {
@@ -563,6 +564,7 @@ export const GameHud: React.FC<GameHudProps> = ({
     !hud.isPlacingGloo &&
     !hud.isHoldingGrenade &&
     !hud.isDead &&
+    !hud.isPlayerDowned &&
     !isPaused;
 
   const inactiveWeaponSlots: WeaponSlotId[] = (
@@ -778,7 +780,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       )}
 
       {/* CUSTOMIZABLE UTILITY BUTTONS (MOCHILA %, KIT, GRANADA, GELO) */}
-      {isGroundCombat && !hud.isDead && !isPaused && (
+      {isGroundCombat && !hud.isDead && !hud.isPlayerDowned && !isPaused && (
         <>
           {/* Mochila (% lotação) */}
           <button
@@ -1061,7 +1063,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       </div>
 
       {/* CUSTOMIZABLE CLASSIC FREE FIRE TOP-RIGHT WEAPON BOX (MATCHES SCREENSHOTS 1 & 3) */}
-      {isGroundCombat && (
+      {isGroundCombat && !hud.isPlayerDowned && (
         <div
           style={layoutStyle(hudLayout.weapons)}
           className="pointer-events-auto absolute z-20 flex flex-col items-end gap-1 w-[184px] sm:w-[214px]"
@@ -1291,7 +1293,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       )}
 
       {/* CENTER CROSSHAIR (Compact & Semi-Transparent) */}
-      {isGroundCombat && !hud.isDead && !isPaused && !showOpticalOverlay && !isBackpackOpen && (
+      {isGroundCombat && !hud.isDead && !hud.isPlayerDowned && !isPaused && !showOpticalOverlay && !isBackpackOpen && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="relative flex items-center justify-center">
             <div
@@ -1396,7 +1398,7 @@ export const GameHud: React.FC<GameHudProps> = ({
         })}
 
       {/* Tactical Gloo Wall / Grenade Active Mode Banner */}
-      {isGroundCombat && !hud.isDead && !isPaused && (hud.isPlacingGloo || hud.isHoldingGrenade) && (
+      {isGroundCombat && !hud.isDead && !hud.isPlayerDowned && !isPaused && (hud.isPlacingGloo || hud.isHoldingGrenade) && (
         <div
           className={`absolute top-[36%] left-1/2 -translate-x-1/2 z-20 pointer-events-none px-3 py-1 border font-mono font-bold text-[10px] uppercase tracking-wider ${
             hud.isPlacingGloo
@@ -1435,7 +1437,49 @@ export const GameHud: React.FC<GameHudProps> = ({
           </button>
         )}
 
-        {isGroundCombat && hud.reviveProgress > 0 && hud.reviveTarget && (
+        {isGroundCombat && !hud.isDead && !isPaused && hud.isPlayerDowned && (
+          <div className="pointer-events-none flex flex-col items-center gap-1.5 w-72 max-w-[88vw]">
+            <div className="w-full bg-red-950/92 border-2 border-red-500 px-3 py-2 shadow-2xl">
+              <div className="flex items-center justify-between text-[10px] font-mono font-black text-red-200 uppercase tracking-wider mb-1 gap-2">
+                <span className="animate-pulse truncate">
+                  VOCÊ FOI DERRUBADO! AGUARDANDO RESGATE...
+                </span>
+                <span className="tabular-nums text-white shrink-0">
+                  {Math.max(0, Math.ceil(hud.playerBleedHp))}/100
+                </span>
+              </div>
+              <div className="w-full h-2 bg-black/75 overflow-hidden">
+                <div
+                  className="h-full bg-red-500 transition-[width] duration-75"
+                  style={{ width: `${Math.max(0, Math.min(100, hud.playerBleedHp))}%` }}
+                />
+              </div>
+            </div>
+
+            {hud.revivedBy && (
+              <div className="w-full bg-emerald-950/92 border border-emerald-400 px-3 py-1.5 shadow-xl">
+                <div className="flex items-center justify-between text-[10px] font-mono font-black text-emerald-200 uppercase mb-1 gap-2">
+                  <span className="truncate">
+                    #{hud.revivedBy.slotNumber} {hud.revivedBy.nick} SALVANDO VOCÊ...
+                  </span>
+                  <span className="tabular-nums shrink-0">
+                    {Math.round(hud.revivedBy.progress * 100)}%
+                  </span>
+                </div>
+                <div className="w-full h-1.5 bg-black/75 overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-400 transition-[width] duration-75"
+                    style={{
+                      width: `${Math.round(Math.max(0, Math.min(1, hud.revivedBy.progress)) * 100)}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {isGroundCombat && !hud.isPlayerDowned && hud.reviveProgress > 0 && hud.reviveTarget && (
           <div className="w-60 bg-black/85 border border-emerald-400 px-3 py-1.5 shadow-xl">
             <div className="flex items-center justify-between text-[10px] font-mono text-emerald-300 mb-1">
               <span>
@@ -1452,7 +1496,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
         )}
 
-        {isGroundCombat && hud.reviveTarget && hud.reviveProgress <= 0 && (
+        {isGroundCombat && !hud.isPlayerDowned && hud.reviveTarget && hud.reviveProgress <= 0 && (
           <button
             type="button"
             onPointerDown={(e) => {
@@ -1473,7 +1517,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           </button>
         )}
 
-        {isGroundCombat && hud.usingMedkit && (
+        {isGroundCombat && !hud.isPlayerDowned && hud.usingMedkit && (
           <div className="w-56 bg-black/80 border border-emerald-400 px-3 py-1.5">
             <div className="flex items-center justify-between text-[10px] font-mono text-emerald-300 mb-1">
               <span>USANDO KIT MÉDICO...</span>
@@ -1488,13 +1532,13 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
         )}
 
-        {isGroundCombat && hud.canVaultWindow && !hud.nearbyLootLabel && !hud.inVehicle && (
+        {isGroundCombat && !hud.isPlayerDowned && hud.canVaultWindow && !hud.nearbyLootLabel && !hud.inVehicle && (
           <div className="px-3 py-1 bg-sky-950/88 border border-sky-400 text-sky-200 font-mono font-bold text-[11px] uppercase">
             [ESPAÇO] PULAR JANELA
           </div>
         )}
 
-        {isGroundCombat && hud.nearbyVending && !hud.inVehicle && (
+        {isGroundCombat && !hud.isPlayerDowned && hud.nearbyVending && !hud.inVehicle && (
           <button
             type="button"
             onPointerDown={(e) => {
@@ -1509,7 +1553,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           </button>
         )}
 
-        {isGroundCombat && hud.nearbyVehicle && !hud.inVehicle && (
+        {isGroundCombat && !hud.isPlayerDowned && hud.nearbyVehicle && !hud.inVehicle && (
           <button
             type="button"
             onPointerDown={(e) => {
@@ -1677,7 +1721,7 @@ export const GameHud: React.FC<GameHudProps> = ({
         </div>
 
         {/* Small Quick Gloo Diamond/Circle right of HP bar like screenshot */}
-        {isGroundCombat && (
+        {isGroundCombat && !hud.isPlayerDowned && (
           <button
             type="button"
             onPointerDown={(e) => {
@@ -1701,102 +1745,123 @@ export const GameHud: React.FC<GameHudProps> = ({
         )}
       </div>
 
-      {/* FREE FIRE LOOT STRIP DIRECTLY UNDER TOP-RIGHT WEAPON BOX (MATCHES SCREENSHOT 1) */}
+      {/* FREE FIRE LOOT STRIP / INDIVIDUAL DEATHBOX LIST DIRECTLY UNDER TOP-RIGHT WEAPON BOX */}
       {isGroundCombat &&
         !hud.isDead &&
+        !hud.isPlayerDowned &&
         !isPaused &&
         !isBackpackOpen &&
         !hud.inVehicle &&
-        hud.nearbyLoots.length > 0 && (
-          <div className="pointer-events-auto absolute right-2 sm:right-3 top-[172px] sm:top-[190px] z-20 flex flex-row-reverse flex-wrap justify-start gap-1.5 max-w-[340px] sm:max-w-[420px]">
-            {hud.nearbyLoots.slice(0, 4).map((slot, idx) => {
-              const renderSlotIcon = () => {
-                if (slot.weaponId) {
+        hud.nearbyLoots.length > 0 && (() => {
+          const boxOwner = hud.nearbyLoots.find((s) => s.boxOwnerNick)?.boxOwnerNick;
+          const visibleLoots = hud.nearbyLoots.slice(0, 8);
+          return (
+            <div className="pointer-events-auto absolute right-2 sm:right-3 top-[172px] sm:top-[190px] z-20 flex flex-col items-end gap-1 max-w-[350px] sm:max-w-[430px]">
+              {boxOwner && (
+                <div className="bg-black/82 border border-amber-400/80 px-2.5 py-0.5 text-[9px] font-mono font-black uppercase tracking-wider text-amber-300 shadow">
+                  CAIXA DE {boxOwner}
+                </div>
+              )}
+              <div className="flex flex-row-reverse flex-wrap justify-start gap-1.5 max-h-[190px] overflow-y-auto pr-0.5">
+                {visibleLoots.map((slot, idx) => {
+                  const renderSlotIcon = () => {
+                    if (slot.weaponId) {
+                      return (
+                        <WeaponIcon
+                          weaponId={slot.weaponId}
+                          className="w-12 h-6 shrink-0 drop-shadow"
+                        />
+                      );
+                    }
+                    if (slot.kind === 'ammo') {
+                      return <IconAmmoSvg className="w-8 h-7 shrink-0 drop-shadow" />;
+                    }
+                    if (slot.kind === 'coin') {
+                      return <IconCoinSvg className="w-6 h-6 shrink-0" />;
+                    }
+                    if (slot.kind === 'medkit') {
+                      return <IconMedkitSvg className="w-7 h-7 text-emerald-400 shrink-0" />;
+                    }
+                    if (slot.kind === 'gloo') {
+                      return <IconGlooSvg className="w-7 h-7 text-cyan-300 shrink-0" />;
+                    }
+                    if (slot.kind === 'grenade') {
+                      return <IconGrenadeSvg className="w-7 h-7 text-red-400 shrink-0" />;
+                    }
+                    if (slot.kind === 'vest') {
+                      return <IconVestSvg className="w-7 h-7 text-sky-300 shrink-0" />;
+                    }
+                    if (slot.kind === 'helmet') {
+                      return <IconHelmetSvg className="w-7 h-7 text-sky-300 shrink-0" />;
+                    }
+                    if (slot.kind === 'backpack') {
+                      return <IconBackpackSvg className="w-7 h-7 text-amber-300 shrink-0" />;
+                    }
+                    if (slot.kind === 'scope') {
+                      return <IconScopeSvg className="w-7 h-7 text-emerald-300 shrink-0" />;
+                    }
+                    if (slot.kind === 'attachment') {
+                      return <Wrench className="w-6 h-6 text-amber-300 shrink-0" />;
+                    }
+                    if (slot.kind === 'airdrop') {
+                      return <Trophy className="w-7 h-7 text-amber-400 shrink-0" />;
+                    }
+                    return <IconBackpackSvg className="w-6 h-6 text-emerald-300 shrink-0" />;
+                  };
+
                   return (
-                    <WeaponIcon
-                      weaponId={slot.weaponId}
-                      className="w-12 h-6 shrink-0 drop-shadow"
-                    />
+                    <button
+                      key={slot.id}
+                      type="button"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        onCollectLoot(slot.id);
+                      }}
+                      className={`relative w-[74px] h-[76px] sm:w-[82px] sm:h-[84px] flex flex-col items-center justify-between p-1.5 border shadow-lg cursor-pointer transition-colors ${
+                        idx === 0
+                          ? 'bg-black/72 hover:bg-amber-500/25 border-amber-400/90 text-white'
+                          : slot.boxOwnerNick
+                            ? 'bg-black/68 hover:bg-amber-500/20 border-amber-300/45 text-neutral-100'
+                            : 'bg-black/58 hover:bg-black/78 border-white/30 text-neutral-100'
+                      }`}
+                    >
+                      {/* Top row: [E] badge left + Quantity / level right */}
+                      <div className="w-full flex items-center justify-between leading-none">
+                        {idx === 0 ? (
+                          <span className="px-1 py-0.5 bg-amber-400 text-black text-[8px] font-black font-mono">
+                            E
+                          </span>
+                        ) : slot.boxOwnerNick ? (
+                          <span className="px-1 py-0.5 bg-amber-950/90 border border-amber-400/50 text-amber-200 text-[7px] font-black font-mono">
+                            CX
+                          </span>
+                        ) : (
+                          <span />
+                        )}
+                        {slot.subLabel && (
+                          <span className="text-[9px] font-mono font-bold text-white/90">
+                            {slot.subLabel.replace('+', '')}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Center item graphic */}
+                      <div className="flex-1 flex items-center justify-center">
+                        {renderSlotIcon()}
+                      </div>
+
+                      {/* Bottom item name */}
+                      <div className="w-full text-[8px] sm:text-[9px] font-sans font-medium leading-[1.1] text-center text-white/95 line-clamp-2">
+                        {slot.label}
+                      </div>
+                    </button>
                   );
-                }
-                if (slot.kind === 'ammo') {
-                  return <IconAmmoSvg className="w-8 h-7 shrink-0 drop-shadow" />;
-                }
-                if (slot.kind === 'coin') {
-                  return <IconCoinSvg className="w-6 h-6 shrink-0" />;
-                }
-                if (slot.kind === 'medkit') {
-                  return <IconMedkitSvg className="w-7 h-7 text-emerald-400 shrink-0" />;
-                }
-                if (slot.kind === 'gloo') {
-                  return <IconGlooSvg className="w-7 h-7 text-cyan-300 shrink-0" />;
-                }
-                if (slot.kind === 'grenade') {
-                  return <IconGrenadeSvg className="w-7 h-7 text-red-400 shrink-0" />;
-                }
-                if (slot.kind === 'vest') {
-                  return <IconVestSvg className="w-7 h-7 text-sky-300 shrink-0" />;
-                }
-                if (slot.kind === 'helmet') {
-                  return <IconHelmetSvg className="w-7 h-7 text-sky-300 shrink-0" />;
-                }
-                if (slot.kind === 'backpack') {
-                  return <IconBackpackSvg className="w-7 h-7 text-amber-300 shrink-0" />;
-                }
-                if (slot.kind === 'scope') {
-                  return <IconScopeSvg className="w-7 h-7 text-emerald-300 shrink-0" />;
-                }
-                if (slot.kind === 'airdrop') {
-                  return <Trophy className="w-7 h-7 text-amber-400 shrink-0" />;
-                }
-                return <IconBackpackSvg className="w-6 h-6 text-emerald-300 shrink-0" />;
-              };
-
-              return (
-                <button
-                  key={slot.id}
-                  type="button"
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    onCollectLoot(slot.id);
-                  }}
-                  className={`relative w-[74px] h-[76px] sm:w-[82px] sm:h-[84px] flex flex-col items-center justify-between p-1.5 border shadow-lg cursor-pointer transition-colors ${
-                    idx === 0
-                      ? 'bg-black/68 hover:bg-amber-500/25 border-amber-400/90 text-white'
-                      : 'bg-black/58 hover:bg-black/78 border-white/30 text-neutral-100'
-                  }`}
-                >
-                  {/* Top row: [E] badge left + Quantity / level right */}
-                  <div className="w-full flex items-center justify-between leading-none">
-                    {idx === 0 ? (
-                      <span className="px-1 py-0.5 bg-amber-400 text-black text-[8px] font-black font-mono">
-                        E
-                      </span>
-                    ) : (
-                      <span />
-                    )}
-                    {slot.subLabel && (
-                      <span className="text-[9px] font-mono font-bold text-white/90">
-                        {slot.subLabel.replace('+', '')}
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Center item graphic */}
-                  <div className="flex-1 flex items-center justify-center">
-                    {renderSlotIcon()}
-                  </div>
-
-                  {/* Bottom item name */}
-                  <div className="w-full text-[8px] sm:text-[9px] font-sans font-medium leading-[1.1] text-center text-white/95 line-clamp-2">
-                    {slot.label}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        )}
+                })}
+              </div>
+            </div>
+          );
+        })()}
 
       {/* MOBILE VEHICLE TOUCH PEDALS & STEERING WHEN DRIVING */}
       {showTouchHud && isGroundCombat && !isPaused && hud.inVehicle && (
@@ -1863,47 +1928,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       {/* CUSTOMIZABLE MOBILE VIRTUAL JOYSTICK, SPRINT, LEFT-FIRE & RIGHT BUTTON CLUSTER */}
       {showTouchHud && isGroundCombat && !isPaused && !hud.inVehicle && (
         <>
-          {/* Sprint Toggle (customizable) */}
-          <button
-            type="button"
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              const next = !autoSprintActive;
-              setAutoSprintActive(next);
-              input.setTouchAutoSprint(next);
-            }}
-            style={layoutStyle(hudLayout.sprintBtn)}
-            className={`pointer-events-auto touch-none absolute z-20 w-11 h-11 rounded-full border-2 flex items-center justify-center shadow-lg cursor-pointer ${
-              autoSprintActive || hud.isSprinting
-                ? 'bg-white/85 border-white text-black'
-                : 'bg-black/45 border-white/55 text-white'
-            }`}
-            title="Correr Automático"
-          >
-            <IconSprintSvg className="w-6 h-6" />
-          </button>
-
-          {/* Left Fire Button (customizable) */}
-          <button
-            type="button"
-            onContextMenu={(e) => e.preventDefault()}
-            onPointerDown={beginFirePointer}
-            onPointerMove={moveFirePointer}
-            onPointerUp={endFirePointer}
-            onPointerCancel={endFirePointer}
-            onLostPointerCapture={() => {
-              fireDragRef.current = null;
-              input.setTouchFire(false);
-            }}
-            style={layoutStyle(hudLayout.leftFireBtn)}
-            className="pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full bg-black/45 active:bg-white/30 border-[1.5px] border-white/60 flex items-center justify-center text-white shadow-lg cursor-pointer"
-            title="Atirar Esquerdo"
-          >
-            <IconFireBurstSvg className="w-7 h-7 text-white" />
-          </button>
-
-          {/* Left Virtual Joystick */}
+          {/* Left Virtual Joystick (still usable while downed to crawl) */}
           <div
             onTouchStart={handleJoyStart}
             onTouchMove={handleJoyMove}
@@ -1920,105 +1945,149 @@ export const GameHud: React.FC<GameHudProps> = ({
             />
           </div>
 
-          {/* Prone Button */}
-          <button
-            type="button"
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              input.triggerProne();
-            }}
-            style={layoutStyle(hudLayout.proneBtn)}
-            className={`pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full border-[1.5px] flex items-center justify-center shadow cursor-pointer ${
-              hud.stance === 'prone'
-                ? 'bg-amber-400/90 text-black border-white'
-                : 'bg-black/45 text-white border-white/55'
-            }`}
-          >
-            <IconProneSvg className="w-6 h-6" />
-          </button>
+          {!hud.isPlayerDowned && (
+            <>
+              {/* Sprint Toggle (customizable) */}
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  const next = !autoSprintActive;
+                  setAutoSprintActive(next);
+                  input.setTouchAutoSprint(next);
+                }}
+                style={layoutStyle(hudLayout.sprintBtn)}
+                className={`pointer-events-auto touch-none absolute z-20 w-11 h-11 rounded-full border-2 flex items-center justify-center shadow-lg cursor-pointer ${
+                  autoSprintActive || hud.isSprinting
+                    ? 'bg-white/85 border-white text-black'
+                    : 'bg-black/45 border-white/55 text-white'
+                }`}
+                title="Correr Automático"
+              >
+                <IconSprintSvg className="w-6 h-6" />
+              </button>
 
-          {/* Crouch Button (Single tap, zero bounce) */}
-          <button
-            type="button"
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              input.triggerCrouch();
-            }}
-            style={layoutStyle(hudLayout.crouchBtn)}
-            className={`pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full border-[1.5px] flex items-center justify-center shadow cursor-pointer ${
-              hud.stance === 'crouch'
-                ? 'bg-amber-400/90 text-black border-white'
-                : 'bg-black/45 text-white border-white/55'
-            }`}
-          >
-            <IconCrouchSvg className="w-6 h-6" />
-          </button>
+              {/* Left Fire Button (customizable) */}
+              <button
+                type="button"
+                onContextMenu={(e) => e.preventDefault()}
+                onPointerDown={beginFirePointer}
+                onPointerMove={moveFirePointer}
+                onPointerUp={endFirePointer}
+                onPointerCancel={endFirePointer}
+                onLostPointerCapture={() => {
+                  fireDragRef.current = null;
+                  input.setTouchFire(false);
+                }}
+                style={layoutStyle(hudLayout.leftFireBtn)}
+                className="pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full bg-black/45 active:bg-white/30 border-[1.5px] border-white/60 flex items-center justify-center text-white shadow-lg cursor-pointer"
+                title="Atirar Esquerdo"
+              >
+                <IconFireBurstSvg className="w-7 h-7 text-white" />
+              </button>
 
-          {/* Jump / Vault Button */}
-          <button
-            type="button"
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              input.triggerJump();
-            }}
-            style={layoutStyle(hudLayout.jumpBtn)}
-            className="pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full bg-black/45 border-[1.5px] border-white/55 text-white flex items-center justify-center shadow cursor-pointer active:bg-white/25"
-          >
-            <IconJumpSvg className="w-6 h-6" />
-          </button>
+              {/* Prone Button */}
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  input.triggerProne();
+                }}
+                style={layoutStyle(hudLayout.proneBtn)}
+                className={`pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full border-[1.5px] flex items-center justify-center shadow cursor-pointer ${
+                  hud.stance === 'prone'
+                    ? 'bg-amber-400/90 text-black border-white'
+                    : 'bg-black/45 text-white border-white/55'
+                }`}
+              >
+                <IconProneSvg className="w-6 h-6" />
+              </button>
 
-          {/* Reload Button */}
-          <button
-            type="button"
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              input.triggerReload();
-            }}
-            style={layoutStyle(hudLayout.reloadBtn)}
-            className="pointer-events-auto touch-none absolute z-20 w-11 h-11 rounded-full bg-black/45 border-[1.5px] border-white/55 text-white flex items-center justify-center shadow cursor-pointer active:bg-white/25"
-          >
-            <IconReloadSvg className="w-5 h-5" />
-          </button>
+              {/* Crouch Button (Single tap, zero bounce) */}
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  input.triggerCrouch();
+                }}
+                style={layoutStyle(hudLayout.crouchBtn)}
+                className={`pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full border-[1.5px] flex items-center justify-center shadow cursor-pointer ${
+                  hud.stance === 'crouch'
+                    ? 'bg-amber-400/90 text-black border-white'
+                    : 'bg-black/45 text-white border-white/55'
+                }`}
+              >
+                <IconCrouchSvg className="w-6 h-6" />
+              </button>
 
-          {/* Scope / Aim Button */}
-          <button
-            type="button"
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              input.setTouchAim(!hud.isAiming);
-            }}
-            style={layoutStyle(hudLayout.aimBtn)}
-            className={`pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full border-[1.5px] flex items-center justify-center shadow cursor-pointer ${
-              hud.isAiming
-                ? 'bg-amber-400/90 text-black border-white'
-                : 'bg-black/45 text-white border-white/55'
-            }`}
-          >
-            <IconScopeSvg className="w-6 h-6" />
-          </button>
+              {/* Jump / Vault Button */}
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  input.triggerJump();
+                }}
+                style={layoutStyle(hudLayout.jumpBtn)}
+                className="pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full bg-black/45 border-[1.5px] border-white/55 text-white flex items-center justify-center shadow cursor-pointer active:bg-white/25"
+              >
+                <IconJumpSvg className="w-6 h-6" />
+              </button>
 
-          {/* Primary Right Fire Button (with Drag-Up Capa Look Support & Translucent Ring Halo) */}
-          <button
-            type="button"
-            onContextMenu={(e) => e.preventDefault()}
-            onPointerDown={beginFirePointer}
-            onPointerMove={moveFirePointer}
-            onPointerUp={endFirePointer}
-            onPointerCancel={endFirePointer}
-            onLostPointerCapture={() => {
-              fireDragRef.current = null;
-              input.setTouchFire(false);
-            }}
-            style={layoutStyle(hudLayout.fireBtn)}
-            className="pointer-events-auto touch-none absolute z-20 w-16 h-16 rounded-full bg-black/45 active:bg-white/25 border-2 border-white/75 ring-8 ring-white/10 flex items-center justify-center text-white shadow-xl cursor-pointer"
-          >
-            <IconFireBurstSvg className="w-9 h-9 text-white drop-shadow" />
-          </button>
+              {/* Reload Button */}
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  input.triggerReload();
+                }}
+                style={layoutStyle(hudLayout.reloadBtn)}
+                className="pointer-events-auto touch-none absolute z-20 w-11 h-11 rounded-full bg-black/45 border-[1.5px] border-white/55 text-white flex items-center justify-center shadow cursor-pointer active:bg-white/25"
+              >
+                <IconReloadSvg className="w-5 h-5" />
+              </button>
+
+              {/* Scope / Aim Button */}
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  input.setTouchAim(!hud.isAiming);
+                }}
+                style={layoutStyle(hudLayout.aimBtn)}
+                className={`pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full border-[1.5px] flex items-center justify-center shadow cursor-pointer ${
+                  hud.isAiming
+                    ? 'bg-amber-400/90 text-black border-white'
+                    : 'bg-black/45 text-white border-white/55'
+                }`}
+              >
+                <IconScopeSvg className="w-6 h-6" />
+              </button>
+
+              {/* Primary Right Fire Button (with Drag-Up Capa Look Support & Translucent Ring Halo) */}
+              <button
+                type="button"
+                onContextMenu={(e) => e.preventDefault()}
+                onPointerDown={beginFirePointer}
+                onPointerMove={moveFirePointer}
+                onPointerUp={endFirePointer}
+                onPointerCancel={endFirePointer}
+                onLostPointerCapture={() => {
+                  fireDragRef.current = null;
+                  input.setTouchFire(false);
+                }}
+                style={layoutStyle(hudLayout.fireBtn)}
+                className="pointer-events-auto touch-none absolute z-20 w-16 h-16 rounded-full bg-black/45 active:bg-white/25 border-2 border-white/75 ring-8 ring-white/10 flex items-center justify-center text-white shadow-xl cursor-pointer"
+              >
+                <IconFireBurstSvg className="w-9 h-9 text-white drop-shadow" />
+              </button>
+            </>
+          )}
         </>
       )}
 

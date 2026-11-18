@@ -41,7 +41,7 @@ export class CharacterAnimator {
   }
 
   public triggerPunch(): void {
-    this.punchTimer = 0.28;
+    this.punchTimer = 0.34;
     this.punchSide = -this.punchSide;
   }
 
@@ -63,6 +63,208 @@ export class CharacterAnimator {
     this.landingDip = 0;
     this.turnBank = 0;
     this.reloadPhase = 0;
+  }
+
+  private playAdamClip(
+    rig: CharacterRig,
+    clipName: string,
+    fadeSec = 0.16,
+    timeScale = 1.0,
+    restart = false,
+  ): void {
+    const actions = rig.actions;
+    if (!actions) return;
+    const next = actions[clipName] ?? actions.Idle_Loop ?? Object.values(actions)[0];
+    if (!next) return;
+    const resolvedName = next.getClip().name;
+    next.timeScale = timeScale;
+
+    if (rig.activeClipName === resolvedName) {
+      if (restart) {
+        next.reset().play();
+      }
+      return;
+    }
+
+    const prev = rig.activeClipName ? actions[rig.activeClipName] : undefined;
+    next.enabled = true;
+    next.reset();
+    next.play();
+    if (prev && prev !== next) {
+      prev.crossFadeTo(next, fadeSec, true);
+    }
+    rig.activeClipName = resolvedName;
+  }
+
+  private updateAdamRig(rig: CharacterRig, input: CharacterAnimInput): void {
+    const dt = input.dt;
+    const vis = rig.adamVisualRoot;
+    const mixer = rig.mixer;
+    if (!mixer || !vis) return;
+
+    const hasWeapon = input.hasWeapon ?? true;
+    const isMoving = input.speed > 0.35;
+
+    rig.muzzleFlash.visible =
+      this.recoil > 0.55 && hasWeapon && !input.isDead && !input.isDriving && !input.isDowned;
+    if (rig.muzzleFlash.visible) {
+      rig.muzzleFlash.rotation.z = Math.random() * Math.PI * 2;
+      const s = 0.8 + Math.random() * 0.5;
+      rig.muzzleFlash.scale.set(s, s, s);
+    }
+
+    // 1. Death clip
+    if (input.isDead) {
+      rig.setParachuteVisible(false);
+      rig.contactShadow.visible = false;
+      vis.position.set(0, 0, 0);
+      vis.rotation.set(0, 0, 0);
+      this.playAdamClip(rig, 'Death01', 0.12, 1.05);
+      mixer.update(dt);
+      return;
+    }
+
+    // 2. Driving vehicle seated clip
+    if (input.isDriving) {
+      rig.setParachuteVisible(false);
+      rig.contactShadow.visible = false;
+      vis.position.set(0, 0.04, 0);
+      vis.rotation.set(0, 0, -this.turnBank * 0.3);
+      this.playAdamClip(rig, 'Driving_Loop', 0.18, 1.0);
+      mixer.update(dt);
+      return;
+    }
+
+    // 3. Skydiving / Parachuting
+    if (input.isSkydiving) {
+      rig.setParachuteVisible(false);
+      rig.contactShadow.visible = false;
+      vis.position.set(0, 0.95, 0);
+      vis.rotation.set(1.22, 0, Math.sin(this.idleTime * 5) * 0.08 + this.turnBank);
+      this.playAdamClip(rig, 'Jump_Loop', 0.2, 0.85);
+      mixer.update(dt);
+      return;
+    }
+
+    if (input.isParachuting) {
+      rig.setParachuteVisible(true);
+      rig.contactShadow.visible = false;
+      vis.position.set(0, 0, 0);
+      vis.rotation.set(0.08, 0, Math.sin(this.idleTime * 2.2) * 0.05 + this.turnBank * 0.5);
+      this.playAdamClip(rig, 'Jump_Loop', 0.2, 0.7);
+      mixer.update(dt);
+      return;
+    }
+
+    rig.setParachuteVisible(false);
+    rig.contactShadow.visible = input.isGrounded;
+
+    // 4. Lobby Idle
+    if (input.isLobby) {
+      vis.position.set(0, 0, 0);
+      vis.rotation.set(0, 0, 0);
+      this.playAdamClip(rig, 'Idle_Loop', 0.22, 1.0);
+      mixer.update(dt);
+      return;
+    }
+
+    // 5. Downed crawling ("posição de 4")
+    if (input.isDowned) {
+      vis.position.set(0, 0.34, 0.05);
+      vis.rotation.set(Math.PI * 0.32, 0, Math.sin(this.idleTime * 7) * (isMoving ? 0.07 : 0));
+      this.playAdamClip(
+        rig,
+        isMoving ? 'Crouch_Fwd_Loop' : 'Crouch_Idle_Loop',
+        0.16,
+        isMoving ? 0.95 : 0.8,
+      );
+      mixer.update(dt);
+      if (rig.adamHeadBone) {
+        rig.adamHeadBone.rotateX(-0.65);
+      }
+      return;
+    }
+
+    // 6. Prone
+    if (input.stance === 'prone') {
+      vis.position.set(0, 0.16, 0);
+      vis.rotation.set(1.38, 0, 0);
+      this.playAdamClip(
+        rig,
+        isMoving ? 'Crouch_Fwd_Loop' : 'Crouch_Idle_Loop',
+        0.18,
+        isMoving ? 0.75 : 0.6,
+      );
+      mixer.update(dt);
+      if (rig.adamHeadBone) {
+        rig.adamHeadBone.rotateX(-0.75 + input.pitchRad * 0.25);
+      }
+      return;
+    }
+
+    // 7. Standing / Crouching Ground Locomotion
+    vis.position.set(0, -this.landingDip * 0.08, 0);
+    vis.rotation.set(
+      this.hitStagger * -0.14,
+      0,
+      isMoving ? -this.turnBank * 0.42 : 0,
+    );
+
+    if (input.isHealing) {
+      this.playAdamClip(rig, 'Fixing_Kneeling', 0.15, 1.1);
+    } else if (!hasWeapon && this.punchTimer > 0) {
+      const punchClip = this.punchSide > 0 ? 'Punch_Jab' : 'Punch_Cross';
+      this.playAdamClip(rig, punchClip, 0.06, 1.45, this.punchTimer > 0.31);
+    } else if (input.stance === 'crouch') {
+      this.playAdamClip(
+        rig,
+        isMoving ? 'Crouch_Fwd_Loop' : 'Crouch_Idle_Loop',
+        0.14,
+        isMoving ? THREE.MathUtils.clamp(input.speed / 3.2, 0.75, 1.35) : 1.0,
+      );
+    } else if (!input.isGrounded) {
+      this.playAdamClip(rig, 'Jump_Loop', 0.12, 1.0);
+    } else if (input.isReloading && hasWeapon) {
+      this.playAdamClip(rig, 'Pistol_Reload', 0.12, 1.35);
+    } else if (isMoving) {
+      if (input.isSprinting && !input.isAiming) {
+        this.playAdamClip(
+          rig,
+          'Sprint_Loop',
+          0.14,
+          THREE.MathUtils.clamp(input.speed / 7.2, 0.85, 1.35),
+        );
+      } else if (hasWeapon && (input.isAiming || input.isFiring || this.recoil > 0.15) && input.speed < 2.2) {
+        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.12, 1.0);
+      } else {
+        this.playAdamClip(
+          rig,
+          'Jog_Fwd_Loop',
+          0.14,
+          THREE.MathUtils.clamp(input.speed / 5.2, 0.72, 1.28),
+        );
+      }
+    } else if (hasWeapon) {
+      if (input.isFiring || this.recoil > 0.45) {
+        this.playAdamClip(rig, 'Pistol_Shoot', 0.08, 1.3);
+      } else if (input.isAiming) {
+        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.12, 1.0);
+      } else {
+        this.playAdamClip(rig, 'Pistol_Idle_Loop', 0.16, 1.0);
+      }
+    } else {
+      this.playAdamClip(rig, 'Idle_Loop', 0.18, 1.0);
+    }
+
+    mixer.update(dt);
+
+    // Subtle additive bone pitch & recoil kick on spine/head while standing/aiming
+    if (rig.adamSpineBone && (input.isAiming || input.isFiring || this.recoil > 0.05)) {
+      rig.adamSpineBone.rotateX(-input.pitchRad * 0.34 - this.recoil * 0.08);
+    }
+    if (rig.adamHeadBone) {
+      rig.adamHeadBone.rotateX(-input.pitchRad * 0.25);
+    }
   }
 
   public update(rig: CharacterRig, input: CharacterAnimInput): void {
@@ -89,6 +291,12 @@ export class CharacterAnimator {
     }
 
     rig.setHitFlash(this.hitFlash);
+
+    if (rig.isAdam) {
+      this.updateAdamRig(rig, input);
+      return;
+    }
+
     rig.muzzleFlash.visible =
       this.recoil > 0.55 && (input.hasWeapon ?? true) && !input.isDead && !input.isDriving;
     if (rig.muzzleFlash.visible) {
@@ -97,7 +305,7 @@ export class CharacterAnimator {
       rig.muzzleFlash.scale.set(s, s, s);
     }
 
-    // Death collapse animation
+    // Death collapse animation (fallback)
     if (input.isDead) {
       this.deathProgress = Math.min(1, this.deathProgress + dt * 2.4);
       const ease = 1 - Math.pow(1 - this.deathProgress, 2);
@@ -111,7 +319,6 @@ export class CharacterAnimator {
       return;
     }
 
-    // Driving seated posture
     if (input.isDriving) {
       rig.setParachuteVisible(false);
       rig.contactShadow.visible = false;
@@ -131,7 +338,6 @@ export class CharacterAnimator {
       return;
     }
 
-    // Skydiving (DROPPING)
     if (input.isSkydiving) {
       rig.setParachuteVisible(false);
       rig.contactShadow.visible = false;
@@ -151,7 +357,6 @@ export class CharacterAnimator {
       return;
     }
 
-    // Parachuting (PARACHUTE)
     if (input.isParachuting) {
       rig.setParachuteVisible(true);
       rig.contactShadow.visible = false;
@@ -174,7 +379,6 @@ export class CharacterAnimator {
     rig.setParachuteVisible(false);
     rig.contactShadow.visible = input.isGrounded;
 
-    // Lobby relaxed idle pose
     if (input.isLobby) {
       const breath = Math.sin(this.idleTime * 2.0);
       rig.pelvis.position.y = 0.92 + breath * 0.008;
@@ -192,7 +396,6 @@ export class CharacterAnimator {
       return;
     }
 
-    // Active Locomotion / Stances
     const isMoving = input.speed > 0.35;
     if (isMoving && input.isGrounded) {
       const speedFactor = THREE.MathUtils.clamp(input.speed / 5.8, 0.65, 1.55);
@@ -214,7 +417,6 @@ export class CharacterAnimator {
     const doubleHarmonic = Math.abs(Math.sin(this.walkPhase)) * strideBlend;
     const breath = Math.sin(this.idleTime * 2.4);
 
-    // Downed wounded crawl ("posição de 4")
     if (input.isDowned) {
       const crawl = Math.sin(this.walkPhase) * 0.34 * strideBlend;
       rig.pelvis.position.y = THREE.MathUtils.damp(rig.pelvis.position.y, 0.44, 14, dt);
@@ -238,7 +440,6 @@ export class CharacterAnimator {
       return;
     }
 
-    // Prone (deitado)
     if (input.stance === 'prone') {
       const crawl = Math.sin(this.walkPhase) * 0.26 * strideBlend;
       rig.pelvis.position.y = THREE.MathUtils.damp(rig.pelvis.position.y, 0.22, 12, dt);
@@ -251,7 +452,6 @@ export class CharacterAnimator {
         10,
         dt,
       );
-
       rig.rightShoulder.rotation.x = THREE.MathUtils.damp(
         rig.rightShoulder.rotation.x,
         -1.35 - this.recoil * 0.22,
@@ -263,7 +463,6 @@ export class CharacterAnimator {
       rig.rightElbow.rotation.set(-0.85, 0, 0);
       rig.leftShoulder.rotation.set(-1.3 + crawl, -0.25, 0.15);
       rig.leftElbow.rotation.set(-0.9, 0, 0);
-
       rig.leftHip.rotation.set(0.08 + crawl * 0.5, 0, 0.14);
       rig.rightHip.rotation.set(0.08 - crawl * 0.5, 0, -0.14);
       rig.leftKnee.rotation.set(0.18, 0, 0);
@@ -271,7 +470,6 @@ export class CharacterAnimator {
       return;
     }
 
-    // Crouch vs Stand base height & posture + Landing spring dip
     const isCrouch = input.stance === 'crouch';
     const healDip = input.isHealing && !isCrouch ? -0.18 : 0;
     const landCompression = this.landingDip * (isCrouch ? 0.08 : 0.16);
@@ -337,7 +535,6 @@ export class CharacterAnimator {
     );
     rig.headGroup.rotation.y = THREE.MathUtils.damp(rig.headGroup.rotation.y, this.turnBank * 0.45, 12, dt);
 
-    // Legs with smooth asymmetric knee flexion & landing cushion
     if (!input.isGrounded) {
       rig.leftHip.rotation.x = THREE.MathUtils.damp(rig.leftHip.rotation.x, -0.68, 13, dt);
       rig.leftKnee.rotation.x = THREE.MathUtils.damp(rig.leftKnee.rotation.x, 1.12, 13, dt);
@@ -372,7 +569,6 @@ export class CharacterAnimator {
       );
     }
 
-    // Arms: Healing / Reloading / Sprinting / Aiming smoothly damped!
     if (input.isHealing) {
       const wrapS = Math.sin(this.idleTime * 7.2);
       const wrapC = Math.cos(this.idleTime * 7.2);
@@ -405,10 +601,9 @@ export class CharacterAnimator {
     const hasWeapon = input.hasWeapon ?? true;
     const pitchInfluence = input.pitchRad * 0.55;
 
-    // Unarmed / Punho melee swing & sprint/guard poses
     if (!hasWeapon) {
       if (this.punchTimer > 0) {
-        const pNorm = Math.sin((this.punchTimer / 0.28) * Math.PI);
+        const pNorm = Math.sin((this.punchTimer / 0.34) * Math.PI);
         const rPunch = this.punchSide > 0 ? pNorm : 0;
         const lPunch = this.punchSide < 0 ? pNorm : 0;
         rig.torso.rotation.y += this.punchSide * pNorm * 0.34;

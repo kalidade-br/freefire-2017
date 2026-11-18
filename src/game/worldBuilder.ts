@@ -1,5 +1,11 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import {
+  cloneAdamScene,
+  getAdamData,
+  getAdamOutfitTexture,
+  isAdamAssetsLoaded,
+} from './adamAssets';
 import { createWeaponModel } from './characterBuilder';
 import { ProceduralTextureSet } from './textures';
 import {
@@ -21,7 +27,13 @@ export interface TargetDummy {
   id: string;
   nick: string;
   isBot: boolean;
+  isAdam?: boolean;
   group: THREE.Group;
+  visualRoot?: THREE.Group;
+  mixer?: THREE.AnimationMixer;
+  actions?: Record<string, THREE.AnimationAction>;
+  activeClipName?: string;
+  bodyMat?: THREE.MeshStandardMaterial;
   torsoGroup?: THREE.Group;
   headMesh?: THREE.Mesh;
   legLPivot?: THREE.Group;
@@ -33,8 +45,8 @@ export interface TargetDummy {
   legR?: THREE.Mesh;
   armL?: THREE.Mesh;
   armR?: THREE.Mesh;
-  gunMesh?: THREE.Mesh;
-  backGunMesh?: THREE.Mesh;
+  gunMesh?: THREE.Object3D;
+  backGunMesh?: THREE.Object3D;
   parachuteMesh?: THREE.Mesh;
   hp: number;
   maxHp: number;
@@ -1261,6 +1273,235 @@ function createBotEntity(
     patrolSpeed: 0,
     patrolPhase: idx,
   };
+}
+
+const BOT_HIT_PROXY_MAT = new THREE.MeshBasicMaterial({
+  transparent: true,
+  opacity: 0,
+  depthWrite: false,
+  colorWrite: false,
+});
+const BOT_CHEST_PROXY_GEO = new THREE.BoxGeometry(0.42, 0.56, 0.3);
+const BOT_HEAD_PROXY_GEO = new THREE.BoxGeometry(0.26, 0.28, 0.26);
+const BOT_VEST_GEO = new THREE.CylinderGeometry(0.175, 0.155, 0.31, 10);
+const BOT_HELMET_GEO = new THREE.SphereGeometry(0.122, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.58);
+const BOT_GUN_GEO = new THREE.BoxGeometry(0.06, 0.08, 0.52);
+const BOT_GUN_MAT = new THREE.MeshStandardMaterial({
+  color: 0x22262b,
+  roughness: 0.4,
+  metalness: 0.65,
+});
+
+export function setBotAdamClip(
+  bot: TargetDummy,
+  clipName: string,
+  timeScale = 1.0,
+  fadeSec = 0.18,
+): void {
+  const actions = bot.actions;
+  if (!actions) return;
+  const next = actions[clipName] ?? actions.Idle_Loop;
+  if (!next) return;
+  const resolved = next.getClip().name;
+  next.timeScale = timeScale;
+  if (bot.activeClipName === resolved) return;
+  const prev = bot.activeClipName ? actions[bot.activeClipName] : undefined;
+  next.enabled = true;
+  next.reset();
+  next.play();
+  if (prev && prev !== next) {
+    prev.crossFadeTo(next, fadeSec, true);
+  }
+  bot.activeClipName = resolved;
+}
+
+export function upgradeBotsToAdam(
+  targets: TargetDummy[],
+  camoTexture: THREE.Texture,
+): void {
+  if (!isAdamAssetsLoaded()) return;
+  const data = getAdamData();
+  if (!data) return;
+
+  const skinColors = ['#d7a27e', '#c98e6b', '#e2b291', '#9b684b'];
+  const hairColors = ['#18181b', '#2b1f18', '#3f2e21', '#111827'];
+  const shoeColors = ['#1f242d', '#332924', '#18181b', '#e5e7eb'];
+
+  for (let i = 0; i < targets.length; i++) {
+    const bot = targets[i];
+    if (bot.isAdam) continue;
+
+    // Clean up initial procedural children
+    while (bot.group.children.length > 0) {
+      const child = bot.group.children[0];
+      bot.group.remove(child);
+    }
+
+    const cloned = cloneAdamScene();
+    if (!cloned) continue;
+
+    const visualRoot = new THREE.Group();
+    visualRoot.add(cloned);
+    bot.group.add(visualRoot);
+
+    const shirtHex = `#${new THREE.Color(BOT_SHIRT_PALETTE[i % BOT_SHIRT_PALETTE.length]).getHexString()}`;
+    const pantsHex = `#${new THREE.Color(BOT_PANTS_PALETTE[i % BOT_PANTS_PALETTE.length]).getHexString()}`;
+    const skinHex = skinColors[i % skinColors.length];
+    const shoeHex = shoeColors[i % shoeColors.length];
+    const shirtStyle = i % 5 === 0 ? 'tank' : i % 3 === 0 ? 'hoodie' : 'tee';
+
+    const outfitTex = getAdamOutfitTexture({
+      skinColor: shirtStyle === 'tank' && i % 5 === 0 ? '#d7a27e' : skinHex,
+      shirtStyle,
+      shirtColor: shirtStyle === 'tank' && i % 5 === 0 ? '#f1f0ea' : shirtHex,
+      pantsColor: shirtStyle === 'tank' && i % 5 === 0 ? '#c9b396' : pantsHex,
+      shoesColor: shoeHex,
+    });
+
+    let bodyMat: THREE.MeshStandardMaterial | undefined;
+    cloned.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = false;
+      const n = mesh.name.toLowerCase();
+      if ((mesh as THREE.SkinnedMesh).isSkinnedMesh && !n.includes('eye')) {
+        const clonedMat = (
+          (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as THREE.MeshStandardMaterial
+        ).clone();
+        if (outfitTex) {
+          clonedMat.map = outfitTex;
+        }
+        clonedMat.color.setHex(0xffffff);
+        clonedMat.roughness = 0.72;
+        clonedMat.metalness = 0.04;
+        clonedMat.needsUpdate = true;
+        mesh.material = clonedMat;
+        bodyMat = clonedMat;
+      }
+    });
+
+    const spineBone = cloned.getObjectByName('spine_02') ?? cloned;
+    const headBone = cloned.getObjectByName('Head') ?? spineBone;
+    const handRBone = cloned.getObjectByName('hand_r') ?? spineBone;
+
+    // Invisible fast bone-attached hit proxies (zero SkinnedMesh raycasting overhead)
+    const chestHit = new THREE.Mesh(BOT_CHEST_PROXY_GEO, BOT_HIT_PROXY_MAT);
+    chestHit.position.set(0, 0.08, 0);
+    chestHit.userData.targetId = bot.id;
+    spineBone.add(chestHit);
+
+    const headHit = new THREE.Mesh(BOT_HEAD_PROXY_GEO, BOT_HIT_PROXY_MAT);
+    headHit.position.set(0, 0.11, 0.01);
+    headHit.userData.targetId = bot.id;
+    headHit.userData.isHeadshot = true;
+    headBone.add(headHit);
+
+    // Hair attached to Head
+    const hairGeo = i % 2 === 0 ? data.hairBuzzedGeo : data.hairPartedGeo;
+    if (hairGeo) {
+      const hairMat = new THREE.MeshStandardMaterial({
+        color: hairColors[i % hairColors.length],
+        roughness: 0.85,
+        side: THREE.DoubleSide,
+      });
+      const hairMesh = new THREE.Mesh(hairGeo, hairMat);
+      headBone.add(hairMesh);
+    }
+
+    // Vest & Helmet attached to real bones
+    const vestMat = new THREE.MeshStandardMaterial({
+      color: bot.vestLevel === 3 ? 0x1c1f26 : bot.vestLevel === 2 ? 0x2f3842 : 0x4d5d3d,
+      roughness: 0.55,
+      metalness: bot.vestLevel === 3 ? 0.45 : 0.15,
+    });
+    const vestMesh = new THREE.Mesh(BOT_VEST_GEO, vestMat);
+    vestMesh.scale.set(1.06, 1, 0.68);
+    vestMesh.position.set(0, 0.08, 0.008);
+    vestMesh.visible = bot.vestLevel > 0;
+    spineBone.add(vestMesh);
+
+    const helmMat = new THREE.MeshStandardMaterial({
+      color: bot.helmetLevel === 3 ? 0x181a1f : bot.helmetLevel === 2 ? 0x2c343d : 0x566444,
+      roughness: 0.45,
+      metalness: bot.helmetLevel === 3 ? 0.55 : 0.2,
+    });
+    const helmetMesh = new THREE.Mesh(BOT_HELMET_GEO, helmMat);
+    helmetMesh.scale.set(0.98, 1.02, 1.08);
+    helmetMesh.position.set(0, 0.115, 0.005);
+    helmetMesh.visible = bot.helmetLevel > 0;
+    headBone.add(helmetMesh);
+
+    // Gun held in hand_r + slung back gun on spine_02
+    const gunPivot = new THREE.Group();
+    gunPivot.position.set(0, 0.055, 0.025);
+    gunPivot.rotation.set(-Math.PI / 2, 0, Math.PI);
+    const gunBox = new THREE.Mesh(BOT_GUN_GEO, BOT_GUN_MAT);
+    gunBox.position.set(0, 0.02, 0.16);
+    gunPivot.add(gunBox);
+    handRBone.add(gunPivot);
+
+    const backGunMesh = new THREE.Mesh(BOT_GUN_GEO, BOT_GUN_MAT);
+    backGunMesh.position.set(-0.15, 0.15, -0.17);
+    backGunMesh.rotation.set(-Math.PI * 0.42, 0.1, -0.24);
+    backGunMesh.visible = bot.weaponId !== 'g18';
+    spineBone.add(backGunMesh);
+
+    const parachuteMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.45, 1.7, 1.0, 8, 1, true, 0, Math.PI),
+      new THREE.MeshStandardMaterial({
+        map: camoTexture,
+        roughness: 0.85,
+        side: THREE.DoubleSide,
+      }),
+    );
+    parachuteMesh.rotation.z = Math.PI / 2;
+    parachuteMesh.rotation.y = Math.PI / 2;
+    parachuteMesh.position.set(0, 3.25, 0);
+    parachuteMesh.scale.set(0.55, 1.3, 0.95);
+    parachuteMesh.visible = false;
+    visualRoot.add(parachuteMesh);
+
+    const mixer = new THREE.AnimationMixer(cloned);
+    const actions: Record<string, THREE.AnimationAction> = {};
+    for (let c = 0; c < data.animations.length; c++) {
+      const clip = data.animations[c];
+      const act = mixer.clipAction(clip);
+      if (clip.name === 'Death01') {
+        act.setLoop(THREE.LoopOnce, 1);
+        act.clampWhenFinished = true;
+      } else {
+        act.setLoop(THREE.LoopRepeat, Infinity);
+      }
+      actions[clip.name] = act;
+    }
+
+    const idleAct = actions.Idle_Loop ?? Object.values(actions)[0];
+    if (idleAct) {
+      idleAct.play();
+      mixer.update(0);
+      bot.activeClipName = idleAct.getClip().name;
+    }
+
+    bot.isAdam = true;
+    bot.visualRoot = visualRoot;
+    bot.mixer = mixer;
+    bot.actions = actions;
+    bot.bodyMat = bodyMat;
+    bot.torsoGroup = undefined;
+    bot.headMesh = undefined;
+    bot.legLPivot = undefined;
+    bot.legRPivot = undefined;
+    bot.armLPivot = undefined;
+    bot.armRPivot = undefined;
+    bot.hitMeshes = [chestHit, headHit];
+    bot.vestMesh = vestMesh;
+    bot.helmetMesh = helmetMesh;
+    bot.gunMesh = gunPivot;
+    bot.backGunMesh = backGunMesh;
+    bot.parachuteMesh = parachuteMesh;
+  }
 }
 
 function createAirplane(): { group: THREE.Group; props: THREE.Mesh[] } {
@@ -3201,10 +3442,16 @@ export function createIslandWorld(
       const t = targets[i];
       if (t.hitFlash > 0) {
         t.hitFlash = Math.max(0, t.hitFlash - dt * 5);
-        t.hitMeshes.forEach((m) => {
-          const mat = m.material as THREE.MeshStandardMaterial;
-          mat.emissive.setRGB(t.hitFlash, 0, 0);
-        });
+        if (t.bodyMat) {
+          t.bodyMat.emissive.setRGB(t.hitFlash * 0.85, 0, 0);
+        } else {
+          t.hitMeshes.forEach((m) => {
+            const mat = m.material as THREE.MeshStandardMaterial;
+            if (mat && 'emissive' in mat) {
+              mat.emissive.setRGB(t.hitFlash, 0, 0);
+            }
+          });
+        }
       }
     }
     if (airplaneGroup.visible) {
