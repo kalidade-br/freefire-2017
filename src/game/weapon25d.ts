@@ -445,6 +445,10 @@ const cleanIconDataUrlCache: Partial<Record<WeaponId, string>> = {};
 const cleanIconSubscribers: Partial<Record<WeaponId, Array<(dataUrl: string) => void>>> = {};
 const cleanIconLoading: Partial<Record<WeaponId, boolean>> = {};
 
+export function getCachedCleanWeaponIconUrl(weaponId: WeaponId): string | null {
+  return cleanIconDataUrlCache[weaponId] ?? null;
+}
+
 export function subscribeCleanWeaponIconUrl(
   weaponId: WeaponId,
   onReady: (dataUrl: string) => void,
@@ -711,7 +715,11 @@ function getOrCreateCachedWeaponAssets(weaponId: WeaponId): CachedWeaponAssets {
         tex.generateMipmaps = true;
         tex.minFilter = THREE.LinearMipmapLinearFilter;
         tex.magFilter = THREE.LinearFilter;
-        tex.anisotropy = 4;
+        const isMobile =
+          typeof navigator !== 'undefined' &&
+          (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+            (navigator.maxTouchPoints ?? 0) > 0);
+        tex.anisotropy = isMobile ? 1 : 2;
         tex.needsUpdate = true;
         planeMat.map = tex;
         planeMat.emissiveMap = tex;
@@ -749,13 +757,13 @@ function getOrCreateCachedWeaponAssets(weaponId: WeaponId): CachedWeaponAssets {
   const barrelMidZ = ((bSpec.z0 + bSpec.z1) * 0.5) * L + offZ;
   const barrelY = bSpec.yNorm * H + offY;
   barrelParts.push({
-    geo: new THREE.CylinderGeometry(bSpec.radius, bSpec.radius, barrelLen, 8),
+    geo: new THREE.CylinderGeometry(bSpec.radius, bSpec.radius, barrelLen, 6),
     mat: GUN_METAL_MAT,
     pos: [0, barrelY, barrelMidZ],
     rotX: Math.PI / 2,
   });
   barrelParts.push({
-    geo: new THREE.CylinderGeometry(bSpec.radius * 0.62, bSpec.radius * 0.62, 0.008, 8),
+    geo: new THREE.CylinderGeometry(bSpec.radius * 0.62, bSpec.radius * 0.62, 0.008, 6),
     mat: DARK_CORE_MAT,
     pos: [0, barrelY, bSpec.z1 * L + offZ + 0.002],
     rotX: Math.PI / 2,
@@ -765,7 +773,7 @@ function getOrCreateCachedWeaponAssets(weaponId: WeaponId): CachedWeaponAssets {
     const ut = bSpec.underTube;
     const utLen = Math.max(0.05, (ut.z1 - ut.z0) * L);
     barrelParts.push({
-      geo: new THREE.CylinderGeometry(ut.radius, ut.radius, utLen, 8),
+      geo: new THREE.CylinderGeometry(ut.radius, ut.radius, utLen, 6),
       mat: DARK_CORE_MAT,
       pos: [0, ut.yNorm * H + offY, ((ut.z0 + ut.z1) * 0.5) * L + offZ],
       rotX: Math.PI / 2,
@@ -778,14 +786,14 @@ function getOrCreateCachedWeaponAssets(weaponId: WeaponId): CachedWeaponAssets {
     const scZ = ((sc.z0 + sc.z1) * 0.5) * L + offZ;
     const scY = sc.yNorm * H + offY;
     barrelParts.push({
-      geo: new THREE.CylinderGeometry(sc.radius, sc.radius * 0.9, scLen, 10),
+      geo: new THREE.CylinderGeometry(sc.radius, sc.radius * 0.9, scLen, 8),
       mat: GUN_METAL_MAT,
       pos: [0, scY, scZ],
       rotX: Math.PI / 2,
     });
     if (sc.hasLens) {
       barrelParts.push({
-        geo: new THREE.CylinderGeometry(sc.radius * 1.15, sc.radius * 0.98, 0.036, 10),
+        geo: new THREE.CylinderGeometry(sc.radius * 1.15, sc.radius * 0.98, 0.036, 8),
         mat: LENS_BLUE_MAT,
         pos: [0, scY, sc.z1 * L + offZ + 0.012],
         rotX: Math.PI / 2,
@@ -822,7 +830,7 @@ export function buildHybridWeaponModel(weaponId: WeaponId): THREE.Group {
   group.name = `weapon_25d_${weaponId}`;
 
   const markMesh = (m: THREE.Mesh) => {
-    m.castShadow = true;
+    m.castShadow = false;
     m.receiveShadow = false;
     m.userData.sharedWeaponAsset = true;
     return m;

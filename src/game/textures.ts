@@ -19,7 +19,11 @@ function finalizeTexture(
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeatX, repeatY);
-  tex.anisotropy = Math.min(8, Math.max(1, anisotropy));
+  const isMobile =
+    typeof window !== 'undefined' &&
+    (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+      (navigator.maxTouchPoints ?? 0) > 0);
+  tex.anisotropy = isMobile ? 1 : Math.min(4, Math.max(1, anisotropy));
   tex.magFilter = THREE.LinearFilter;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.needsUpdate = true;

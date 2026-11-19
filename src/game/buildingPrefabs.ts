@@ -615,8 +615,8 @@ export function createCasaL(
     ],
     hub: toWorldXZ(x, z, rotY, -2.5, -0.8),
     secondFloorY: y + f2,
-    stairBottom: toWorldXZ(x, z, rotY, 3.6, 3.0),
-    stairTop: toWorldXZ(x, z, rotY, 3.6, -0.9),
+    stairBottom: toWorldXZ(x, z, rotY, 3.7, 3.15),
+    stairTop: toWorldXZ(x, z, rotY, 3.85, -1.05),
     doors: [
       makeDoorway(x, z, rotY, -1.2, 1.9, -1.2, 5.2),
       makeDoorway(x, z, rotY, -2.7, -5.0, -2.7, -8.4),

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { WeaponId } from '../game/types';
 import {
+  getCachedCleanWeaponIconUrl,
   getWeaponCorsImageUrl,
   getWeaponSiteImageUrl,
   subscribeCleanWeaponIconUrl,
@@ -66,31 +67,41 @@ export const WeaponIcon: React.FC<WeaponIconProps> = ({
   className = 'w-24 h-8',
   silhouette = false,
 }) => {
-  const [fallbackStage, setFallbackStage] = useState<0 | 1 | 2>(0);
-  const [cleanDataUrl, setCleanDataUrl] = useState<string | null>(null);
   const spec = WEAPON_IMAGE_SPECS[weaponId];
+  const hasChecker = Boolean(spec?.hasCheckerBg);
+  const [fallbackStage, setFallbackStage] = useState<0 | 1 | 2>(0);
+  const [cleanDataUrl, setCleanDataUrl] = useState<string | null>(() =>
+    hasChecker ? getCachedCleanWeaponIconUrl(weaponId) : null,
+  );
 
   useEffect(() => {
-    setFallbackStage(0);
-    setCleanDataUrl(null);
-    if (spec.hasCheckerBg) {
-      let active = true;
-      subscribeCleanWeaponIconUrl(weaponId, (url) => {
-        if (active) setCleanDataUrl(url);
-      });
-      return () => {
-        active = false;
-      };
+    setFallbackStage((prev) => (prev === 0 ? prev : 0));
+    if (!hasChecker) {
+      setCleanDataUrl((prev) => (prev === null ? prev : null));
+      return;
     }
-  }, [weaponId, spec.hasCheckerBg]);
+    const cached = getCachedCleanWeaponIconUrl(weaponId);
+    if (cached) {
+      setCleanDataUrl((prev) => (prev === cached ? prev : cached));
+      return;
+    }
+    setCleanDataUrl((prev) => (prev === null ? prev : null));
+    let active = true;
+    subscribeCleanWeaponIconUrl(weaponId, (url) => {
+      if (active) setCleanDataUrl((prev) => (prev === url ? prev : url));
+    });
+    return () => {
+      active = false;
+    };
+  }, [weaponId, hasChecker]);
 
-  if (fallbackStage === 2) {
+  if (fallbackStage === 2 || !spec) {
     const silClass = silhouette ? 'brightness-[2.1] grayscale contrast-125' : '';
     return <FallbackWeaponSvg weaponId={weaponId} className={`${className} ${silClass}`} />;
   }
 
   const src =
-    spec.hasCheckerBg && cleanDataUrl
+    hasChecker && cleanDataUrl
       ? cleanDataUrl
       : fallbackStage === 0
         ? getWeaponSiteImageUrl(weaponId)

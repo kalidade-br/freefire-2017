@@ -41,10 +41,12 @@ import {
   WorldObbCollider,
 } from './types';
 import { preloadAdamAssets } from './adamAssets';
+import { isMobileHardware } from './storage';
 import {
   BERMUDA_HALF,
   botSurfaceHeightAt,
   createIslandWorld,
+  HAS_SENTOSA,
   LootVisual,
   nearestBridgePos,
   riverCenterZ,
@@ -54,15 +56,16 @@ import {
   upgradeBotsToAdam,
   VehicleEntity,
   VendingMachineProp,
+  WAIT_SPAWN,
   WorldHandle,
 } from './worldBuilder';
 
 const SAFE_ZONE_PHASES = [
-  { waitSec: 95, shrinkSec: 65, targetRadius: 560, damagePerSec: 2 },
-  { waitSec: 80, shrinkSec: 60, targetRadius: 340, damagePerSec: 5 },
-  { waitSec: 65, shrinkSec: 50, targetRadius: 190, damagePerSec: 10 },
-  { waitSec: 50, shrinkSec: 40, targetRadius: 85, damagePerSec: 16 },
-  { waitSec: 35, shrinkSec: 35, targetRadius: 18, damagePerSec: 25 },
+  { waitSec: 85, shrinkSec: 55, targetRadius: 420, damagePerSec: 2 },
+  { waitSec: 70, shrinkSec: 50, targetRadius: 260, damagePerSec: 5 },
+  { waitSec: 55, shrinkSec: 45, targetRadius: 145, damagePerSec: 10 },
+  { waitSec: 45, shrinkSec: 35, targetRadius: 68, damagePerSec: 16 },
+  { waitSec: 30, shrinkSec: 30, targetRadius: 18, damagePerSec: 25 },
 ];
 
 const BACKPACK_CAPACITIES: Record<1 | 2 | 3, number> = {
@@ -394,19 +397,19 @@ export class BattleRoyaleEngine {
   private zoneShrinkTotal = 60;
   private zoneCurrentX = 0;
   private zoneCurrentZ = 0;
-  private zoneCurrentRadius = 890;
+  private zoneCurrentRadius = 650;
   private zoneStartX = 0;
   private zoneStartZ = 0;
-  private zoneStartRadius = 890;
+  private zoneStartRadius = 650;
   private zoneNextX = 0;
   private zoneNextZ = 0;
-  private zoneNextRadius = 560;
+  private zoneNextRadius = 420;
   private zoneDmgAccum = 0;
 
   private airplaneProgress = 0; // 0..1 across island
-  private planeStart = new THREE.Vector3(-870, 128, -560);
-  private planeEnd = new THREE.Vector3(870, 128, 560);
-  private aliveCount = 51;
+  private planeStart = new THREE.Vector3(-630, 128, -420);
+  private planeEnd = new THREE.Vector3(630, 128, 420);
+  private aliveCount = 31;
   private kills = 0;
   private damageDealt = 0;
   private hitmarkerTimer = 0;
@@ -584,9 +587,10 @@ export class BattleRoyaleEngine {
     renderer: THREE.WebGLRenderer;
     isSoftwareGl: boolean;
   } {
+    const mobile = isMobileHardware();
     const attempts: THREE.WebGLRendererParameters[] = [
       {
-        antialias: initialSettings.quality !== 'low',
+        antialias: !mobile && initialSettings.quality === 'high',
         powerPreference: 'high-performance',
         alpha: true,
       },
@@ -670,38 +674,45 @@ export class BattleRoyaleEngine {
   }
 
   private getEnemyRenderDist(): number {
-    if (this.settings.quality === 'low') return 130;
-    if (this.settings.quality === 'high') return 230;
-    return 175;
+    if (this.settings.quality === 'low') return 95;
+    if (this.settings.quality === 'high') return 185;
+    return 135;
   }
 
   private getLootRenderDist(): number {
-    if (this.settings.quality === 'low') return 28;
-    if (this.settings.quality === 'high') return 56;
-    return 40;
+    if (this.settings.quality === 'low') return 20;
+    if (this.settings.quality === 'high') return 42;
+    return 30;
   }
 
   public applyQualitySettings(settings: GameSettings): void {
     this.settings = settings;
     soundEngine.configure(settings.soundVolume, settings.muted);
 
+    const mobile = isMobileHardware();
     const scale =
       this.isSoftwareGl
         ? 1
-        : settings.quality === 'low'
-          ? Math.min(window.devicePixelRatio, 0.85)
-          : settings.quality === 'high'
-            ? Math.min(window.devicePixelRatio, 2)
-            : Math.min(window.devicePixelRatio, 1.35);
+        : mobile
+          ? settings.quality === 'low'
+            ? Math.min(window.devicePixelRatio, 0.72)
+            : settings.quality === 'high'
+              ? Math.min(window.devicePixelRatio, 1.3)
+              : Math.min(window.devicePixelRatio, 0.92)
+          : settings.quality === 'low'
+            ? Math.min(window.devicePixelRatio, 0.85)
+            : settings.quality === 'high'
+              ? Math.min(window.devicePixelRatio, 1.75)
+              : Math.min(window.devicePixelRatio, 1.25);
     this.renderer.setPixelRatio(scale);
-    this.renderer.shadowMap.enabled = !this.isSoftwareGl && settings.quality === 'high';
+    this.renderer.shadowMap.enabled = !this.isSoftwareGl && !mobile && settings.quality === 'high';
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMappingExposure =
       settings.quality === 'low' ? 1.12 : settings.quality === 'high' ? 1.16 : 1.15;
     if (this.world) {
       this.world.applyQuality(settings.quality, this.isSoftwareGl);
       this.world.camera.far =
-        settings.quality === 'low' ? 960 : settings.quality === 'high' ? 1520 : 1220;
+        settings.quality === 'low' ? 410 : settings.quality === 'high' ? 880 : 600;
       this.world.camera.updateProjectionMatrix();
     }
   }
@@ -1601,7 +1612,7 @@ export class BattleRoyaleEngine {
 
   private resetPlayerForWaiting(): void {
     this.waitingTimer = 10;
-    this.resetPlayerForMatch(-345, -495, true);
+    this.resetPlayerForMatch(WAIT_SPAWN.x, WAIT_SPAWN.z, true);
   }
 
   private initSafeZone(): void {
@@ -1611,14 +1622,14 @@ export class BattleRoyaleEngine {
     this.zoneShrinkTotal = SAFE_ZONE_PHASES[0].shrinkSec;
     this.zoneCurrentX = 0;
     this.zoneCurrentZ = 0;
-    this.zoneCurrentRadius = 890;
+    this.zoneCurrentRadius = 650;
     this.zoneStartX = 0;
     this.zoneStartZ = 0;
-    this.zoneStartRadius = 890;
+    this.zoneStartRadius = 650;
     this.zoneDmgAccum = 0;
-    this.pickNextZoneCenter(0, 0, 890, SAFE_ZONE_PHASES[0].targetRadius);
+    this.pickNextZoneCenter(0, 0, 650, SAFE_ZONE_PHASES[0].targetRadius);
     this.world.safeZoneMesh.position.set(0, 75, 0);
-    this.world.safeZoneMesh.scale.set(890, 1, 890);
+    this.world.safeZoneMesh.scale.set(650, 1, 650);
     this.world.safeZoneMesh.visible = false;
   }
 
@@ -1636,7 +1647,7 @@ export class BattleRoyaleEngine {
       const dist = Math.random() * maxShift;
       const candX = currX + Math.cos(ang) * dist;
       const candZ = currZ + Math.sin(ang) * dist;
-      if (Math.hypot(candX, candZ) <= 640 && this.world.groundHeightAt(candX, candZ) > 0.6) {
+      if (Math.hypot(candX, candZ) <= 450 && this.world.groundHeightAt(candX, candZ) > 0.6) {
         nx = candX;
         nz = candZ;
         break;
@@ -1899,8 +1910,8 @@ export class BattleRoyaleEngine {
 
       if (isWaitingLobby) {
         b.airState = 'ground';
-        const wx = -345 + Math.cos(ang) * (8 + (i % 5) * 6);
-        const wz = -495 + Math.sin(ang) * (8 + (i % 5) * 6);
+        const wx = WAIT_SPAWN.x + Math.cos(ang) * (7 + (i % 5) * 5);
+        const wz = WAIT_SPAWN.z + Math.sin(ang) * (7 + (i % 5) * 5);
         const ws = botSurfaceHeightAt(wx, wz);
         const sy = Math.max(1.0, ws.y);
         b.group.position.set(wx, sy, wz);
@@ -1910,7 +1921,7 @@ export class BattleRoyaleEngine {
         b.navCheckX = b.group.position.x;
         b.navCheckZ = b.group.position.z;
         b.group.rotation.set(0, (i * 1.1) % (Math.PI * 2), 0);
-        b.group.visible = i < 16;
+        b.group.visible = i < 12;
         if (b.parachuteMesh) b.parachuteMesh.visible = false;
         b.aiState = 'roam';
         b.goalX = b.group.position.x + Math.cos(i) * 14;
@@ -1969,7 +1980,7 @@ export class BattleRoyaleEngine {
   private enterAirplanePhase(): void {
     this.airplaneProgress = 0;
     const angle = Math.random() * Math.PI * 2;
-    const r = 870;
+    const r = 630;
     this.planeStart.set(Math.cos(angle) * r, 128, Math.sin(angle) * r);
     this.planeEnd.set(-Math.cos(angle) * r, 128, -Math.sin(angle) * r);
     this.world.airplaneGroup.visible = true;
@@ -2003,7 +2014,7 @@ export class BattleRoyaleEngine {
       this.renderActiveScene();
 
       this.hudEmitAccum += dt;
-      if (this.hudDirty || this.hudEmitAccum >= 0.025) {
+      if (this.hudDirty || this.hudEmitAccum >= 0.055) {
         this.hudEmitAccum = 0;
         this.hudDirty = false;
         this.onHudUpdate(this.buildHudSnapshot());
@@ -2133,7 +2144,7 @@ export class BattleRoyaleEngine {
       this.world.camera.position,
       inMatchView ? this.getLootRenderDist() : 120,
     );
-    if (this.elapsed - this.activeObstaclesLastRefresh >= 0.08 || this.activeObstaclesLastRefresh < 0) {
+    if (this.elapsed - this.activeObstaclesLastRefresh >= 0.15 || this.activeObstaclesLastRefresh < 0) {
       this.activeObstaclesLastRefresh = this.elapsed;
       this.refreshActiveObstacles();
     }
@@ -4882,12 +4893,75 @@ export class BattleRoyaleEngine {
         curB.stairBottom
       ) {
         const dTop = Math.hypot(curB.stairTop.x - bx, curB.stairTop.z - bz);
-        if (dTop > 1.35) {
+        if (dTop > 1.45) {
           this._botNavOut.x = curB.stairTop.x;
           this._botNavOut.z = curB.stairTop.z;
         } else {
           this._botNavOut.x = curB.stairBottom.x;
           this._botNavOut.z = curB.stairBottom.z;
+        }
+        return;
+      } else if (curB.doors.length > 0) {
+        let escDoor = curB.doors[0];
+        let escBest = Infinity;
+        for (let k = 0; k < curB.doors.length; k++) {
+          const d = curB.doors[k];
+          const score =
+            Math.hypot(d.outX - bot.escapeDoorX, d.outZ - bot.escapeDoorZ) * 2.0 +
+            Math.hypot(d.inX - bx, d.inZ - bz);
+          if (score < escBest) {
+            escBest = score;
+            escDoor = d;
+          }
+        }
+        const dIn = Math.hypot(escDoor.inX - bx, escDoor.inZ - bz);
+        const dOut = Math.hypot(escDoor.outX - bx, escDoor.outZ - bz);
+        this.world.queryStaticCollidersNear((bx + escDoor.outX) * 0.5, (bz + escDoor.outZ) * 0.5, 6.0, this._botSteerCols);
+        const clearToOut =
+          dOut > 0.2
+            ? this.rayObbClearance(
+                bx,
+                by,
+                bz,
+                (escDoor.outX - bx) / dOut,
+                (escDoor.outZ - bz) / dOut,
+                dOut,
+                0.32,
+                this._botSteerCols,
+                this.world.colliders,
+                this.world.staticColliderCount,
+                false,
+              )
+            : { dist: 0, hitWindowSill: false };
+        if (clearToOut.dist >= dOut - 0.35 || dIn <= 1.95 || dOut <= dIn + 0.15) {
+          this._botNavOut.x = escDoor.outX;
+          this._botNavOut.z = escDoor.outZ;
+        } else {
+          if (curB.hub) {
+            const dHub = Math.hypot(curB.hub.x - bx, curB.hub.z - bz);
+            if (dHub > 1.5) {
+              const hitIn = this.rayObbClearance(
+                bx,
+                by,
+                bz,
+                (escDoor.inX - bx) / dIn,
+                (escDoor.inZ - bz) / dIn,
+                dIn,
+                0.34,
+                this._botSteerCols,
+                this.world.colliders,
+                this.world.staticColliderCount,
+                false,
+              );
+              if (hitIn.dist < dIn - 0.55) {
+                this._botNavOut.x = curB.hub.x;
+                this._botNavOut.z = curB.hub.z;
+                return;
+              }
+            }
+          }
+          this._botNavOut.x = escDoor.inX;
+          this._botNavOut.z = escDoor.inZ;
         }
         return;
       } else {
@@ -4907,7 +4981,7 @@ export class BattleRoyaleEngine {
       // On 2nd floor wanting to go outside or back down to 1st floor
       if (botOn2F && (goalB !== curB || !goalOn2F) && curB.stairTop && curB.stairBottom) {
         const dTop = Math.hypot(curB.stairTop.x - bx, curB.stairTop.z - bz);
-        if (dTop > 1.35) {
+        if (dTop > 1.4) {
           this._botNavOut.x = curB.stairTop.x;
           this._botNavOut.z = curB.stairTop.z;
         } else {
@@ -4927,7 +5001,7 @@ export class BattleRoyaleEngine {
               this.world.queryStaticCollidersNear((bx + curB.stairBottom.x) * 0.5, (bz + curB.stairBottom.z) * 0.5, 5.5, this._botSteerCols);
               const sdx = curB.stairBottom.x - bx;
               const sdz = curB.stairBottom.z - bz;
-              const hit = this.rayObbClearance(bx, by, bz, sdx / dBot, sdz / dBot, dBot, 0.36, this._botSteerCols, this.world.colliders, this.world.staticColliderCount);
+              const hit = this.rayObbClearance(bx, by, bz, sdx / dBot, sdz / dBot, dBot, 0.34, this._botSteerCols, this.world.colliders, this.world.staticColliderCount);
               if (hit.dist < dBot - 0.6) {
                 this._botNavOut.x = curB.hub.x;
                 this._botNavOut.z = curB.hub.z;
@@ -4959,11 +5033,31 @@ export class BattleRoyaleEngine {
         }
         const dIn = Math.hypot(bestDoor.inX - bx, bestDoor.inZ - bz);
         const dOut = Math.hypot(bestDoor.outX - bx, bestDoor.outZ - bz);
-        if (dIn > 1.35 && dOut > dIn) {
+        this.world.queryStaticCollidersNear((bx + bestDoor.outX) * 0.5, (bz + bestDoor.outZ) * 0.5, 6.0, this._botSteerCols);
+        const clearToOut =
+          dOut > 0.2
+            ? this.rayObbClearance(
+                bx,
+                by,
+                bz,
+                (bestDoor.outX - bx) / dOut,
+                (bestDoor.outZ - bz) / dOut,
+                dOut,
+                0.32,
+                this._botSteerCols,
+                this.world.colliders,
+                this.world.staticColliderCount,
+                false,
+              )
+            : { dist: 0, hitWindowSill: false };
+
+        if (clearToOut.dist >= dOut - 0.35 || dIn <= 1.95 || dOut <= dIn + 0.15) {
+          this._botNavOut.x = bestDoor.outX;
+          this._botNavOut.z = bestDoor.outZ;
+        } else {
           if (curB.hub) {
             const dHub = Math.hypot(curB.hub.x - bx, curB.hub.z - bz);
-            if (dHub > 1.4) {
-              this.world.queryStaticCollidersNear((bx + bestDoor.inX) * 0.5, (bz + bestDoor.inZ) * 0.5, 5.5, this._botSteerCols);
+            if (dHub > 1.45) {
               const hit = this.rayObbClearance(
                 bx,
                 by,
@@ -4971,7 +5065,7 @@ export class BattleRoyaleEngine {
                 (bestDoor.inX - bx) / dIn,
                 (bestDoor.inZ - bz) / dIn,
                 dIn,
-                0.36,
+                0.34,
                 this._botSteerCols,
                 this.world.colliders,
                 this.world.staticColliderCount,
@@ -4985,9 +5079,6 @@ export class BattleRoyaleEngine {
           }
           this._botNavOut.x = bestDoor.inX;
           this._botNavOut.z = bestDoor.inZ;
-        } else {
-          this._botNavOut.x = bestDoor.outX;
-          this._botNavOut.z = bestDoor.outZ;
         }
         return;
       }
@@ -5006,7 +5097,7 @@ export class BattleRoyaleEngine {
               (gx - bx) / dDirect,
               (gz - bz) / dDirect,
               dDirect,
-              0.36,
+              0.34,
               this._botSteerCols,
               this.world.colliders,
               this.world.staticColliderCount,
@@ -5035,7 +5126,7 @@ export class BattleRoyaleEngine {
         }
       }
       const dOut = Math.hypot(bestDoor.outX - bx, bestDoor.outZ - bz);
-      if (dOut > 1.5) {
+      if (dOut > 1.55) {
         this._botNavOut.x = bestDoor.outX;
         this._botNavOut.z = bestDoor.outZ;
       } else {
@@ -5054,8 +5145,8 @@ export class BattleRoyaleEngine {
     wantDirZ: number,
     avoidWater: boolean,
   ): boolean {
-    const lookDist = 3.2;
-    const probeR = 0.43;
+    const lookDist = 3.0;
+    const probeR = 0.33;
     const ignoreSill = bot.vaultTimer > 0;
     this.world.queryStaticCollidersNear(
       bx + wantDirX * 1.4,
@@ -5194,15 +5285,15 @@ export class BattleRoyaleEngine {
       state === GameState.DROPPING ||
       state === GameState.PARACHUTE ||
       isPlaying;
-    let losBudget = 14;
+    let losBudget = 10;
 
     const enemyRenderDist = this.getEnemyRenderDist();
     const effectiveRenderDist =
       state === GameState.DROPPING || state === GameState.PARACHUTE
-        ? Math.max(enemyRenderDist, 140)
+        ? Math.max(enemyRenderDist, 130)
         : enemyRenderDist;
     const effectiveRenderDistSq = effectiveRenderDist * effectiveRenderDist;
-    const playerSightRange = Math.min(68, enemyRenderDist * 0.9);
+    const playerSightRange = Math.min(62, enemyRenderDist * 0.9);
     const playerSightRangeSq = playerSightRange * playerSightRange;
 
     const formOffsets: Array<[number, number]> = [
@@ -5240,12 +5331,12 @@ export class BattleRoyaleEngine {
       : null;
 
     const maxVisibleBots =
-      this.settings.quality === 'low' ? 10 : this.settings.quality === 'high' ? 28 : 18;
+      this.settings.quality === 'low' ? 7 : this.settings.quality === 'high' ? 18 : 12;
     const maxFullAnimBots =
-      this.settings.quality === 'low' ? 6 : this.settings.quality === 'high' ? 16 : 10;
+      this.settings.quality === 'low' ? 4 : this.settings.quality === 'high' ? 12 : 7;
     let visibleBotCount = 0;
     let animatedBotCount = 0;
-    let aiBudget = 8;
+    let aiBudget = 6;
 
     if (this.botDistSqScratch.length < bots.length) {
       this.botDistSqScratch = new Float64Array(bots.length);
@@ -5866,7 +5957,7 @@ export class BattleRoyaleEngine {
           const rr = Math.min(this.zoneNextRadius * 0.65, 110);
           let gx = this.zoneNextX + Math.cos(ang) * rr;
           let gz = this.zoneNextZ + Math.sin(ang) * rr;
-          if (botSurfaceHeightAt(gx, gz).inWater || gx * gx + gz * gz > 840 * 840) {
+          if (botSurfaceHeightAt(gx, gz).inWater || gx * gx + gz * gz > 520 * 520) {
             gx = this.zoneCurrentX;
             gz = this.zoneCurrentZ;
           }
@@ -5875,6 +5966,21 @@ export class BattleRoyaleEngine {
         } else if (bot.isAlly && isPlaying) {
           const distToPlayer = Math.hypot(this.pos.x - bx, this.pos.z - bz);
           const distGoal = Math.hypot(bot.goalX - bx, bot.goalZ - bz);
+          const maxB = BERMUDA_HALF - 20;
+
+          if (distToPlayer > 130 && !bot.isDowned) {
+            const backAng = this.yaw + Math.PI + (curAllySlot - 1) * 0.45;
+            const rx = THREE.MathUtils.clamp(this.pos.x + Math.sin(backAng) * 20, -maxB, maxB);
+            const rz = THREE.MathUtils.clamp(this.pos.z + Math.cos(backAng) * 20, -maxB, maxB);
+            if (!botSurfaceHeightAt(rx, rz).inWater && !this.isPointBlockedForBot(rx, this.pos.y, rz, 0.55)) {
+              bot.group.position.set(rx, Math.max(0.4, this.resolveFloorHeight(rx, rz, this.pos.y + 0.5)), rz);
+              this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, false);
+              bot.escapeTimer = 0;
+              bot.stuckTimer = 0;
+              bot.goalX = rx;
+              bot.goalZ = rz;
+            }
+          }
 
           if (activeVeh && !activeVeh.destroyed && activeVeh.passengerIds.length < 3 && distToPlayer < 32) {
             bot.aiState = 'roam';
@@ -5891,7 +5997,7 @@ export class BattleRoyaleEngine {
             const rr = Math.min(this.zoneNextRadius * 0.55, 45);
             bot.goalX = this.zoneNextX + Math.cos(ang) * rr;
             bot.goalZ = this.zoneNextZ + Math.sin(ang) * rr;
-          } else if (distToPlayer > 78) {
+          } else if (distToPlayer > 52) {
             const formAng = curAllySlot * 1.25 + this.yaw + Math.PI;
             bot.aiState = 'roam';
             const playerBldg = this.world.findBuildingNavZoneAt(this.pos.x, this.pos.z);
@@ -5899,8 +6005,8 @@ export class BattleRoyaleEngine {
               bot.goalX = playerBldg.doors[0].outX;
               bot.goalZ = playerBldg.doors[0].outZ;
             } else {
-              bot.goalX = THREE.MathUtils.clamp(this.pos.x + Math.sin(formAng) * 7.5, -850, 850);
-              bot.goalZ = THREE.MathUtils.clamp(this.pos.z + Math.cos(formAng) * 7.5, -850, 850);
+              bot.goalX = THREE.MathUtils.clamp(this.pos.x + Math.sin(formAng) * 7.5, -maxB, maxB);
+              bot.goalZ = THREE.MathUtils.clamp(this.pos.z + Math.cos(formAng) * 7.5, -maxB, maxB);
             }
           } else {
             let foundAllyLoot = false;
@@ -5918,15 +6024,14 @@ export class BattleRoyaleEngine {
                 }
                 const ldx = loot.data.x - bx;
                 const ldz = loot.data.z - bz;
-                if (Math.abs(ldx) > 36 || Math.abs(ldz) > 36) continue;
-                // Only grab loot on the same floor unless inside the same multi-story house
+                if (Math.abs(ldx) > 32 || Math.abs(ldz) > 32) continue;
                 if (Math.abs(loot.data.y - bot.group.position.y) > 2.2) {
                   const lootBldg = this.world.findBuildingNavZoneAt(loot.data.x, loot.data.z);
                   if (!curBotBldg || curBotBldg !== lootBldg) continue;
                 }
                 const db = Math.hypot(ldx, ldz);
                 const dp = Math.hypot(loot.data.x - this.pos.x, loot.data.z - this.pos.z);
-                if (db < 36 && dp > 4.5) {
+                if (db < 32 && dp > 4.5) {
                   bot.aiState = 'loot';
                   bot.goalX = loot.data.x;
                   bot.goalY = loot.data.y;
@@ -5947,9 +6052,9 @@ export class BattleRoyaleEngine {
               const baseR = 4.6 + (curAllySlot % 3) * 1.9;
               for (let tryIdx = 0; tryIdx < 6; tryIdx++) {
                 const tryAng = baseAng + tryIdx * 1.047;
-                const gx = THREE.MathUtils.clamp(this.pos.x + Math.sin(tryAng) * baseR, -850, 850);
-                const gz = THREE.MathUtils.clamp(this.pos.z + Math.cos(tryAng) * baseR, -850, 850);
-                if (gx * gx + gz * gz > 840 * 840) continue;
+                const gx = THREE.MathUtils.clamp(this.pos.x + Math.sin(tryAng) * baseR, -maxB, maxB);
+                const gz = THREE.MathUtils.clamp(this.pos.z + Math.cos(tryAng) * baseR, -maxB, maxB);
+                if (gx * gx + gz * gz > 520 * 520) continue;
                 if (botSurfaceHeightAt(gx, gz).inWater) continue;
                 if (this.isPointBlockedForBot(gx, this.pos.y, gz, 0.52)) continue;
                 const candBldg = this.world.findBuildingNavZoneAt(gx, gz);
@@ -5971,6 +6076,7 @@ export class BattleRoyaleEngine {
         } else {
           let foundLoot = false;
           const curBotBldg = this.world.findBuildingNavZoneAt(bx, bz);
+          const maxB = BERMUDA_HALF - 20;
           if (bot.weaponId === 'g18' || bot.weaponId === 'deagle' || bot.vestLevel === 0) {
             for (let l = 0; l < this.world.loots.length; l++) {
               const loot = this.world.loots[l];
@@ -5983,7 +6089,7 @@ export class BattleRoyaleEngine {
               }
               const ldx = loot.data.x - bx;
               const ldz = loot.data.z - bz;
-              if (Math.abs(ldx) > 32 || Math.abs(ldz) > 32) continue;
+              if (Math.abs(ldx) > 30 || Math.abs(ldz) > 30) continue;
               if (Math.abs(loot.data.y - bot.group.position.y) > 2.2) {
                 const lootBldg = this.world.findBuildingNavZoneAt(loot.data.x, loot.data.z);
                 if (!curBotBldg || curBotBldg !== lootBldg) continue;
@@ -5991,7 +6097,7 @@ export class BattleRoyaleEngine {
               const dp = Math.hypot(loot.data.x - this.pos.x, loot.data.z - this.pos.z);
               if (!bot.isAlly && dp < 15) continue;
               const db = Math.hypot(ldx, ldz);
-              if (db < 32) {
+              if (db < 30) {
                 bot.aiState = 'loot';
                 bot.goalX = loot.data.x;
                 bot.goalY = loot.data.y;
@@ -6011,7 +6117,7 @@ export class BattleRoyaleEngine {
               // Proactively hunt nearest enemy / gunfight hotspot ("caçar tretação")
               let huntX: number | null = null;
               let huntZ: number | null = null;
-              let bestEnemyDistSq = 250 * 250;
+              let bestEnemyDistSq = 210 * 210;
               for (let j = 0; j < bots.length; j++) {
                 if (i === j) continue;
                 const other = bots[j];
@@ -6036,8 +6142,8 @@ export class BattleRoyaleEngine {
 
               if (huntX !== null && huntZ !== null) {
                 const ang = ((i * 1.7) % (Math.PI * 2));
-                bot.goalX = THREE.MathUtils.clamp(huntX + Math.cos(ang) * 14, -850, 850);
-                bot.goalZ = THREE.MathUtils.clamp(huntZ + Math.sin(ang) * 14, -850, 850);
+                bot.goalX = THREE.MathUtils.clamp(huntX + Math.cos(ang) * 14, -maxB, maxB);
+                bot.goalZ = THREE.MathUtils.clamp(huntZ + Math.sin(ang) * 14, -maxB, maxB);
               } else if (
                 isPlaying &&
                 this.lastGunfightTimer > 0 &&
@@ -6061,7 +6167,7 @@ export class BattleRoyaleEngine {
                   gx = this.zoneNextX + Math.cos(ang) * Math.min(80, this.zoneNextRadius * 0.6);
                   gz = this.zoneNextZ + Math.sin(ang) * Math.min(80, this.zoneNextRadius * 0.6);
                 }
-                if (botSurfaceHeightAt(gx, gz).inWater || gx * gx + gz * gz > 840 * 840) {
+                if (botSurfaceHeightAt(gx, gz).inWater || gx * gx + gz * gz > 520 * 520) {
                   gx = poi.x;
                   gz = poi.z;
                 }
@@ -6259,7 +6365,13 @@ export class BattleRoyaleEngine {
           const faceYaw = Math.atan2(dx, dz);
           bot.group.rotation.y = lerpAngle(bot.group.rotation.y, faceYaw, 1 - Math.exp(-15 * dt));
 
-          if (dist > 20) {
+          const curCombatBldg = this.world.findBuildingNavZoneAt(bx, bz);
+          const targetCombatBldg = this.world.findBuildingNavZoneAt(tx, tz);
+          const needBuildingNav =
+            curCombatBldg !== null &&
+            (curCombatBldg !== targetCombatBldg || Math.abs(bot.group.position.y - targetBaseY) > 1.8);
+
+          if (dist > 20 || needBuildingNav) {
             this.resolveSmartBuildingTarget(bot, bx, bot.group.position.y, bz, tx, tz, targetBaseY);
             const wdx = this._botNavOut.x - bx;
             const wdz = this._botNavOut.z - bz;
@@ -6365,15 +6477,18 @@ export class BattleRoyaleEngine {
           (bot.aiState === 'roam' || bot.aiState === 'loot') &&
           !curRoamSurf.onBridge
         ) {
-          const onSentosaNow = Math.hypot(bx - SENTOSA_CENTER.x, bz - SENTOSA_CENTER.z) < 175;
-          const goalOnSentosa = Math.hypot(targetGoalX - SENTOSA_CENTER.x, targetGoalZ - SENTOSA_CENTER.z) < 175;
-          if (onSentosaNow !== goalOnSentosa) {
-            const bridge = nearestBridgePos(bx, bz, 'sentosa');
-            if (Math.hypot(bridge.x - bx, bridge.z - bz) < 220) {
-              targetGoalX = bridge.x;
-              targetGoalZ = bridge.z;
+          if (HAS_SENTOSA) {
+            const onSentosaNow = Math.hypot(bx - SENTOSA_CENTER.x, bz - SENTOSA_CENTER.z) < 175;
+            const goalOnSentosa = Math.hypot(targetGoalX - SENTOSA_CENTER.x, targetGoalZ - SENTOSA_CENTER.z) < 175;
+            if (onSentosaNow !== goalOnSentosa) {
+              const bridge = nearestBridgePos(bx, bz, 'sentosa');
+              if (Math.hypot(bridge.x - bx, bridge.z - bz) < 220) {
+                targetGoalX = bridge.x;
+                targetGoalZ = bridge.z;
+              }
             }
-          } else if (
+          }
+          if (
             Math.sign(bz - riverCenterZ(bx)) !== Math.sign(targetGoalZ - riverCenterZ(targetGoalX))
           ) {
             const bridge = nearestBridgePos(bx, bz, 'river');
@@ -6384,7 +6499,9 @@ export class BattleRoyaleEngine {
           }
         }
         const rawDist = Math.hypot(targetGoalX - bx, targetGoalZ - bz);
-        if (rawDist > 1.4 || bot.escapeTimer > 0) {
+        const curWalkB = this.world.findBuildingNavZoneAt(bx, bz);
+        const goalWalkB = this.world.findBuildingNavZoneAt(targetGoalX, targetGoalZ);
+        if (rawDist > 1.4 || bot.escapeTimer > 0 || (curWalkB !== null && curWalkB !== goalWalkB)) {
           const goalFloorGuess =
             bot.aiState === 'loot'
               ? bot.goalY
@@ -6481,7 +6598,7 @@ export class BattleRoyaleEngine {
       }
 
       // 3. Apply intelligent whisker-steered locomotion + OBB collision + smooth stairs/water
-      const animateLimbs = inRenderRange && botCamDistSq < 60 * 60;
+      const animateLimbs = inRenderRange && botCamDistSq < 48 * 48;
 
       if (isMoving && !isCrouchingAction) {
         const curSurf = botSurfaceHeightAt(bx, bz);
@@ -6508,12 +6625,14 @@ export class BattleRoyaleEngine {
           );
         }
 
-        let nx = THREE.MathUtils.clamp(bx + moveDirX * stepDist, -875, 875);
-        let nz = THREE.MathUtils.clamp(bz + moveDirZ * stepDist, -875, 875);
+        const bound = BERMUDA_HALF - 12;
+        const islandBound = 540;
+        let nx = THREE.MathUtils.clamp(bx + moveDirX * stepDist, -bound, bound);
+        let nz = THREE.MathUtils.clamp(bz + moveDirZ * stepDist, -bound, bound);
 
         const rSq = nx * nx + nz * nz;
-        if (rSq > 860 * 860) {
-          const invR = 860 / Math.sqrt(rSq);
+        if (rSq > islandBound * islandBound) {
+          const invR = islandBound / Math.sqrt(rSq);
           nx *= invR;
           nz *= invR;
           bot.goalX = 0;
@@ -6526,7 +6645,7 @@ export class BattleRoyaleEngine {
           bot.group.position.x = nx;
           bot.group.position.z = nz;
           if (nextSurf.inWater) {
-            if (rSq > 790 * 790) {
+            if (rSq > 515 * 515) {
               bot.goalX = bx * 0.65;
               bot.goalZ = bz * 0.65;
             } else {
@@ -6548,8 +6667,8 @@ export class BattleRoyaleEngine {
             }
           }
         } else if (nextSurf.inWater && (bot.aiState === 'roam' || bot.aiState === 'loot')) {
-          const tx = THREE.MathUtils.clamp(bx + moveDirX * stepDist * 0.85, -875, 875);
-          const tz = THREE.MathUtils.clamp(bz + moveDirZ * stepDist * 0.85, -875, 875);
+          const tx = THREE.MathUtils.clamp(bx + moveDirX * stepDist * 0.85, -bound, bound);
+          const tz = THREE.MathUtils.clamp(bz + moveDirZ * stepDist * 0.85, -bound, bound);
           const surfX = botSurfaceHeightAt(tx, bz);
           const surfZ = botSurfaceHeightAt(bx, tz);
           if (!surfX.inWater && Math.abs(tx - bx) > 0.005) {
@@ -6569,10 +6688,10 @@ export class BattleRoyaleEngine {
 
         // Exact same 2-pass OBB wall/prop/vehicle/gloo collision sliding & floor platforms as the player!
         const ignoreSill = bot.vaultTimer > 0;
-        const push1 = this.resolveEntityHorizontalCollisions(bot.group.position, 0.38, null, ignoreSill);
-        const push2 = this.resolveEntityHorizontalCollisions(bot.group.position, 0.38, null, ignoreSill);
-        bot.group.position.x = THREE.MathUtils.clamp(bot.group.position.x, -875, 875);
-        bot.group.position.z = THREE.MathUtils.clamp(bot.group.position.z, -875, 875);
+        const push1 = this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, ignoreSill);
+        const push2 = this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, ignoreSill);
+        bot.group.position.x = THREE.MathUtils.clamp(bot.group.position.x, -bound, bound);
+        bot.group.position.z = THREE.MathUtils.clamp(bot.group.position.z, -bound, bound);
 
         const botFloorRaw = this.resolveFloorHeight(
           bot.group.position.x,
@@ -6660,26 +6779,77 @@ export class BattleRoyaleEngine {
               bot.escapeTimer = 2.6;
             }
           }
-          // Stage 3: clear 360-degree escape vector & pick fresh valid objective
+          // Stage 3: smart doorway/staircase exit if inside a building, else clear 360-degree escape vector
           if (bot.stuckTimer > 1.35) {
-            const esc = this.findClearestEscapeVector(
+            const stuckB = this.world.findBuildingNavZoneAt(
               bot.group.position.x,
-              bot.group.position.y,
               bot.group.position.z,
             );
-            bot.group.position.x = THREE.MathUtils.clamp(
-              bot.group.position.x + esc.x * 1.15,
-              -875,
-              875,
-            );
-            bot.group.position.z = THREE.MathUtils.clamp(
-              bot.group.position.z + esc.z * 1.15,
-              -875,
-              875,
-            );
-            this.resolveEntityHorizontalCollisions(bot.group.position, 0.38, null, false);
-            bot.goalX = THREE.MathUtils.clamp(bot.group.position.x + esc.x * 12, -850, 850);
-            bot.goalZ = THREE.MathUtils.clamp(bot.group.position.z + esc.z * 12, -850, 850);
+            if (stuckB) {
+              const on2F =
+                stuckB.secondFloorY !== undefined &&
+                bot.group.position.y >= stuckB.baseY + 2.0 &&
+                stuckB.stairTop &&
+                stuckB.stairBottom;
+              if (on2F && stuckB.stairTop && stuckB.stairBottom) {
+                const targetX = stuckB.stairBottom.x;
+                const targetZ = stuckB.stairBottom.z;
+                bot.group.position.set(
+                  targetX,
+                  Math.max(0.4, this.resolveFloorHeight(targetX, targetZ, stuckB.baseY + 0.4)),
+                  targetZ,
+                );
+                bot.escapeTimer = 2.6;
+              } else if (stuckB.doors.length > 0) {
+                let bestD = stuckB.doors[0];
+                let bestDDist = Infinity;
+                for (let k = 0; k < stuckB.doors.length; k++) {
+                  const d = stuckB.doors[k];
+                  const dd = Math.hypot(d.inX - bot.group.position.x, d.inZ - bot.group.position.z);
+                  if (dd < bestDDist) {
+                    bestDDist = dd;
+                    bestD = d;
+                  }
+                }
+                if (bot.escapeTimer > 0) {
+                  bot.group.position.set(
+                    bestD.outX,
+                    Math.max(0.4, this.resolveFloorHeight(bestD.outX, bestD.outZ, stuckB.baseY + 0.4)),
+                    bestD.outZ,
+                  );
+                  bot.escapeTimer = 0;
+                  bot.goalX = bestD.outX;
+                  bot.goalZ = bestD.outZ;
+                } else {
+                  bot.escapeDoorX = bestD.outX;
+                  bot.escapeDoorZ = bestD.outZ;
+                  bot.escapeTimer = 2.6;
+                  const nd = Math.hypot(bestD.inX - bot.group.position.x, bestD.inZ - bot.group.position.z) || 1;
+                  bot.group.position.x += ((bestD.inX - bot.group.position.x) / nd) * Math.min(1.0, nd);
+                  bot.group.position.z += ((bestD.inZ - bot.group.position.z) / nd) * Math.min(1.0, nd);
+                }
+              }
+              this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, false);
+            } else {
+              const esc = this.findClearestEscapeVector(
+                bot.group.position.x,
+                bot.group.position.y,
+                bot.group.position.z,
+              );
+              bot.group.position.x = THREE.MathUtils.clamp(
+                bot.group.position.x + esc.x * 1.15,
+                -bound,
+                bound,
+              );
+              bot.group.position.z = THREE.MathUtils.clamp(
+                bot.group.position.z + esc.z * 1.15,
+                -bound,
+                bound,
+              );
+              this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, false);
+              bot.goalX = THREE.MathUtils.clamp(bot.group.position.x + esc.x * 12, -(BERMUDA_HALF - 20), BERMUDA_HALF - 20);
+              bot.goalZ = THREE.MathUtils.clamp(bot.group.position.z + esc.z * 12, -(BERMUDA_HALF - 20), BERMUDA_HALF - 20);
+            }
             bot.stuckTimer = 0;
             bot.huntTimer = 0;
             bot.aiTimer = 0;
@@ -6739,7 +6909,7 @@ export class BattleRoyaleEngine {
             animatedBotCount++;
           } else {
             bot.animAccum = (bot.animAccum ?? 0) + dt;
-            if (bot.animAccum >= 0.085) {
+            if (bot.animAccum >= 0.11) {
               bot.mixer.update(bot.animAccum);
               bot.animAccum = 0;
             }
@@ -6852,15 +7022,15 @@ export class BattleRoyaleEngine {
   }
 
   private spawnAirDrop(): void {
-    const safeR = Math.min(Math.max(30, this.zoneCurrentRadius * 0.72), 620);
+    const safeR = Math.min(Math.max(30, this.zoneCurrentRadius * 0.72), 450);
     let ax = this.zoneCurrentX;
     let az = this.zoneCurrentZ;
     let groundY = Math.max(0.8, this.world.groundHeightAt(ax, az));
     for (let attempt = 0; attempt < 16; attempt++) {
       const ang = Math.random() * Math.PI * 2;
       const dist = Math.sqrt(Math.random()) * safeR;
-      const cx = THREE.MathUtils.clamp(this.zoneCurrentX + Math.cos(ang) * dist, -820, 820);
-      const cz = THREE.MathUtils.clamp(this.zoneCurrentZ + Math.sin(ang) * dist, -820, 820);
+      const cx = THREE.MathUtils.clamp(this.zoneCurrentX + Math.cos(ang) * dist, -540, 540);
+      const cz = THREE.MathUtils.clamp(this.zoneCurrentZ + Math.sin(ang) * dist, -540, 540);
       const gy = this.world.groundHeightAt(cx, cz);
       if (gy >= 1.2) {
         ax = cx;
@@ -7758,8 +7928,8 @@ export class BattleRoyaleEngine {
       v.driverIsPlayer = false;
       const sideX = Math.cos(v.yaw);
       const sideZ = -Math.sin(v.yaw);
-      this.pos.x = THREE.MathUtils.clamp(v.x - sideX * 2.1, -885, 885);
-      this.pos.z = THREE.MathUtils.clamp(v.z + sideZ * 2.1, -885, 885);
+      this.pos.x = THREE.MathUtils.clamp(v.x - sideX * 2.1, -(BERMUDA_HALF - 10), BERMUDA_HALF - 10);
+      this.pos.z = THREE.MathUtils.clamp(v.z + sideZ * 2.1, -(BERMUDA_HALF - 10), BERMUDA_HALF - 10);
       const exitFloor = this.resolveFloorHeight(this.pos.x, this.pos.z, v.y + 1.5);
       this.pos.y = exitFloor < -0.78 ? Math.max(exitFloor, -1.28) : Math.max(-0.85, exitFloor);
       this.vel.set(0, 0, 0);
@@ -7772,8 +7942,8 @@ export class BattleRoyaleEngine {
       const bot = this.targetById.get(v.passengerIds[i]);
       if (!bot) continue;
       const sideSign = i % 2 === 0 ? 1 : -1;
-      const px = THREE.MathUtils.clamp(v.x + Math.cos(v.yaw) * 2.3 * sideSign, -875, 875);
-      const pz = THREE.MathUtils.clamp(v.z - Math.sin(v.yaw) * 2.3 * sideSign, -875, 875);
+      const px = THREE.MathUtils.clamp(v.x + Math.cos(v.yaw) * 2.3 * sideSign, -(BERMUDA_HALF - 15), BERMUDA_HALF - 15);
+      const pz = THREE.MathUtils.clamp(v.z - Math.sin(v.yaw) * 2.3 * sideSign, -(BERMUDA_HALF - 15), BERMUDA_HALF - 15);
       bot.group.position.set(px, Math.max(-1.25, botSurfaceHeightAt(px, pz).y), pz);
       bot.group.visible = !bot.eliminated;
     }
@@ -7816,8 +7986,8 @@ export class BattleRoyaleEngine {
       }
       if (!v.driverIsPlayer && Math.abs(v.speed) > 0.08 && !v.destroyed) {
         v.speed = THREE.MathUtils.damp(v.speed, 0, 2.2, dt);
-        v.x = THREE.MathUtils.clamp(v.x + Math.sin(v.yaw) * v.speed * dt, -880, 880);
-        v.z = THREE.MathUtils.clamp(v.z + Math.cos(v.yaw) * v.speed * dt, -880, 880);
+        v.x = THREE.MathUtils.clamp(v.x + Math.sin(v.yaw) * v.speed * dt, -(BERMUDA_HALF - 12), BERMUDA_HALF - 12);
+        v.z = THREE.MathUtils.clamp(v.z + Math.cos(v.yaw) * v.speed * dt, -(BERMUDA_HALF - 12), BERMUDA_HALF - 12);
         const surf = botSurfaceHeightAt(v.x, v.z);
         v.y = surf.onBridge ? surf.y : Math.max(-0.82, surf.y);
         v.group.position.set(v.x, v.y, v.z);
@@ -7903,8 +8073,8 @@ export class BattleRoyaleEngine {
       this.pitch = THREE.MathUtils.damp(this.pitch, -0.18, 2.6, dt);
     }
 
-    v.x = THREE.MathUtils.clamp(v.x + Math.sin(v.yaw) * v.speed * dt, -882, 882);
-    v.z = THREE.MathUtils.clamp(v.z + Math.cos(v.yaw) * v.speed * dt, -882, 882);
+    v.x = THREE.MathUtils.clamp(v.x + Math.sin(v.yaw) * v.speed * dt, -(BERMUDA_HALF - 10), BERMUDA_HALF - 10);
+    v.z = THREE.MathUtils.clamp(v.z + Math.cos(v.yaw) * v.speed * dt, -(BERMUDA_HALF - 10), BERMUDA_HALF - 10);
     const surf = botSurfaceHeightAt(v.x, v.z);
     v.y = surf.onBridge ? surf.y : Math.max(-0.82, surf.y);
 
@@ -7958,8 +8128,8 @@ export class BattleRoyaleEngine {
           const bDist = Math.sqrt(distSq) || 0.1;
           const pushX = (bdx / bDist) * 2.65;
           const pushZ = (bdz / bDist) * 2.65;
-          bot.group.position.x = THREE.MathUtils.clamp(v.x + pushX, -870, 870);
-          bot.group.position.z = THREE.MathUtils.clamp(v.z + pushZ, -870, 870);
+          bot.group.position.x = THREE.MathUtils.clamp(v.x + pushX, -(BERMUDA_HALF - 15), BERMUDA_HALF - 15);
+          bot.group.position.z = THREE.MathUtils.clamp(v.z + pushZ, -(BERMUDA_HALF - 15), BERMUDA_HALF - 15);
           this.applyBotHitDamage(bot, dmg, true, this.playerNick, 'CARRO', false, v.x, v.z);
           this.damageDealt += dmg;
           this.hitmarkerTimer = 0.22;

@@ -13,6 +13,18 @@ const HUD_LAYOUT_KEY = 'zonazero2017_hud_layout_v1';
 const CHARACTER_KEY = 'zonazero2017_character_v1';
 const PROFILE_KEY = 'zonazero2017_profile_v1';
 
+export function isMobileHardware(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const coarse =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(pointer: coarse)').matches;
+  const touch =
+    'ontouchstart' in window || (navigator.maxTouchPoints ?? 0) > 0;
+  const mobileUa = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  const smallScreen = Math.min(window.innerWidth, window.innerHeight) < 820;
+  return mobileUa || coarse || (touch && smallScreen);
+}
+
 export const DEFAULT_SETTINGS: GameSettings = {
   sensitivity: 1.0,
   redDotSensitivity: 0.95,
@@ -20,7 +32,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   scope4xSensitivity: 0.72,
   sniperSensitivity: 0.62,
   aimAssistMode: 'default',
-  quality: 'medium',
+  quality: isMobileHardware() ? 'low' : 'medium',
   soundVolume: 0.75,
   muted: false,
   showFps: true,

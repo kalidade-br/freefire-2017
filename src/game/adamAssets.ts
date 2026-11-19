@@ -100,8 +100,8 @@ export function preloadAdamAssets(onStep?: (pct: number, label: string) => void)
       adamGltf.scene.traverse((obj) => {
         const mesh = obj as THREE.Mesh;
         if (!mesh.isMesh) return;
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
+        mesh.castShadow = false;
+        mesh.receiveShadow = false;
         mesh.frustumCulled = false; // SkinnedMesh bounding spheres can clip when animated far from bind pose
         const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
         const n = mesh.name.toLowerCase();
@@ -211,7 +211,11 @@ export function getAdamOutfitTexture(cfg: Pick<CharacterConfig, 'skinColor' | 's
   const cached = outfitTextureCache.get(key);
   if (cached) return cached;
 
-  const size = 512;
+  const isMobile =
+    typeof window !== 'undefined' &&
+    (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+      (navigator.maxTouchPoints ?? 0) > 0);
+  const size = isMobile ? 256 : 512;
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
@@ -355,7 +359,7 @@ export function getAdamOutfitTexture(cfg: Pick<CharacterConfig, 'skinColor' | 's
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.flipY = false;
-  tex.anisotropy = 4;
+  tex.anisotropy = isMobile ? 1 : 2;
   tex.needsUpdate = true;
 
   outfitTextureCache.set(key, tex);

@@ -246,94 +246,69 @@ export interface WorldHandle {
   dispose: () => void;
 }
 
-export const BERMUDA_HALF = 900;
-export const BERMUDA_MAP_RANGE = 940;
-export const SENTOSA_CENTER = { x: 555, z: 515 } as const;
+export const BERMUDA_HALF = 660;
+export const BERMUDA_MAP_RANGE = 690;
+export const HAS_SENTOSA = false;
+export const WAIT_SPAWN = { x: -255, z: -365 } as const;
+export const SENTOSA_CENTER = { x: 400, z: 380 } as const;
 
 export const POIS: PoiMarker[] = [
-  { name: 'CLOCK TOWER', x: -145, z: -45, radius: 66 },
-  { name: 'PEAK', x: 35, z: -75, radius: 68 },
-  { name: 'BIMASAKTI STRIP', x: -15, z: 165, radius: 68 },
-  { name: 'FACTORY', x: -165, z: 325, radius: 72 },
-  { name: 'POCHINOK', x: 195, z: 335, radius: 68 },
-  { name: 'MARS ELECTRIC', x: -345, z: 485, radius: 68 },
-  { name: 'SENTOSA', x: 555, z: 515, radius: 84 },
-  { name: 'CAPETOWN', x: 545, z: 85, radius: 62 },
-  { name: 'KERATON', x: 345, z: 70, radius: 60 },
-  { name: 'KATULISTIWA', x: -295, z: -185, radius: 62 },
-  { name: 'PLANTATION', x: 185, z: -225, radius: 58 },
-  { name: 'MILL', x: 495, z: -210, radius: 64 },
-  { name: 'RIVERSIDE', x: 225, z: -430, radius: 56 },
-  { name: 'SHIPYARD', x: 265, z: -565, radius: 68 },
-  { name: 'HANGAR', x: -345, z: -495, radius: 66 },
-  { name: 'GRAVEYARD', x: -515, z: -235, radius: 62 },
-  { name: 'BULLSEYE', x: -455, z: -505, radius: 56 },
-  { name: 'OBSERVATÓRIO', x: -575, z: 35, radius: 56 },
-  { name: 'RIM NAM VILA', x: -535, z: 295, radius: 62 },
-  { name: 'NUREK DAM', x: 75, z: -358, radius: 42 },
-  { name: 'PONTE OESTE', x: -265, z: -416.7, radius: 32 },
-  { name: 'PONTE LESTE', x: 395, z: -340.4, radius: 32 },
-  { name: 'PONTE SENTOSA NORTE', x: 555, z: 325, radius: 40 },
-  { name: 'PONTE SENTOSA OESTE', x: 380, z: 515, radius: 40 },
+  { name: 'CLOCK TOWER', x: -110, z: -35, radius: 52 },
+  { name: 'PEAK', x: 30, z: -55, radius: 54 },
+  { name: 'BIMASAKTI STRIP', x: -12, z: 125, radius: 54 },
+  { name: 'FACTORY', x: -135, z: 250, radius: 58 },
+  { name: 'POCHINOK', x: 145, z: 255, radius: 54 },
+  { name: 'CAPETOWN', x: 405, z: 65, radius: 50 },
+  { name: 'KERATON', x: 255, z: 55, radius: 48 },
+  { name: 'KATULISTIWA', x: -230, z: -140, radius: 50 },
+  { name: 'PLANTATION', x: 145, z: -170, radius: 48 },
+  { name: 'MILL', x: 370, z: -155, radius: 52 },
+  { name: 'RIVERSIDE', x: 175, z: -325, radius: 46 },
+  { name: 'HANGAR', x: -255, z: -365, radius: 54 },
+  { name: 'NUREK DAM', x: 55, z: riverCenterZ(55), radius: 36 },
+  { name: 'PONTE OESTE', x: -195, z: riverCenterZ(-195), radius: 28 },
+  { name: 'PONTE LESTE', x: 295, z: riverCenterZ(295), radius: 28 },
 ];
 
 export function riverCenterZ(x: number): number {
-  return -375 + Math.sin(x * 0.0055) * 42;
+  return -270 + Math.sin(x * 0.0072) * 30;
 }
 
 export function sampleMainIslandEdgeRadius(angle: number): number {
   const baseVar =
-    Math.sin(angle * 3) * 55 +
-    Math.cos(angle * 5) * 34 +
-    Math.sin(angle * 7 + 0.6) * 20;
-  let diff = angle - 0.748;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  const bayCarve = Math.exp(-(diff * diff) / 0.145) * 245;
-  return 755 + baseVar - bayCarve;
+    Math.sin(angle * 3) * 36 +
+    Math.cos(angle * 5) * 22 +
+    Math.sin(angle * 7 + 0.6) * 14;
+  return 540 + baseVar;
 }
 
-export function sampleSentosaEdgeRadius(relAngle: number): number {
-  return (
-    154 +
-    Math.sin(relAngle * 3) * 14 +
-    Math.cos(relAngle * 4 + 0.8) * 9
-  );
+export function sampleSentosaEdgeRadius(_relAngle: number): number {
+  return 0;
 }
 
 const BRIDGE_BANKS = [
-  { x: -265, z: riverCenterZ(-265), deckHalfX: 4.5, deckHalfZ: 25.0, targetH: 3.4 }, // Ponte Oeste
-  { x: 75, z: riverCenterZ(75), deckHalfX: 5.2, deckHalfZ: 29.0, targetH: 5.5 }, // Nurek Dam
-  { x: 395, z: riverCenterZ(395), deckHalfX: 4.5, deckHalfZ: 25.0, targetH: 3.4 }, // Ponte Leste
-  { x: 555, z: 325, deckHalfX: 4.8, deckHalfZ: 64.0, targetH: 3.4 }, // Ponte Sentosa Norte
-  { x: 380, z: 515, deckHalfX: 68.0, deckHalfZ: 4.8, targetH: 3.4 }, // Ponte Sentosa Oeste
+  { x: -195, z: riverCenterZ(-195), deckHalfX: 4.5, deckHalfZ: 24.0, targetH: 3.4 }, // Ponte Oeste
+  { x: 55, z: riverCenterZ(55), deckHalfX: 5.2, deckHalfZ: 27.0, targetH: 5.5 }, // Nurek Dam
+  { x: 295, z: riverCenterZ(295), deckHalfX: 4.5, deckHalfZ: 24.0, targetH: 3.4 }, // Ponte Leste
 ];
 
 const BRIDGE_ABUTMENTS = [
-  // North river bridge ends
-  { x: -265, z: riverCenterZ(-265) - 25, r: 14, targetH: 3.25 },
-  { x: -265, z: riverCenterZ(-265) + 25, r: 14, targetH: 3.25 },
-  { x: 75, z: riverCenterZ(75) - 29, r: 16, targetH: 5.35 },
-  { x: 75, z: riverCenterZ(75) + 29, r: 16, targetH: 5.35 },
-  { x: 395, z: riverCenterZ(395) - 25, r: 14, targetH: 3.25 },
-  { x: 395, z: riverCenterZ(395) + 25, r: 14, targetH: 3.25 },
-  // Sentosa bridge ends
-  { x: 555, z: 261, r: 15, targetH: 3.25 },
-  { x: 555, z: 389, r: 15, targetH: 3.25 },
-  { x: 312, z: 515, r: 15, targetH: 3.25 },
-  { x: 448, z: 515, r: 15, targetH: 3.25 },
+  { x: -195, z: riverCenterZ(-195) - 24, r: 13, targetH: 3.25 },
+  { x: -195, z: riverCenterZ(-195) + 24, r: 13, targetH: 3.25 },
+  { x: 55, z: riverCenterZ(55) - 27, r: 15, targetH: 5.35 },
+  { x: 55, z: riverCenterZ(55) + 27, r: 15, targetH: 5.35 },
+  { x: 295, z: riverCenterZ(295) - 24, r: 13, targetH: 3.25 },
+  { x: 295, z: riverCenterZ(295) + 24, r: 13, targetH: 3.25 },
 ];
 
 export function nearestBridgePos(
   x: number,
-  z = -375,
-  mode: 'river' | 'sentosa' = 'river',
+  z = -270,
+  _mode: 'river' | 'sentosa' = 'river',
 ): { x: number; z: number } {
-  const start = mode === 'sentosa' ? 3 : 0;
-  const end = mode === 'sentosa' ? 5 : 3;
-  let best = BRIDGE_BANKS[start];
+  let best = BRIDGE_BANKS[0];
   let bestDist = Math.hypot(x - best.x, z - best.z);
-  for (let i = start + 1; i < end; i++) {
+  for (let i = 1; i < BRIDGE_BANKS.length; i++) {
     const d = Math.hypot(x - BRIDGE_BANKS[i].x, z - BRIDGE_BANKS[i].z);
     if (d < bestDist) {
       bestDist = d;
@@ -358,83 +333,63 @@ export function botSurfaceHeightAt(
 }
 
 const COMPOUNDS = [
-  { x: 35, z: -75, r: 58, targetH: 20.5 }, // Peak (prominent central mountain)
-  { x: -145, z: -45, r: 52, targetH: 6.2 }, // Clock Tower
-  { x: -15, z: 165, r: 54, targetH: 5.4 }, // Bimasakti Strip
-  { x: -165, z: 325, r: 58, targetH: 4.5 }, // Factory
-  { x: 195, z: 335, r: 54, targetH: 4.8 }, // Pochinok
-  { x: -345, z: 485, r: 54, targetH: 4.2 }, // Mars Electric
-  { x: 555, z: 515, r: 68, targetH: 4.8 }, // Sentosa Island
-  { x: 545, z: 85, r: 46, targetH: 8.6 }, // Capetown
-  { x: 345, z: 70, r: 46, targetH: 5.5 }, // Keraton
-  { x: -295, z: -185, r: 48, targetH: 5.2 }, // Katulistiwa
-  { x: 185, z: -225, r: 46, targetH: 5.6 }, // Plantation
-  { x: 495, z: -210, r: 50, targetH: 9.8 }, // Mill
-  { x: 225, z: -430, r: 44, targetH: 3.6 }, // Riverside
-  { x: 265, z: -565, r: 54, targetH: 2.6 }, // Shipyard
-  { x: -345, z: -495, r: 54, targetH: 4.2 }, // Hangar / Wait Lobby
-  { x: -515, z: -235, r: 48, targetH: 5.4 }, // Graveyard
-  { x: -455, z: -505, r: 46, targetH: 5.8 }, // Bullseye
-  { x: -575, z: 35, r: 44, targetH: 15.2 }, // Observatório
-  { x: -535, z: 295, r: 48, targetH: 3.2 }, // Rim Nam Vila
+  { x: 30, z: -55, r: 46, targetH: 18.0 }, // Peak
+  { x: -110, z: -35, r: 44, targetH: 5.8 }, // Clock Tower
+  { x: -12, z: 125, r: 46, targetH: 5.2 }, // Bimasakti Strip
+  { x: -135, z: 250, r: 48, targetH: 4.4 }, // Factory
+  { x: 145, z: 255, r: 46, targetH: 4.6 }, // Pochinok
+  { x: 405, z: 65, r: 42, targetH: 7.4 }, // Capetown
+  { x: 255, z: 55, r: 42, targetH: 5.2 }, // Keraton
+  { x: -230, z: -140, r: 44, targetH: 5.0 }, // Katulistiwa
+  { x: 145, z: -170, r: 42, targetH: 5.4 }, // Plantation
+  { x: 370, z: -155, r: 44, targetH: 8.6 }, // Mill
+  { x: 175, z: -325, r: 40, targetH: 3.6 }, // Riverside
+  { x: -255, z: -365, r: 46, targetH: 4.2 }, // Hangar / Wait Lobby
 ];
 
 export function sampleGroundHeight(x: number, z: number): number {
   const angle = Math.atan2(z, x);
   const distFromCenter = Math.hypot(x, z);
   const effectiveEdge = sampleMainIslandEdgeRadius(angle);
-  const mainMask = THREE.MathUtils.smoothstep(effectiveEdge - distFromCenter, 0, 82);
-
-  // Sentosa offshore island mask (SE across the turquoise strait)
-  const sdx = x - SENTOSA_CENTER.x;
-  const sdz = z - SENTOSA_CENTER.z;
-  const sentosaDist = Math.hypot(sdx, sdz);
-  const sentosaEdge = sampleSentosaEdgeRadius(Math.atan2(sdz, sdx));
-  const sentosaMask = THREE.MathUtils.smoothstep(sentosaEdge - sentosaDist, 0, 44);
-
-  const islandMask = Math.max(mainMask, sentosaMask);
+  const islandMask = THREE.MathUtils.smoothstep(effectiveEdge - distFromCenter, 0, 72);
 
   // Rolling Bermuda mountain relief & ridges
-  const n1 = Math.sin(x * 0.0062) * Math.cos(z * 0.0068) * 6.8;
-  const n2 = Math.sin(x * 0.017 + 1.1) * Math.sin(z * 0.015 - 0.6) * 2.6;
+  const n1 = Math.sin(x * 0.008) * Math.cos(z * 0.0085) * 5.8;
+  const n2 = Math.sin(x * 0.021 + 1.1) * Math.sin(z * 0.019 - 0.6) * 2.2;
   const wave =
-    Math.sin(x * 0.032 + z * 0.024) * 1.15 +
-    Math.cos(z * 0.028 - x * 0.021) * 0.85;
+    Math.sin(x * 0.036 + z * 0.028) * 0.95 +
+    Math.cos(z * 0.032 - x * 0.025) * 0.75;
   const peakMassif =
-    Math.exp(-((x - 35) * (x - 35) + (z + 75) * (z + 75)) / 36000) * 17.5;
-  const obsRidge =
-    Math.exp(-((x + 560) * (x + 560) + (z - 35) * (z - 35)) / 18000) * 12.0;
+    Math.exp(-((x - 30) * (x - 30) + (z + 55) * (z + 55)) / 24000) * 15.0;
   const millHill =
-    Math.exp(-((x - 495) * (x - 495) + (z + 210) * (z + 210)) / 15000) * 6.5;
+    Math.exp(-((x - 370) * (x - 370) + (z + 155) * (z + 155)) / 12000) * 5.4;
 
   let h =
-    (3.6 + n1 + n2 + wave + peakMassif + obsRidge + millHill) * islandMask -
-    (1 - islandMask) * 6.2;
+    (3.5 + n1 + n2 + wave + peakMassif + millHill) * islandMask -
+    (1 - islandMask) * 6.0;
 
-  // River channel cutting East-West across Northern Bermuda (under Ponte Oeste, Nurek Dam, Ponte Leste)
+  // River channel cutting East-West across Northern Bermuda
   const rz = riverCenterZ(x);
   const distRiver = Math.abs(z - rz);
-  if (distRiver < 22 && distFromCenter < 740) {
-    const carve = (1 - THREE.MathUtils.smoothstep(distRiver, 4.5, 22)) * 6.4;
+  if (distRiver < 20 && distFromCenter < 530) {
+    const carve = (1 - THREE.MathUtils.smoothstep(distRiver, 4.5, 20)) * 6.2;
     h -= carve;
   }
 
-  // Smooth bridge abutment ramps so roads meet every bridge deck flush
   for (let i = 0; i < BRIDGE_ABUTMENTS.length; i++) {
     const ab = BRIDGE_ABUTMENTS[i];
     const d = Math.hypot(x - ab.x, z - ab.z);
-    if (d < ab.r + 14) {
-      const blend = 1 - THREE.MathUtils.smoothstep(d, ab.r * 0.45, ab.r + 14);
+    if (d < ab.r + 12) {
+      const blend = 1 - THREE.MathUtils.smoothstep(d, ab.r * 0.45, ab.r + 12);
       h = THREE.MathUtils.lerp(h, ab.targetH, blend);
     }
   }
 
-  // Flatten POI plateaus so all 20 cities sit cleanly on terrain
   for (let i = 0; i < COMPOUNDS.length; i++) {
     const c = COMPOUNDS[i];
     const d = Math.hypot(x - c.x, z - c.z);
-    if (d < c.r + 28) {
-      const blend = 1 - THREE.MathUtils.smoothstep(d, c.r * 0.72, c.r + 28);
+    if (d < c.r + 24) {
+      const blend = 1 - THREE.MathUtils.smoothstep(d, c.r * 0.72, c.r + 24);
       h = THREE.MathUtils.lerp(h, c.targetH, blend);
     }
   }
@@ -1685,29 +1640,29 @@ export function createIslandWorld(
     transparent: true,
     opacity: 0.72,
   });
-  const cloudGeo = new THREE.SphereGeometry(18, 10, 7);
-  for (let i = 0; i < 26; i++) {
-    const a = (i / 26) * Math.PI * 2;
-    const rad = 940 + (i % 3) * 140;
+  const cloudGeo = new THREE.SphereGeometry(16, 7, 5);
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2;
+    const rad = 700 + (i % 3) * 110;
     const cloud = new THREE.Mesh(cloudGeo, cloudMat);
-    cloud.position.set(Math.cos(a) * rad, 195 + (i % 4) * 20, Math.sin(a) * rad);
+    cloud.position.set(Math.cos(a) * rad, 175 + (i % 3) * 18, Math.sin(a) * rad);
     cloud.rotation.y = a;
-    cloud.scale.set(1.8 + (i % 3) * 0.55, 0.36 + (i % 2) * 0.14, 1.1);
+    cloud.scale.set(1.7 + (i % 3) * 0.5, 0.36 + (i % 2) * 0.12, 1.05);
     cloudGroup.add(cloud);
   }
   scene.add(cloudGroup);
 
-  // Warm / Cool Outdoor Daylight Rig (bright Bermudian clarity across all distances)
+  // Warm / Cool Outdoor Daylight Rig
   const hemi = new THREE.HemisphereLight(0xc4e8ff, 0x948062, 1.35);
   scene.add(hemi);
 
   const sunLight = new THREE.DirectionalLight(0xfff4dc, 1.9);
   sunLight.position.set(110, 150, 85);
   sunLight.castShadow = false;
-  sunLight.shadow.mapSize.set(2048, 2048);
+  sunLight.shadow.mapSize.set(1024, 1024);
   sunLight.shadow.camera.near = 10;
-  sunLight.shadow.camera.far = 310;
-  const d = 75;
+  sunLight.shadow.camera.far = 260;
+  const d = 65;
   sunLight.shadow.camera.left = -d;
   sunLight.shadow.camera.right = d;
   sunLight.shadow.camera.top = d;
@@ -1730,42 +1685,32 @@ export function createIslandWorld(
 
   const roads: MinimapRoad[] = [
     // Northern Highway across Ponte Oeste -> Riverside -> Nurek Dam -> Ponte Leste -> Mill
-    { x1: -455, z1: -505, x2: -345, z2: -495, width: 7.4, kind: 'dirt' },
-    { x1: -345, z1: -495, x2: -265, z2: riverCenterZ(-265) - 25, width: 7.6, kind: 'asphalt' },
-    { x1: -265, z1: riverCenterZ(-265) + 25, x2: -295, z2: -185, width: 7.6, kind: 'asphalt' },
-    { x1: -345, z1: -495, x2: 75, z2: riverCenterZ(75) - 29, width: 7.2, kind: 'asphalt' },
-    { x1: 75, z1: riverCenterZ(75) - 29, x2: 225, z2: -430, width: 7.2, kind: 'asphalt' },
-    { x1: 225, z1: -430, x2: 265, z2: -565, width: 7.2, kind: 'asphalt' },
-    { x1: 225, z1: -430, x2: 395, z2: riverCenterZ(395) - 25, width: 7.4, kind: 'asphalt' },
-    { x1: 395, z1: riverCenterZ(395) + 25, x2: 495, z2: -210, width: 7.4, kind: 'asphalt' },
-    { x1: 75, z1: riverCenterZ(75) + 29, x2: 185, z2: -225, width: 7.6, kind: 'asphalt' },
+    { x1: -255, z1: -365, x2: -195, z2: riverCenterZ(-195) - 24, width: 7.4, kind: 'asphalt' },
+    { x1: -195, z1: riverCenterZ(-195) + 24, x2: -230, z2: -140, width: 7.4, kind: 'asphalt' },
+    { x1: -255, z1: -365, x2: 55, z2: riverCenterZ(55) - 27, width: 7.0, kind: 'asphalt' },
+    { x1: 55, z1: riverCenterZ(55) - 27, x2: 175, z2: -325, width: 7.0, kind: 'asphalt' },
+    { x1: 175, z1: -325, x2: 295, z2: riverCenterZ(295) - 24, width: 7.2, kind: 'asphalt' },
+    { x1: 295, z1: riverCenterZ(295) + 24, x2: 370, z2: -155, width: 7.2, kind: 'asphalt' },
+    { x1: 55, z1: riverCenterZ(55) + 27, x2: 145, z2: -170, width: 7.4, kind: 'asphalt' },
     // Central Mountain & City Spine (Plantation -> Peak -> Clock Tower -> Bimasakti -> Factory/Pochinok)
-    { x1: 185, z1: -225, x2: 35, z2: -75, width: 7.0, kind: 'dirt' },
-    { x1: 35, z1: -75, x2: -145, z2: -45, width: 8.0, kind: 'asphalt' },
-    { x1: -145, z1: -45, x2: -15, z2: 165, width: 8.6, kind: 'asphalt' },
-    { x1: -15, z1: 165, x2: -165, z2: 325, width: 8.0, kind: 'asphalt' },
-    { x1: -15, z1: 165, x2: 195, z2: 335, width: 8.0, kind: 'asphalt' },
-    // West Ring (Graveyard -> Katulistiwa -> Observatório -> Clock Tower -> Rim Nam -> Mars Electric)
-    { x1: -515, z1: -235, x2: -295, z2: -185, width: 7.2, kind: 'asphalt' },
-    { x1: -295, z1: -185, x2: -145, z2: -45, width: 7.6, kind: 'asphalt' },
-    { x1: -515, z1: -235, x2: -575, z2: 35, width: 6.4, kind: 'dirt' },
-    { x1: -575, z1: 35, x2: -535, z2: 295, width: 6.8, kind: 'dirt' },
-    { x1: -535, z1: 295, x2: -345, z2: 485, width: 7.2, kind: 'asphalt' },
-    { x1: -345, z1: 485, x2: -165, z2: 325, width: 7.6, kind: 'asphalt' },
-    { x1: -165, z1: 325, x2: 195, z2: 335, width: 7.6, kind: 'asphalt' },
-    // East Ring (Mill -> Keraton -> Capetown -> Sentosa Bridges -> Sentosa)
-    { x1: 495, z1: -210, x2: 345, z2: 70, width: 7.4, kind: 'asphalt' },
-    { x1: 345, z1: 70, x2: 545, z2: 85, width: 7.2, kind: 'asphalt' },
-    { x1: 345, z1: 70, x2: 195, z2: 335, width: 7.0, kind: 'dirt' },
-    { x1: 35, z1: -75, x2: 345, z2: 70, width: 6.8, kind: 'dirt' },
-    { x1: 545, z1: 85, x2: 555, z2: 261, width: 7.6, kind: 'asphalt' },
-    { x1: 555, z1: 389, x2: 555, z2: 515, width: 7.6, kind: 'asphalt' },
-    { x1: 195, z1: 335, x2: 312, z2: 515, width: 7.6, kind: 'asphalt' },
-    { x1: 448, z1: 515, x2: 555, z2: 515, width: 7.6, kind: 'asphalt' },
+    { x1: 145, z1: -170, x2: 30, z2: -55, width: 6.8, kind: 'dirt' },
+    { x1: 30, z1: -55, x2: -110, z2: -35, width: 7.8, kind: 'asphalt' },
+    { x1: -110, z1: -35, x2: -12, z2: 125, width: 8.2, kind: 'asphalt' },
+    { x1: -12, z1: 125, x2: -135, z2: 250, width: 7.6, kind: 'asphalt' },
+    { x1: -12, z1: 125, x2: 145, z2: 255, width: 7.6, kind: 'asphalt' },
+    // West & South Connectors
+    { x1: -230, z1: -140, x2: -110, z2: -35, width: 7.4, kind: 'asphalt' },
+    { x1: -230, z1: -140, x2: -135, z2: 250, width: 6.8, kind: 'dirt' },
+    { x1: -135, z1: 250, x2: 145, z2: 255, width: 7.4, kind: 'asphalt' },
+    // East Ring (Mill -> Keraton -> Capetown -> Pochinok)
+    { x1: 370, z1: -155, x2: 255, z2: 55, width: 7.2, kind: 'asphalt' },
+    { x1: 255, z1: 55, x2: 405, z2: 65, width: 7.0, kind: 'asphalt' },
+    { x1: 255, z1: 55, x2: 145, z2: 255, width: 6.8, kind: 'dirt' },
+    { x1: 30, z1: -55, x2: 255, z2: 55, width: 6.6, kind: 'dirt' },
   ];
 
-  // 1. Full Bermuda 2200m x 2200m Terrain Mesh (144x144 crisp relief)
-  const terrainGeo = new THREE.PlaneGeometry(2200, 2200, 144, 144);
+  // 1. Compacted Bermuda 1480m x 1480m Terrain Mesh (92x92 crisp relief - 2.4x faster vertex/fill!)
+  const terrainGeo = new THREE.PlaneGeometry(1480, 1480, 92, 92);
   terrainGeo.rotateX(-Math.PI / 2);
   const posAttr = terrainGeo.attributes.position;
   const colors = new Float32Array(posAttr.count * 3);
@@ -1783,9 +1728,9 @@ export function createIslandWorld(
 
     if (vy < 0.9) {
       tmpColor.copy(cSand);
-    } else if (vy > 11.0) {
+    } else if (vy > 10.0) {
       tmpColor.copy(cPeak);
-    } else if (vy > 5.8) {
+    } else if (vy > 5.6) {
       tmpColor.copy(cHill);
     } else {
       tmpColor.copy(cGrass);
@@ -1810,8 +1755,8 @@ export function createIslandWorld(
   scene.add(terrainMesh);
   obstacleMeshes.push(terrainMesh);
 
-  // 2. Tropical Turquoise Coastal Reef Water -> Deep Ocean Blue (single draw call via vertex colors!)
-  const waterGeo = new THREE.PlaneGeometry(3600, 3600, 128, 128);
+  // 2. Lightweight Tropical Ocean Mesh (44x44 vertices - 8x faster than before!)
+  const waterGeo = new THREE.PlaneGeometry(2200, 2200, 44, 44);
   waterGeo.rotateX(-Math.PI / 2);
   const waterPos = waterGeo.attributes.position;
   const waterColors = new Float32Array(waterPos.count * 3);
@@ -1842,8 +1787,8 @@ export function createIslandWorld(
     map: textures.waterWave,
     vertexColors: true,
     color: 0xffffff,
-    roughness: 0.22,
-    metalness: 0.24,
+    roughness: 0.25,
+    metalness: 0.2,
   });
   applyDistanceTextureLod(waterMat, [0.85, 0.94, 0.98]);
   const water = new THREE.Mesh(waterGeo, waterMat);
@@ -1851,23 +1796,23 @@ export function createIslandWorld(
   water.receiveShadow = false;
   scene.add(water);
 
-  // 3. Distant Horizon Rounded Archipelago Islands
+  // 3. Distant Horizon Archipelago Silhouettes (16 instances)
   const mountainMat = new THREE.MeshStandardMaterial({
     color: 0x4b6875,
     roughness: 0.95,
     flatShading: false,
   });
-  const mountainGeo = new THREE.SphereGeometry(110, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.55);
-  const mountainCount = 34;
+  const mountainGeo = new THREE.SphereGeometry(95, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.55);
+  const mountainCount = 16;
   const mountains = new THREE.InstancedMesh(mountainGeo, mountainMat, mountainCount);
   const dummy = new THREE.Object3D();
   for (let i = 0; i < mountainCount; i++) {
     const angle = (i / mountainCount) * Math.PI * 2;
-    const rad = 1140 + (i % 4) * 75;
+    const rad = 820 + (i % 3) * 65;
     dummy.position.set(Math.cos(angle) * rad, -8, Math.sin(angle) * rad);
     dummy.rotation.y = i * 0.63;
-    const sc = 0.9 + (i % 5) * 0.25;
-    dummy.scale.set(sc * 1.4, sc * 0.9, sc * 1.2);
+    const sc = 0.85 + (i % 4) * 0.22;
+    dummy.scale.set(sc * 1.35, sc * 0.85, sc * 1.15);
     dummy.updateMatrix();
     mountains.setMatrixAt(i, dummy.matrix);
   }
@@ -2057,49 +2002,31 @@ export function createIslandWorld(
   // 5. Bridges over Northern River & Sentosa Strait (5 full Bermuda crossings!)
   const ponteOesteZ = riverCenterZ(-265);
   scene.add(
-    createBridge(-265, ponteOesteZ, 8.8, 50, 3.4, 0, concreteMat, steelMat, colliders, platforms, obstacleMeshes),
+    createBridge(-195, ponteOesteZ, 8.8, 48, 3.4, 0, concreteMat, steelMat, colliders, platforms, obstacleMeshes),
   );
-  buildings.push({ x: -265, z: ponteOesteZ, w: 8.8, d: 50, rotY: 0, kind: 'bridge' });
+  buildings.push({ x: -195, z: ponteOesteZ, w: 8.8, d: 48, rotY: 0, kind: 'bridge' });
 
-  const damZ = riverCenterZ(75);
+  const damZ = riverCenterZ(55);
   scene.add(
-    createBridge(75, damZ, 10.4, 58, 5.5, 0, concreteMat, concreteMat, colliders, platforms, obstacleMeshes),
+    createBridge(55, damZ, 10.4, 54, 5.5, 0, concreteMat, concreteMat, colliders, platforms, obstacleMeshes),
   );
-  // Nurek Dam monumental concrete spillway wall across the northern gorge
-  const damWall = new THREE.Mesh(new THREE.BoxGeometry(62, 6.2, 6.5), concreteMat);
-  damWall.position.set(75, 2.2, damZ);
-  damWall.castShadow = true;
+  const damWall = new THREE.Mesh(new THREE.BoxGeometry(56, 6.2, 6.0), concreteMat);
+  damWall.position.set(55, 2.2, damZ);
+  damWall.castShadow = false;
   damWall.receiveShadow = true;
   scene.add(damWall);
-  buildings.push({ x: 75, z: damZ, w: 10.4, d: 58, rotY: 0, kind: 'bridge' });
+  buildings.push({ x: 55, z: damZ, w: 10.4, d: 54, rotY: 0, kind: 'bridge' });
 
-  const ponteLesteZ = riverCenterZ(395);
+  const ponteLesteZ = riverCenterZ(295);
   scene.add(
-    createBridge(395, ponteLesteZ, 8.8, 50, 3.4, 0, woodWallMat, steelMat, colliders, platforms, obstacleMeshes),
+    createBridge(295, ponteLesteZ, 8.8, 48, 3.4, 0, woodWallMat, steelMat, colliders, platforms, obstacleMeshes),
   );
-  buildings.push({ x: 395, z: ponteLesteZ, w: 8.8, d: 50, rotY: 0, kind: 'bridge' });
+  buildings.push({ x: 295, z: ponteLesteZ, w: 8.8, d: 48, rotY: 0, kind: 'bridge' });
 
-  // Sentosa Strait North & West Long Steel Bridges
-  scene.add(
-    createBridge(555, 325, 9.6, 128, 3.4, 0, concreteMat, steelMat, colliders, platforms, obstacleMeshes),
-  );
-  buildings.push({ x: 555, z: 325, w: 9.6, d: 128, rotY: 0, kind: 'bridge' });
-  scene.add(
-    createContainer(557.2, 315, 0.04, blueContainerMat, colliders, platforms, obstacleMeshes, 3.4 - sampleGroundHeight(557.2, 315)),
-  );
-
-  scene.add(
-    createBridge(380, 515, 9.6, 136, 3.4, Math.PI / 2, concreteMat, steelMat, colliders, platforms, obstacleMeshes),
-  );
-  buildings.push({ x: 380, z: 515, w: 136, d: 9.6, rotY: 0, kind: 'bridge' });
-  scene.add(
-    createContainer(388, 517.2, Math.PI / 2 + 0.04, rustContainerMat, colliders, platforms, obstacleMeshes, 3.4 - sampleGroundHeight(388, 517.2)),
-  );
-
-  // 5b. ICONIC FREE FIRE CLOCK TOWER LANDMARK at (-145, -45)
+  // 5b. ICONIC FREE FIRE CLOCK TOWER LANDMARK at (-110, -35)
   {
-    const ctX = -145;
-    const ctZ = -45;
+    const ctX = -110;
+    const ctZ = -35;
     const ctY = sampleGroundHeight(ctX, ctZ);
     const ctGroup = new THREE.Group();
     ctGroup.position.set(ctX, ctY, ctZ);
@@ -2148,7 +2075,7 @@ export function createIslandWorld(
     ctGroup.add(ctRoof);
 
     const faceMat = new THREE.MeshBasicMaterial({ color: 0xfef3c7 });
-    const faceGeo = new THREE.CircleGeometry(1.45, 16);
+    const faceGeo = new THREE.CircleGeometry(1.45, 12);
     [
       [0, 14.5, 3.15, 0],
       [0, 14.5, -3.15, Math.PI],
@@ -2166,91 +2093,50 @@ export function createIslandWorld(
     buildings.push({ x: ctX, z: ctZ, w: 11.5, d: 11.5, rotY: 0, kind: 'tower' });
   }
 
-  // 6. 64 Enterable Houses across all 20 Bermuda Cities & Compounds (cleanly offset from roads!)
+  // 6. 30 Enterable Houses across compacted Bermuda Cities (high FPS density!)
   const houseSpecs: Array<[number, number, number, number, number, number, boolean]> = [
-    // CLOCK TOWER (-145, -45)
-    [-168, -64, 8.8, 7.0, 3.4, 0.05, false],
-    [-122, -64, 9.0, 7.2, 3.5, -0.05, true],
-    [-172, -22, 8.2, 6.8, 3.4, 1.55, false],
-    [-118, -22, 8.4, 6.8, 3.4, -1.55, true],
-    [-184, -45, 8.0, 6.4, 3.3, 0.1, false],
-    [-106, -45, 8.0, 6.6, 3.4, 3.1, true],
-    // PEAK (35, -75 - hilltop manor + compound)
-    [35, -52, 12.0, 8.8, 4.2, 0.0, false],
-    [10, -82, 8.4, 6.8, 3.3, 1.4, true],
-    [62, -80, 8.6, 6.8, 3.4, -1.5, false],
-    [34, -104, 8.8, 7.0, 3.4, 3.14, true],
-    // BIMASAKTI STRIP (-15, 165)
-    [-34, 146, 8.6, 6.8, 3.4, 1.57, false],
-    [6, 146, 8.6, 6.8, 3.4, -1.57, true],
-    [-34, 166, 8.2, 6.6, 3.4, 1.57, true],
-    [6, 166, 8.8, 7.0, 3.5, -1.57, false],
-    [-34, 186, 8.4, 6.8, 3.4, 1.57, false],
-    [6, 186, 8.2, 6.6, 3.3, -1.57, true],
-    // FACTORY (-165, 325)
-    [-190, 306, 8.4, 6.6, 3.4, 0.2, false],
-    [-144, 306, 8.0, 6.4, 3.3, -0.3, true],
-    [-190, 344, 8.2, 6.6, 3.3, 1.5, false],
-    // POCHINOK (195, 335)
-    [174, 316, 8.6, 6.8, 3.4, 0.15, false],
-    [214, 318, 8.8, 7.0, 3.5, -0.2, true],
-    [172, 354, 8.2, 6.6, 3.3, 1.5, true],
-    [216, 354, 9.2, 7.4, 3.6, -1.5, false],
-    [195, 368, 8.4, 6.6, 3.4, 3.1, true],
-    // MARS ELECTRIC (-345, 485)
-    [-370, 466, 9.0, 7.2, 3.5, 0.05, false],
-    [-318, 466, 9.0, 7.2, 3.5, -0.05, false],
-    [-366, 506, 8.4, 6.6, 3.4, 3.1, true],
-    // SENTOSA ISLAND (555, 515)
-    [530, 492, 8.8, 7.0, 3.4, 0.1, false],
-    [580, 492, 8.8, 7.0, 3.4, -0.1, true],
-    [526, 534, 8.4, 6.6, 3.4, 1.55, true],
-    [582, 534, 8.6, 6.8, 3.4, -1.55, false],
-    [555, 554, 9.0, 7.2, 3.5, 3.14, true],
-    [504, 508, 8.0, 6.4, 3.3, 0.4, false],
-    // CAPETOWN (545, 85)
-    [524, 66, 8.2, 6.4, 3.3, 0.3, true],
-    [566, 68, 8.4, 6.6, 3.3, -0.4, false],
-    [544, 108, 8.4, 6.6, 3.4, 2.9, true],
-    // KERATON (345, 70)
-    [324, 52, 8.6, 6.8, 3.4, 0.1, false],
-    [366, 52, 8.4, 6.6, 3.4, -0.2, true],
-    [345, 92, 8.2, 6.6, 3.3, 3.1, false],
-    // KATULISTIWA (-295, -185)
-    [-318, -204, 8.6, 6.8, 3.4, 0.1, false],
-    [-272, -204, 8.4, 6.6, 3.4, -0.2, true],
-    [-295, -162, 8.8, 7.0, 3.4, 3.1, false],
-    // PLANTATION (185, -225)
-    [164, -242, 8.2, 6.4, 3.3, 0.25, true],
-    [206, -242, 8.4, 6.6, 3.3, -0.25, false],
-    [185, -202, 8.6, 6.8, 3.4, 3.14, true],
-    // MILL (495, -210)
-    [474, -232, 8.4, 6.6, 3.3, 0.1, false],
-    [516, -228, 8.2, 6.4, 3.3, -0.4, true],
-    [516, -188, 8.4, 6.6, 3.4, 2.9, false],
-    // RIVERSIDE (225, -430)
-    [204, -448, 8.2, 6.4, 3.3, 0.2, true],
-    [246, -446, 8.2, 6.4, 3.3, -0.2, false],
-    [225, -408, 8.0, 6.2, 3.2, 3.1, true],
-    // SHIPYARD (265, -565)
-    [242, -584, 8.4, 6.6, 3.3, 0.1, false],
-    [290, -546, 8.4, 6.6, 3.3, -0.25, true],
-    // HANGAR (-345, -495)
-    [-370, -478, 8.4, 6.6, 3.3, 0.2, false],
-    [-320, -514, 8.2, 6.4, 3.2, -0.3, true],
-    // GRAVEYARD (-515, -235)
-    [-536, -254, 8.2, 6.6, 3.3, 0.15, false],
-    [-492, -252, 8.4, 6.6, 3.3, -0.15, true],
-    [-515, -210, 8.6, 6.8, 3.4, 3.1, false],
-    // BULLSEYE (-455, -505)
-    [-474, -522, 8.0, 6.4, 3.3, 0.1, true],
-    [-436, -488, 8.2, 6.4, 3.3, -0.2, false],
-    // OBSERVATÓRIO (-575, 35)
-    [-594, 18, 7.8, 6.2, 3.2, 0.35, false],
-    [-556, 52, 7.8, 6.2, 3.2, -0.35, true],
-    // RIM NAM VILA (-535, 295)
-    [-556, 278, 7.8, 6.2, 3.2, 0.4, true],
-    [-514, 310, 7.8, 6.2, 3.2, -0.3, true],
+    // CLOCK TOWER (-110, -35)
+    [-132, -52, 8.8, 7.0, 3.4, 0.05, false],
+    [-88, -52, 9.0, 7.2, 3.5, -0.05, true],
+    [-134, -14, 8.2, 6.8, 3.4, 1.55, false],
+    [-86, -14, 8.4, 6.8, 3.4, -1.55, true],
+    // PEAK (30, -55)
+    [30, -34, 11.5, 8.4, 4.0, 0.0, false],
+    [6, -62, 8.4, 6.8, 3.3, 1.4, true],
+    [54, -60, 8.6, 6.8, 3.4, -1.5, false],
+    // BIMASAKTI STRIP (-12, 125)
+    [-32, 108, 8.6, 6.8, 3.4, 1.57, false],
+    [8, 108, 8.6, 6.8, 3.4, -1.57, true],
+    [-32, 138, 8.4, 6.8, 3.4, 1.57, true],
+    [8, 138, 8.4, 6.8, 3.4, -1.57, false],
+    // FACTORY (-135, 250)
+    [-160, 232, 8.4, 6.6, 3.4, 0.2, false],
+    [-112, 234, 8.0, 6.4, 3.3, -0.3, true],
+    // POCHINOK (145, 255)
+    [124, 236, 8.6, 6.8, 3.4, 0.15, false],
+    [164, 238, 8.8, 7.0, 3.5, -0.2, true],
+    [145, 282, 8.4, 6.6, 3.4, 3.1, true],
+    // CAPETOWN (405, 65)
+    [386, 46, 8.2, 6.4, 3.3, 0.3, true],
+    [424, 48, 8.4, 6.6, 3.3, -0.4, false],
+    [405, 88, 8.4, 6.6, 3.4, 2.9, true],
+    // KERATON (255, 55)
+    [234, 38, 8.6, 6.8, 3.4, 0.1, false],
+    [276, 38, 8.4, 6.6, 3.4, -0.2, true],
+    // KATULISTIWA (-230, -140)
+    [-252, -158, 8.6, 6.8, 3.4, 0.1, false],
+    [-208, -158, 8.4, 6.6, 3.4, -0.2, true],
+    // PLANTATION (145, -170)
+    [124, -186, 8.2, 6.4, 3.3, 0.25, true],
+    [166, -186, 8.4, 6.6, 3.3, -0.25, false],
+    // MILL (370, -155)
+    [350, -176, 8.4, 6.6, 3.3, 0.1, false],
+    [390, -172, 8.2, 6.4, 3.3, -0.4, true],
+    // RIVERSIDE (175, -325)
+    [154, -342, 8.2, 6.4, 3.3, 0.2, true],
+    [196, -340, 8.2, 6.4, 3.3, -0.2, false],
+    // HANGAR (-255, -365)
+    [-280, -348, 8.4, 6.6, 3.3, 0.2, false],
   ];
 
   const buildingNavZones: BuildingNavZone[] = [];
@@ -2286,26 +2172,18 @@ export function createIslandWorld(
   // 6b. Iconic Free Fire Multi-Story Buildings ("Primeiro Andar") & Tactical Outposts
   const prefabLootPoints: BuildingLootPoint[] = [];
 
-  // 18 Casas L (L-Shaped 2-Story House with Balcony / Sacada)
+  // 10 Casas L (L-Shaped 2-Story House with Balcony / Sacada)
   const casaLSpecs: Array<[number, number, number]> = [
-    [-198, -72, 0.3], // Clock Tower West
-    [8, -112, 0.0], // Peak North-West
-    [-56, 152, -1.57], // Bimasakti West
-    [28, 188, 1.57], // Bimasakti East
-    [-210, 325, -1.57], // Factory West
-    [150, 334, -1.57], // Pochinok West
-    [-312, 508, 3.14], // Mars Electric South-East
-    [602, 512, 1.57], // Sentosa East
-    [586, 88, 1.57], // Capetown East
-    [302, 74, -1.57], // Keraton West
-    [-342, -184, -1.57], // Katulistiwa West
-    [226, -222, 1.57], // Plantation East
-    [538, -208, 1.57], // Mill East
-    [266, -428, 1.57], // Riverside East
-    [-392, -504, -1.57], // Hangar West
-    [-512, 272, 0.2], // Rim Nam Vila
-    [-65, -76, 0.15], // Highway Peak <-> Clock Tower
-    [98, 242, -0.4], // Central Crossroads Bimasakti <-> Pochinok
+    [-156, -56, 0.3], // Clock Tower West
+    [8, -86, 0.0], // Peak North-West
+    [-52, 122, -1.57], // Bimasakti West
+    [28, 148, 1.57], // Bimasakti East
+    [-176, 252, -1.57], // Factory West
+    [104, 255, -1.57], // Pochinok West
+    [438, 68, 1.57], // Capetown East
+    [-270, -138, -1.57], // Katulistiwa West
+    [186, -168, 1.57], // Plantation East
+    [-300, -372, -1.57], // Hangar West
   ];
   casaLSpecs.forEach(([bx, bz, brot]) => {
     const res = createCasaL(
@@ -2325,22 +2203,16 @@ export function createIslandWorld(
     prefabLootPoints.push(...res.lootPoints);
   });
 
-  // 14 Casas God (2-Story Tactical Stronghold with Rooftop Parapet)
+  // 8 Casas God (2-Story Tactical Stronghold with Rooftop Parapet)
   const casaGodSpecs: Array<[number, number, number]> = [
-    [-145, -84, 0.0], // Clock Tower North
-    [56, -110, 0.2], // Peak North
-    [28, 154, 1.57], // Bimasakti East
-    [-134, 344, 0.0], // Factory South-East
-    [238, 334, 1.57], // Pochinok East
-    [-388, 488, -1.57], // Mars Electric West
-    [524, 468, 0.0], // Sentosa North-West
-    [544, 42, 0.0], // Capetown North
-    [346, 30, 0.0], // Keraton North
-    [454, -208, -1.57], // Mill West
-    [222, -552, -1.57], // Shipyard West
-    [-472, -232, 1.57], // Graveyard East
-    [-560, 316, 3.14], // Rim Nam Vila South
-    [-96, 60, -1.57], // Roadside Clock Tower <-> Bimasakti
+    [-110, -72, 0.0], // Clock Tower North
+    [52, -84, 0.2], // Peak North
+    [28, 114, 1.57], // Bimasakti East
+    [-108, 272, 0.0], // Factory South-East
+    [186, 254, 1.57], // Pochinok East
+    [256, 20, 0.0], // Keraton North
+    [334, -154, -1.57], // Mill West
+    [-70, 44, -1.57], // Roadside Clock Tower <-> Bimasakti
   ];
   casaGodSpecs.forEach(([bx, bz, brot]) => {
     const res = createCasaGod(
@@ -2360,18 +2232,15 @@ export function createIslandWorld(
     prefabLootPoints.push(...res.lootPoints);
   });
 
-  // 10 Celeiros (Red Wooden Barns with Mezzanine Loft)
+  // 7 Celeiros (Red Wooden Barns with Mezzanine Loft)
   const celeiroSpecs: Array<[number, number, number]> = [
-    [-10, -56, -1.3], // Peak West Meadow
-    [226, 296, 3.14], // Pochinok North-East
-    [555, 582, 3.14], // Sentosa South Farm
-    [-296, -224, 0.0], // Katulistiwa North
-    [142, -224, -1.57], // Plantation West
-    [494, -252, 0.0], // Mill North
-    [184, -428, -1.57], // Riverside West
-    [-556, -230, -1.57], // Graveyard West
-    [-422, -522, 0.4], // Bullseye North-East
-    [-492, 298, 1.57], // Rim Nam Vila East
+    [-12, -44, -1.3], // Peak West Meadow
+    [176, 218, 3.14], // Pochinok North-East
+    [-230, -180, 0.0], // Katulistiwa North
+    [106, -170, -1.57], // Plantation West
+    [370, -196, 0.0], // Mill North
+    [136, -324, -1.57], // Riverside West
+    [255, 92, 3.14], // Keraton South
   ];
   celeiroSpecs.forEach(([bx, bz, brot]) => {
     const res = createCeleiro(
@@ -2391,24 +2260,18 @@ export function createIslandWorld(
     prefabLootPoints.push(...res.lootPoints);
   });
 
-  // 16 Sobrados (2-Story Residential Houses across POIs & Roadside Villages)
+  // 10 Sobrados (2-Story Residential Houses)
   const sobradoSpecs: Array<[number, number, number]> = [
-    [-115, -82, 0.0], // Clock Tower North-East
-    [-162, 10, 3.14], // Clock Tower South
-    [74, -54, 1.57], // Peak East
-    [-56, 186, -1.57], // Bimasakti South-West
-    [-138, 286, 0.0], // Factory North
-    [195, 294, 0.0], // Pochinok North
-    [-344, 444, 0.0], // Mars Electric North
-    [586, 468, 0.0], // Sentosa North-East
-    [510, 558, 3.14], // Sentosa South-West
-    [506, 92, -1.57], // Capetown West
-    [384, 76, 1.57], // Keraton East
-    [-250, -184, 1.57], // Katulistiwa East
-    [186, -264, 0.0], // Plantation North
-    [226, -468, 0.0], // Riverside North
-    [308, -568, 1.57], // Shipyard East
-    [-64, 72, 1.57], // Roadside Village Clock Tower <-> Bimasakti
+    [-82, -70, 0.0], // Clock Tower North-East
+    [-124, 14, 3.14], // Clock Tower South
+    [68, -42, 1.57], // Peak East
+    [-52, 152, -1.57], // Bimasakti South-West
+    [145, 216, 0.0], // Pochinok North
+    [368, 72, -1.57], // Capetown West
+    [292, 60, 1.57], // Keraton East
+    [-188, -140, 1.57], // Katulistiwa East
+    [176, -362, 0.0], // Riverside North
+    [76, 178, -0.4], // Central Crossroads Bimasakti <-> Pochinok
   ];
   sobradoSpecs.forEach(([bx, bz, brot]) => {
     const res = createSobradoHouse(
@@ -2428,32 +2291,20 @@ export function createIslandWorld(
     prefabLootPoints.push(...res.lootPoints);
   });
 
-  // 24 Guaritas (4-Way Guard Posts at City Entrances, Crossroads & Bridges)
+  // 12 Guaritas (4-Way Guard Posts)
   const guaritaSpecs: Array<[number, number, number]> = [
-    [-134, -5, 3.14], // Clock Tower South
-    [12, -40, 2.7], // Peak South-West
-    [-28, 126, 0.0], // Bimasakti North
-    [8, 208, 3.14], // Bimasakti South
-    [-164, 292, 0.0], // Factory North
-    [160, 372, 2.5], // Pochinok South
-    [-322, 446, 0.0], // Mars Electric North
-    [538, 422, 0.0], // Sentosa North Bridge
-    [566, 122, 3.14], // Capetown South
-    [372, 108, 2.6], // Keraton South
-    [-266, -152, 2.7], // Katulistiwa South
-    [212, -196, 3.14], // Plantation South
-    [468, -174, 2.8], // Mill South
-    [252, -402, 2.9], // Riverside South
-    [282, -592, 0.0], // Shipyard North
-    [-364, -536, 0.0], // Hangar North
-    [-486, -204, 2.8], // Graveyard South
-    [-446, -466, 3.14], // Bullseye South
-    [-602, 52, 1.57], // Observatório West
-    [-536, 256, 0.0], // Rim Nam North
-    [-84, 42, -0.8], // Highway Outpost
-    [110, 265, 2.2], // Crossroads Bimasakti <-> Pochinok
-    [60, -310, 0.0], // Nurek Dam South Guardpost
-    [292, 498, -1.57], // Sentosa West Bridge Approach
+    [-102, 0, 3.14], // Clock Tower South
+    [12, -28, 2.7], // Peak South-West
+    [-22, 92, 0.0], // Bimasakti North
+    [-134, 218, 0.0], // Factory North
+    [122, 286, 2.5], // Pochinok South
+    [412, 98, 3.14], // Capetown South
+    [282, 88, 2.6], // Keraton South
+    [-206, -110, 2.7], // Katulistiwa South
+    [168, -144, 3.14], // Plantation South
+    [346, -124, 2.8], // Mill South
+    [-272, -402, 0.0], // Hangar North
+    [42, -220, 0.0], // Nurek Dam South Guardpost
   ];
   guaritaSpecs.forEach(([bx, bz, brot]) => {
     const res = createGuarita(
@@ -2473,67 +2324,14 @@ export function createIslandWorld(
     prefabLootPoints.push(...res.lootPoints);
   });
 
-  // Extra Roadside Villages in Open Mid-Island Corridors
-  const roadsideExtras: Array<
-    | { kind: 'casaL' | 'casaGod' | 'celeiro' | 'sobrado'; x: number; z: number; rot: number }
-  > = [
-    { kind: 'casaGod', x: 16, z: 352, rot: 0.0 },
-    { kind: 'sobrado', x: -18, z: 346, rot: 3.14 },
-    { kind: 'casaL', x: -268, z: 405, rot: 0.6 },
-    { kind: 'sobrado', x: -242, z: 428, rot: -2.4 },
-    { kind: 'celeiro', x: -536, z: 168, rot: 0.1 },
-    { kind: 'casaL', x: 196, z: -18, rot: -0.3 },
-    { kind: 'casaGod', x: 222, z: 6, rot: 2.8 },
-    { kind: 'celeiro', x: 345, z: -228, rot: 0.0 },
-    { kind: 'sobrado', x: 372, z: -206, rot: 1.57 },
-    { kind: 'casaGod', x: 96, z: -282, rot: 0.0 },
-  ];
-  roadsideExtras.forEach((re) => {
-    const ry = sampleGroundHeight(re.x, re.z);
-    if (ry < 1.2) return;
-    if (re.kind === 'casaL') {
-      const r = createCasaL(re.x, re.z, re.rot, ry, buildingMats, colliders, platforms, obstacleMeshes);
-      scene.add(r.group);
-      cullableStructures.push({ obj: r.group, x: re.x, z: re.z, radiusScale: 1.25 });
-      buildings.push({ x: re.x, z: re.z, w: 10.8, d: 10.6, rotY: re.rot, kind: 'casaL' });
-      buildingNavZones.push(r.navZone);
-      prefabLootPoints.push(...r.lootPoints);
-    } else if (re.kind === 'casaGod') {
-      const r = createCasaGod(re.x, re.z, re.rot, ry, buildingMats, colliders, platforms, obstacleMeshes);
-      scene.add(r.group);
-      cullableStructures.push({ obj: r.group, x: re.x, z: re.z, radiusScale: 1.22 });
-      buildings.push({ x: re.x, z: re.z, w: 9.8, d: 9.8, rotY: re.rot, kind: 'casaGod' });
-      buildingNavZones.push(r.navZone);
-      prefabLootPoints.push(...r.lootPoints);
-    } else if (re.kind === 'celeiro') {
-      const r = createCeleiro(re.x, re.z, re.rot, ry, buildingMats, colliders, platforms, obstacleMeshes);
-      scene.add(r.group);
-      cullableStructures.push({ obj: r.group, x: re.x, z: re.z, radiusScale: 1.3 });
-      buildings.push({ x: re.x, z: re.z, w: 10.6, d: 14.0, rotY: re.rot, kind: 'celeiro' });
-      buildingNavZones.push(r.navZone);
-      prefabLootPoints.push(...r.lootPoints);
-    } else {
-      const r = createSobradoHouse(re.x, re.z, re.rot, ry, buildingMats, colliders, platforms, obstacleMeshes);
-      scene.add(r.group);
-      cullableStructures.push({ obj: r.group, x: re.x, z: re.z, radiusScale: 1.15 });
-      buildings.push({ x: re.x, z: re.z, w: 8.8, d: 7.8, rotY: re.rot, kind: 'sobrado' });
-      buildingNavZones.push(r.navZone);
-      prefabLootPoints.push(...r.lootPoints);
-    }
-  });
-
-  // 7. Industrial Sheds & Hangars (Factory, Mill, Mars Electric, Shipyard, Hangar, Sentosa, Bullseye)
+  // 7. 6 Industrial Sheds & Hangars
   const shedSpecs: Array<[number, number, number, number, number, number]> = [
-    [-165, 326, 13.5, 19.0, 5.2, 0.0], // Giant Factory Main Hangar
-    [-186, 326, 10.5, 14.5, 4.6, 0.0], // Factory Wing 2
-    [488, -196, 11.5, 16.5, 4.8, 0.0], // Mill Hangar 1
-    [508, -220, 10.8, 15.0, 4.6, 1.57], // Mill Hangar 2
-    [-348, -476, 11.5, 16.0, 4.8, 0.0], // Hangar Main
-    [256, -552, 10.5, 14.5, 4.4, 0.3], // Shipyard Warehouse
-    [-342, 496, 12.5, 17.5, 5.0, 1.57], // Mars Electric Hangar
-    [555, 502, 11.0, 15.0, 4.6, 1.57], // Sentosa Storage Hangar
-    [-456, -504, 10.5, 14.0, 4.5, 0.2], // Bullseye Warehouse
-    [-294, -184, 10.5, 14.0, 4.5, 1.57], // Katulistiwa Depot
+    [-135, 250, 13.0, 18.0, 5.0, 0.0], // Factory Main Hangar
+    [-156, 250, 10.2, 14.0, 4.5, 0.0], // Factory Wing 2
+    [364, -142, 11.0, 15.5, 4.6, 0.0], // Mill Hangar 1
+    [384, -164, 10.4, 14.5, 4.5, 1.57], // Mill Hangar 2
+    [-258, -346, 11.0, 15.5, 4.6, 0.0], // Hangar Main
+    [-230, -140, 10.2, 13.5, 4.4, 1.57], // Katulistiwa Depot
   ];
   shedSpecs.forEach(([sx, sz, sw, sd, sh, srot]) => {
     const shedObj = createIndustrialShed(
@@ -2578,56 +2376,35 @@ export function createIslandWorld(
     });
   });
 
-  // Concrete Airstrip Runway at Hangar (-345, -495)
-  const runwayY = sampleGroundHeight(-345, -505);
+  // Concrete Airstrip Runway at Hangar (-255, -365)
+  const runwayY = sampleGroundHeight(-255, -372);
   const runway = new THREE.Mesh(
-    new THREE.BoxGeometry(12, 0.16, 72),
+    new THREE.BoxGeometry(11, 0.16, 56),
     concreteMat,
   );
-  runway.position.set(-345, runwayY + 0.04, -508);
+  runway.position.set(-255, runwayY + 0.04, -375);
   runway.receiveShadow = true;
   scene.add(runway);
   platforms.push({
-    cx: -345,
-    cz: -508,
-    halfW: 6,
-    halfD: 36,
+    cx: -255,
+    cz: -375,
+    halfW: 5.5,
+    halfD: 28,
     rotY: 0,
     topY: runwayY + 0.12,
     minY: runwayY - 1,
   });
 
-  // 8. SHIPYARD PORTO (Dock Pier + Stacked Shipping Containers across Shipyard/Factory/Mill/Mars/Sentosa)
-  const pierY = sampleGroundHeight(265, -565);
-  const pier = new THREE.Mesh(new THREE.BoxGeometry(36, 0.6, 22), concreteMat);
-  pier.position.set(274, pierY - 0.15, -574);
-  pier.receiveShadow = true;
-  scene.add(pier);
-  platforms.push({
-    cx: 274,
-    cz: -574,
-    halfW: 18,
-    halfD: 11,
-    rotY: 0,
-    topY: pierY + 0.15,
-    minY: 0,
-  });
-
+  // 8. 8 Shipping Containers across Factory / Mill / Hangar
   const containerSpecs: Array<[number, number, number, boolean, number]> = [
-    [264, -566, 0.05, true, 0],
-    [268, -566, 0.05, false, 0],
-    [266, -566, 0.05, true, 2.7],
-    [280, -560, 1.5, false, 0],
-    [250, -576, -0.35, true, 0],
-    [284, -576, 0.15, false, 0],
-    [-156, 332, 0.2, true, 0],
-    [-174, 310, 1.57, false, 0],
-    [484, -214, 0.4, true, 0],
-    [498, -234, 1.57, false, 0],
-    [-350, 476, 0.0, true, 0],
-    [-332, 476, 0.0, false, 0],
-    [542, 514, 0.1, true, 0],
-    [568, 516, 1.57, false, 0],
+    [-126, 258, 0.2, true, 0],
+    [-144, 236, 1.57, false, 0],
+    [-135, 258, 0.2, false, 2.6],
+    [358, -160, 0.4, true, 0],
+    [376, -178, 1.57, false, 0],
+    [-244, -360, 0.0, true, 0],
+    [-266, -368, 0.1, false, 0],
+    [138, 258, 0.3, true, 0],
   ];
   containerSpecs.forEach(([cx, cz, crot, isBlue, yOff]) => {
     const cObj = createContainer(
@@ -2645,14 +2422,12 @@ export function createIslandWorld(
     buildings.push({ x: cx, z: cz, w: 2.6, d: 6.2, rotY: crot, kind: 'container' });
   });
 
-  // 9. Watchtowers (Observatório, Capetown, Mars Electric, Peak, Sentosa, Graveyard)
+  // 9. 4 Watchtowers
   const wtCoords: Array<[number, number]> = [
-    [-575, 35],
-    [548, 92],
-    [-352, 492],
-    [22, -68],
-    [555, 480],
-    [-515, -242],
+    [18, -50], // Peak
+    [408, 72], // Capetown
+    [-144, 266], // Factory
+    [-240, -356], // Hangar
   ];
   wtCoords.forEach(([wx, wz]) => {
     const wt = createWatchTowerLOD(wx, wz, concreteMat, steelMat, colliders, obstacleMeshes);
@@ -2661,21 +2436,16 @@ export function createIslandWorld(
     buildings.push({ x: wx, z: wz, w: 7.2, d: 7.2, rotY: 0, kind: 'tower' });
   });
 
-  // 10. Vending Machines (Lojinhas) - vehicles are spawned right after static props so staticColliderCount stays exact!
-
+  // 10. 8 Vending Machines (Lojinhas)
   const vendingSpecs: Array<{ id: string; x: number; z: number; rotY: number; label: string }> = [
-    { id: 'vm_clock', x: -128, z: -42, rotY: -1.57, label: 'Lojinha Clock Tower' },
-    { id: 'vm_peak', x: 25, z: -72, rotY: 0.4, label: 'Lojinha Peak' },
-    { id: 'vm_bima', x: -26, z: 162, rotY: 1.57, label: 'Lojinha Bimasakti' },
-    { id: 'vm_factory', x: -154, z: 320, rotY: -0.8, label: 'Lojinha Factory' },
-    { id: 'vm_mill', x: 486, z: -214, rotY: 0.2, label: 'Lojinha Mill' },
-    { id: 'vm_pochinok', x: 186, z: 328, rotY: 0.6, label: 'Lojinha Pochinok' },
-    { id: 'vm_ship', x: 260, z: -558, rotY: -0.5, label: 'Lojinha Shipyard' },
-    { id: 'vm_mars', x: -336, z: 474, rotY: 0.0, label: 'Lojinha Mars Electric' },
-    { id: 'vm_sentosa', x: 545, z: 510, rotY: 0.5, label: 'Lojinha Sentosa' },
-    { id: 'vm_katu', x: -286, z: -182, rotY: -1.1, label: 'Lojinha Katulistiwa' },
-    { id: 'vm_grave', x: -506, z: -232, rotY: 0.9, label: 'Lojinha Graveyard' },
-    { id: 'vm_cape', x: 536, z: 82, rotY: 1.2, label: 'Lojinha Capetown' },
+    { id: 'vm_clock', x: -96, z: -32, rotY: -1.57, label: 'Lojinha Clock Tower' },
+    { id: 'vm_peak', x: 22, z: -52, rotY: 0.4, label: 'Lojinha Peak' },
+    { id: 'vm_bima', x: -22, z: 122, rotY: 1.57, label: 'Lojinha Bimasakti' },
+    { id: 'vm_factory', x: -124, z: 244, rotY: -0.8, label: 'Lojinha Factory' },
+    { id: 'vm_mill', x: 362, z: -158, rotY: 0.2, label: 'Lojinha Mill' },
+    { id: 'vm_pochinok', x: 138, z: 248, rotY: 0.6, label: 'Lojinha Pochinok' },
+    { id: 'vm_katu', x: -222, z: -136, rotY: -1.1, label: 'Lojinha Katulistiwa' },
+    { id: 'vm_cape', x: 396, z: 62, rotY: 1.2, label: 'Lojinha Capetown' },
   ];
   const vendingMachines: VendingMachineProp[] = vendingSpecs.map((vs) => {
     const vm = createVendingMachineProp(
@@ -2692,27 +2462,20 @@ export function createIslandWorld(
     return vm.data;
   });
 
-  // 11. Free Fire Tactical Gameplay Props: Concrete Street Barriers, Wooden Crates, EXPLOSIVE RED BARRELS, & LAUNCH PADS!
+  // 11. Concrete Barriers, Wooden Crates, Explosive Red Barrels & Launch Pads
   const barrierCoords: Array<[number, number, number]> = [
-    [-155, -45, 0],
-    [-135, -45, 0],
-    [-145, -28, 1.57],
-    [-145, -62, 1.57],
-    [75, damZ + 12, 0.3],
-    [75, damZ - 12, -0.25],
-    [-15, 156, 0.2],
-    [-15, 174, -0.2],
-    [35, -66, 0.4],
-    [-570, 26, -0.6],
-    [262, -560, 0.5],
-    [488, -206, 0.2],
-    [-295, -185, 0.9],
-    [-345, 475, 0.1],
-    [-165, 316, 0.0],
-    [192, 332, -0.3],
-    [555, 505, 0.2],
-    [555, 385, 0.0],
-    [318, 515, 1.57],
+    [-118, -35, 0],
+    [-100, -35, 0],
+    [55, damZ + 10, 0.3],
+    [55, damZ - 10, -0.25],
+    [-12, 118, 0.2],
+    [30, -48, 0.4],
+    [364, -150, 0.2],
+    [-230, -140, 0.9],
+    [-135, 242, 0.0],
+    [142, 250, -0.3],
+    [398, 60, 0.2],
+    [-250, -358, 0.1],
   ];
   const barrierGeo = new THREE.BoxGeometry(2.6, 1.15, 0.55);
   const barrierInst = new THREE.InstancedMesh(barrierGeo, concreteMat, barrierCoords.length);
@@ -2741,22 +2504,16 @@ export function createIslandWorld(
   obstacleMeshes.push(barrierInst);
 
   const crateCoords: Array<[number, number, number]> = [
-    [-336, -485, 0.2],
-    [-334, -483, 0.7],
-    [-133, -38, 0.1],
-    [-157, -52, 0.5],
-    [492, -200, 0.4],
-    [270, -560, 0.2],
-    [198, 338, -0.4],
-    [-568, 30, 0.3],
-    [-288, -178, 0.4],
-    [-340, 484, -0.2],
-    [30, -72, 0.5],
-    [-160, 318, 0.2],
-    [-20, 162, -0.3],
-    [-10, 170, 0.4],
-    [548, 512, 0.3],
-    [342, 68, -0.2],
+    [-248, -356, 0.2],
+    [-102, -30, 0.1],
+    [-118, -40, 0.5],
+    [366, -148, 0.4],
+    [148, 258, -0.4],
+    [-222, -134, 0.4],
+    [25, -52, 0.5],
+    [-130, 244, 0.2],
+    [-16, 122, -0.3],
+    [252, 52, -0.2],
   ];
   const crateGeo = new THREE.BoxGeometry(1.4, 1.4, 1.4);
   const crateInst = new THREE.InstancedMesh(crateGeo, woodWallMat, crateCoords.length);
@@ -2771,7 +2528,7 @@ export function createIslandWorld(
     crateInst.setMatrixAt(idx, dummy.matrix);
     colliders.push({
       cx,
-      cz,
+      cz: cz,
       halfW: 0.72,
       halfD: 0.72,
       rotY: rot,
@@ -2784,33 +2541,23 @@ export function createIslandWorld(
   scene.add(crateInst);
   obstacleMeshes.push(crateInst);
 
-  // Iconic Free Fire Explosive RED Oil Barrels (shoot to detonate!)
   const barrelCoords: Array<[number, number]> = [
-    [-135, -44],
-    [-159, -48],
-    [40, -68],
-    [26, -78],
-    [-22, 158],
-    [-4, 172],
-    [-158, 332],
-    [-174, 316],
-    [484, -200],
-    [502, -214],
-    [-570, 28],
-    [186, 328],
-    [204, 342],
-    [258, -558],
-    [-288, -182],
-    [-338, 478],
-    [-352, 488],
-    [538, 82],
-    [-342, -488],
-    [-452, -502],
-    [-532, 290],
-    [548, 506],
-    [77, damZ + 8],
+    [-104, -34],
+    [-120, -38],
+    [34, -50],
+    [-18, 120],
+    [-4, 130],
+    [-128, 254],
+    [-142, 242],
+    [362, -146],
+    [378, -158],
+    [138, 248],
+    [-224, -138],
+    [398, 62],
+    [-250, -360],
+    [57, damZ + 8],
   ];
-  const barrelGeo = new THREE.CylinderGeometry(0.45, 0.45, 1.25, 10);
+  const barrelGeo = new THREE.CylinderGeometry(0.45, 0.45, 1.25, 8);
   const barrelMat = new THREE.MeshStandardMaterial({
     color: 0xdc2626,
     emissive: 0x7f1d1d,
@@ -2890,18 +2637,14 @@ export function createIslandWorld(
     barrelInst.instanceMatrix.needsUpdate = true;
   };
 
-  // Classic Free Fire Launch Pads ("Lançadores") between Bermuda cities
+  // 6 Classic Free Fire Launch Pads ("Lançadores")
   const launchPadSpecs: Array<[number, number, number, number, string]> = [
-    [-128, -45, 35, -75, 'LANÇADOR -> PEAK'],
-    [18, -75, -145, -45, 'LANÇADOR -> CLOCK TOWER'],
-    [-160, 310, -15, 165, 'LANÇADOR -> BIMASAKTI'],
-    [2, 168, 195, 335, 'LANÇADOR -> POCHINOK'],
-    [480, -210, 345, 70, 'LANÇADOR -> KERATON'],
-    [-335, 470, -165, 325, 'LANÇADOR -> FACTORY'],
-    [535, 495, 195, 335, 'LANÇADOR -> POCHINOK'],
-    [-555, 35, -295, -185, 'LANÇADOR -> KATULISTIWA'],
-    [255, -545, 185, -225, 'LANÇADOR -> PLANTATION'],
-    [-325, -485, -295, -185, 'LANÇADOR -> KATULISTIWA'],
+    [-95, -35, 30, -55, 'LANÇADOR -> PEAK'],
+    [14, -55, -110, -35, 'LANÇADOR -> CLOCK TOWER'],
+    [-128, 236, -12, 125, 'LANÇADOR -> BIMASAKTI'],
+    [4, 128, 145, 255, 'LANÇADOR -> POCHINOK'],
+    [356, -155, 255, 55, 'LANÇADOR -> KERATON'],
+    [-238, -355, -230, -140, 'LANÇADOR -> KATULISTIWA'],
   ];
   const launchPads: LaunchPadProp[] = [];
   const padBaseGeo = new THREE.CylinderGeometry(1.15, 1.35, 0.25, 14);
@@ -2972,7 +2715,7 @@ export function createIslandWorld(
     const ang = Math.atan2(dx, dz);
     const nx = -dz / len;
     const nz = dx / len;
-    const countOnRoad = Math.min(5, Math.floor(len / 52));
+    const countOnRoad = Math.min(3, Math.floor(len / 75));
     for (let k = 1; k <= countOnRoad; k++) {
       const t = k / (countOnRoad + 1);
       const side = (i + k) % 2 === 0 ? 1 : -1;
@@ -3012,9 +2755,9 @@ export function createIslandWorld(
     obstacleMeshes.push(muretaInst);
   }
 
-  // 12b. Roadside Tire Stacks & Military Supply Crates (2 draw calls)
+  // 12b. Roadside Tire Stacks & Military Supply Crates
   const tireMat = new THREE.MeshStandardMaterial({ color: 0x1d2024, roughness: 0.88, metalness: 0.1 });
-  const tireGeo = new THREE.CylinderGeometry(0.46, 0.5, 0.98, 10);
+  const tireGeo = new THREE.CylinderGeometry(0.46, 0.5, 0.98, 8);
   const tireList: Array<[number, number, number]> = [];
   const milCrateGeo = new THREE.BoxGeometry(1.65, 1.05, 1.15);
   const milCrateMat = new THREE.MeshStandardMaterial({ color: 0x4b5836, roughness: 0.82, metalness: 0.12 });
@@ -3025,10 +2768,10 @@ export function createIslandWorld(
     const dx = r.x2 - r.x1;
     const dz = r.z2 - r.z1;
     const len = Math.hypot(dx, dz);
-    if (len < 36) continue;
+    if (len < 42) continue;
     const nx = -dz / len;
     const nz = dx / len;
-    const steps = Math.min(3, Math.floor(len / 75));
+    const steps = Math.min(2, Math.floor(len / 95));
     for (let k = 1; k <= steps; k++) {
       const t = (k + 0.35) / (steps + 1);
       const side = (i + k) % 2 === 0 ? -1 : 1;
@@ -3094,8 +2837,8 @@ export function createIslandWorld(
     obstacleMeshes.push(milInst);
   }
 
-  // 12c. Roadside Utility Power Poles (1 draw call)
-  const poleTrunk = new THREE.CylinderGeometry(0.13, 0.19, 6.4, 6);
+  // 12c. Roadside Utility Power Poles
+  const poleTrunk = new THREE.CylinderGeometry(0.13, 0.19, 6.4, 5);
   poleTrunk.translate(0, 3.2, 0);
   const poleArm = new THREE.BoxGeometry(1.5, 0.14, 0.14);
   poleArm.translate(0, 5.9, 0);
@@ -3109,11 +2852,11 @@ export function createIslandWorld(
     const dx = r.x2 - r.x1;
     const dz = r.z2 - r.z1;
     const len = Math.hypot(dx, dz);
-    if (len < 45) continue;
+    if (len < 60) continue;
     const ang = Math.atan2(dx, dz);
     const nx = -dz / len;
     const nz = dx / len;
-    const count = Math.min(4, Math.floor(len / 55));
+    const count = Math.min(2, Math.floor(len / 85));
     for (let k = 1; k <= count; k++) {
       const t = k / (count + 1);
       const px = r.x1 + dx * t + nx * (r.width * 0.5 + 2.4);
@@ -3149,7 +2892,7 @@ export function createIslandWorld(
     obstacleMeshes.push(poleInst);
   }
 
-  // 12d. Smooth Rounded Wavy Rocks & Boulders (lightweight InstancedMesh cover across full Bermuda)
+  // 12d. Smooth Rounded Rocks & Boulders (trimmed for high mobile FPS)
   const rockGeo = new THREE.IcosahedronGeometry(1.25, 1);
   const rockPos = rockGeo.attributes.position;
   for (let v = 0; v < rockPos.count; v++) {
@@ -3168,15 +2911,15 @@ export function createIslandWorld(
   });
   applyDistanceTextureLod(rockMat, [0.56, 0.55, 0.52]);
   const rockList: Array<[number, number, number, number]> = [];
-  for (let i = 0; i < 400 && rockList.length < 240; i++) {
+  for (let i = 0; i < 240 && rockList.length < 95; i++) {
     const a = i * 1.77 + 0.5;
-    const r = 65 + ((i * 83) % 780);
+    const r = 45 + ((i * 67) % 480);
     const rx = Math.cos(a) * r;
     const rz = Math.sin(a) * r;
     const ry = sampleGroundHeight(rx, rz);
     if (ry < 0.75) continue;
     if (!isClearOfPoiAndRoads(rx, rz, 10)) continue;
-    const sc = 0.8 + (i % 5) * 0.34;
+    const sc = 0.8 + (i % 5) * 0.32;
     rockList.push([rx, ry, rz, sc]);
   }
   const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, rockList.length);
@@ -3206,7 +2949,7 @@ export function createIslandWorld(
   scene.add(rockInst);
   obstacleMeshes.push(rockInst);
 
-  // 12e. Optimized Bermudian Trees (ONLY 2 draw calls total, castShadow=false, outside POIs & roads!)
+  // 12e. Optimized Bermudian Trees (75 trees across compacted island)
   const foliageMat = new THREE.MeshStandardMaterial({
     map: textures.foliage,
     color: 0xffffff,
@@ -3220,12 +2963,12 @@ export function createIslandWorld(
   });
   applyDistanceTextureLod(barkMat, [0.48, 0.36, 0.25]);
 
-  const treeTrunkGeo = new THREE.CylinderGeometry(0.24, 0.38, 4.4, 6);
+  const treeTrunkGeo = new THREE.CylinderGeometry(0.24, 0.38, 4.4, 5);
   treeTrunkGeo.translate(0, 2.2, 0);
-  const crownLow = new THREE.IcosahedronGeometry(2.15, 1);
+  const crownLow = new THREE.IcosahedronGeometry(2.15, 0);
   crownLow.scale(1.15, 0.85, 1.15);
   crownLow.translate(0, 4.9, 0);
-  const crownTop = new THREE.IcosahedronGeometry(1.55, 1);
+  const crownTop = new THREE.IcosahedronGeometry(1.55, 0);
   crownTop.scale(1.05, 0.92, 1.05);
   crownTop.translate(0.18, 6.2, -0.1);
   const treeCanopyGeo = mergeGeometries([crownLow, crownTop], false);
@@ -3233,17 +2976,17 @@ export function createIslandWorld(
   crownTop.dispose();
 
   const treeCoords: Array<[number, number, number, number]> = [];
-  for (let i = 0; i < 420 && treeCoords.length < 165; i++) {
+  for (let i = 0; i < 240 && treeCoords.length < 75; i++) {
     const a = i * 2.39996 + 0.2;
-    const rad = 55 + ((i * 97) % 760);
+    const rad = 40 + ((i * 73) % 470);
     const tx = Math.cos(a) * rad;
     const tz = Math.sin(a) * rad;
     const ty = sampleGroundHeight(tx, tz);
     if (ty < 1.35) continue;
     const nearPoi = POIS.some((p) => Math.hypot(tx - p.x, tz - p.z) < p.radius * 0.85);
     if (nearPoi) continue;
-    if (Math.abs(tz - riverCenterZ(tx)) < 26) continue;
-    if (distToRoadSq(tx, tz) < 14 * 14) continue;
+    if (Math.abs(tz - riverCenterZ(tx)) < 24) continue;
+    if (distToRoadSq(tx, tz) < 13 * 13) continue;
     const sc = 0.85 + (i % 4) * 0.16;
     treeCoords.push([tx, ty, tz, sc]);
   }
@@ -3251,7 +2994,7 @@ export function createIslandWorld(
   treeTrunkInst.castShadow = false;
   treeTrunkInst.receiveShadow = true;
   const treeCanopyInst = new THREE.InstancedMesh(
-    treeCanopyGeo ?? new THREE.IcosahedronGeometry(2.0, 1),
+    treeCanopyGeo ?? new THREE.IcosahedronGeometry(2.0, 0),
     foliageMat,
     Math.max(1, treeCoords.length),
   );
@@ -3287,15 +3030,15 @@ export function createIslandWorld(
     obstacleMeshes.push(treeTrunkInst);
   }
 
-  // Lightweight Tactical Low Bushes
-  const bushGeo = new THREE.SphereGeometry(0.9, 7, 5);
+  // Lightweight Tactical Low Bushes (60, hidden on Suave)
+  const bushGeo = new THREE.SphereGeometry(0.9, 6, 4);
   bushGeo.scale(1.2, 0.72, 1.0);
   bushGeo.translate(0, 0.42, 0);
-  const bushInst = new THREE.InstancedMesh(bushGeo, foliageMat, 180);
+  const bushInst = new THREE.InstancedMesh(bushGeo, foliageMat, 60);
   let placedBushes = 0;
-  for (let i = 0; i < 320 && placedBushes < 180; i++) {
+  for (let i = 0; i < 160 && placedBushes < 60; i++) {
     const a = i * 2.71;
-    const r = 45 + ((i * 71) % 780);
+    const r = 40 + ((i * 59) % 465);
     const bx = Math.cos(a) * r;
     const bz = Math.sin(a) * r;
     const by = sampleGroundHeight(bx, bz);
@@ -3465,20 +3208,16 @@ export function createIslandWorld(
     }
   };
 
-  // Spawn 12 Drivable Vehicles AFTER staticColliderCount so vehicle colliders stay in dynamic range
+  // Spawn 8 Drivable Vehicles across key cities
   const vehicleSpecs: Array<{ id: string; kind: VehicleKind; x: number; z: number; rotY: number }> = [
-    { id: 'veh_0', kind: 'jeep', x: 190, z: 324, rotY: -0.85 },
-    { id: 'veh_1', kind: 'jeep', x: -135, z: -34, rotY: 0.55 },
-    { id: 'veh_2', kind: 'sport', x: -15, z: 146, rotY: 0.05 },
-    { id: 'veh_3', kind: 'jeep', x: 480, z: -202, rotY: -1.2 },
-    { id: 'veh_4', kind: 'sport', x: -336, z: -486, rotY: 0.35 },
-    { id: 'veh_5', kind: 'jeep', x: -292, z: -182, rotY: 1.1 },
-    { id: 'veh_6', kind: 'sport', x: 545, z: 505, rotY: -0.6 },
-    { id: 'veh_7', kind: 'jeep', x: -340, z: 478, rotY: 0.8 },
-    { id: 'veh_8', kind: 'sport', x: 256, z: -556, rotY: 1.4 },
-    { id: 'veh_9', kind: 'jeep', x: 536, z: 82, rotY: -1.5 },
-    { id: 'veh_10', kind: 'sport', x: -510, z: -230, rotY: 0.2 },
-    { id: 'veh_11', kind: 'jeep', x: 180, z: -220, rotY: 2.1 },
+    { id: 'veh_0', kind: 'jeep', x: 140, z: 244, rotY: -0.85 },
+    { id: 'veh_1', kind: 'jeep', x: -102, z: -26, rotY: 0.55 },
+    { id: 'veh_2', kind: 'sport', x: -12, z: 108, rotY: 0.05 },
+    { id: 'veh_3', kind: 'jeep', x: 358, z: -148, rotY: -1.2 },
+    { id: 'veh_4', kind: 'sport', x: -246, z: -356, rotY: 0.35 },
+    { id: 'veh_5', kind: 'jeep', x: -224, z: -136, rotY: 1.1 },
+    { id: 'veh_6', kind: 'sport', x: 396, z: 62, rotY: -1.5 },
+    { id: 'veh_7', kind: 'jeep', x: 140, z: -165, rotY: 2.1 },
   ];
   const vehicles: VehicleEntity[] = vehicleSpecs.map((spec) => {
     const v = createDrivableVehicle(
@@ -3494,7 +3233,7 @@ export function createIslandWorld(
     return v;
   });
 
-  // 13. 50 Real Parachuting, Looting & Tactical Combat AI Bots!
+  // 13. 30 Real Parachuting, Looting & Tactical Combat AI Bots (high FPS for mobile!)
   const BOT_NICKS = [
     'LuanPro_17', 'xX_Braga_Xx', 'Gabriel_07', 'YuriRush', 'CAPA_MESTRE',
     'Pedro_BR', 'BielCapa', 'Kauan_FF', 'Matheus_RJ', 'Davi_Gelo',
@@ -3502,10 +3241,6 @@ export function createIslandWorld(
     'Rafael2017', 'Thiago_Pro', 'Caua_Rush', 'Enzo_Capa', 'FelipeZika',
     'GustavoBR', 'BrunoSertao', 'Diego_17', 'Natan_FF', 'Igor_Top10',
     'Samu_Sniper', 'Ruan_Mestre', 'Caio_Lenda', 'JoaoVitorBR', 'Léo_Bermuda',
-    'Kleberson_X', 'Daniel_G18', 'Vitor_AWM', 'Renan_10', 'Kaio_Rush',
-    'Murilo_FF', 'Elias_Safe', 'Mateus_01', 'Alisson_PRO', 'Wesley_BR',
-    'Douglas_98', 'Andre_Capa', 'Luiz_Sniper', 'Junior_17', 'Thales_FF',
-    'Fernando_X', 'Victor_BR', 'Otavio_2k', 'Fabricio_FF', 'Sandro_Pro',
   ];
 
   const landPois = POIS.filter(
@@ -3514,16 +3249,15 @@ export function createIslandWorld(
   const targets: TargetDummy[] = BOT_NICKS.map((nick, idx) => {
     const poi = landPois[idx % landPois.length];
     const ang = (idx * 2.399) % (Math.PI * 2);
-    const dist = 16 + ((idx * 13) % 72);
+    const dist = 12 + ((idx * 11) % 46);
     let lx = poi.x + Math.cos(ang) * dist;
     let lz = poi.z + Math.sin(ang) * dist;
     if (sampleGroundHeight(lx, lz) < 0.75) {
       lx = poi.x;
       lz = poi.z;
     }
-    // Wait island spawn around Hangar (-345, -495)
-    const waitX = -345 + Math.cos(idx * 0.7) * (10 + (idx % 5) * 4);
-    const waitZ = -495 + Math.sin(idx * 0.7) * (10 + (idx % 5) * 4);
+    const waitX = WAIT_SPAWN.x + Math.cos(idx * 0.7) * (8 + (idx % 5) * 3.5);
+    const waitZ = WAIT_SPAWN.z + Math.sin(idx * 0.7) * (8 + (idx % 5) * 3.5);
     const bot = createBotEntity(
       `bot_${idx + 1}`,
       nick,
@@ -3538,7 +3272,7 @@ export function createIslandWorld(
     );
     bot.landX = lx;
     bot.landZ = lz;
-    bot.dropProgress = 0.06 + (idx / 50) * 0.82;
+    bot.dropProgress = 0.08 + (idx / BOT_NICKS.length) * 0.78;
     return bot;
   });
   targets.forEach((t) => scene.add(t.group));
@@ -4210,7 +3944,7 @@ export function createIslandWorld(
   });
   const safeZoneMesh = new THREE.Mesh(safeZoneGeo, safeZoneMat);
   safeZoneMesh.position.set(0, 75, 0);
-  safeZoneMesh.scale.set(890, 1, 890);
+  safeZoneMesh.scale.set(650, 1, 650);
   safeZoneMesh.visible = false;
   scene.add(safeZoneMesh);
 
@@ -4240,43 +3974,43 @@ export function createIslandWorld(
     });
   }
 
-  let structureCullDist = 440;
+  let structureCullDist = 250;
 
   const applyQuality = (quality: GraphicsQuality, isSoftwareGl: boolean) => {
     if (quality === 'low' || isSoftwareGl) {
-      // SUAVE: sem sombra, visibilidade ampla e iluminação clara para enxergar o mapa inteiro
-      texDistUniform.value = 95.0;
-      fog.near = 280;
-      fog.far = 780;
-      structureCullDist = 300;
+      // SUAVE: máximo FPS no celular (sem IBL shader overhead, névoa próxima, distância enxuta)
+      texDistUniform.value = 72.0;
+      fog.near = 135;
+      fog.far = 365;
+      structureCullDist = 175;
       bushInst.visible = false;
       sunLight.castShadow = false;
-      sunLight.intensity = 1.8;
-      hemi.intensity = 1.38;
-      waterMat.roughness = 0.65;
-      waterMat.metalness = 0.05;
-      scene.environment = envMap;
-      scene.environmentIntensity = 0.45;
+      sunLight.intensity = 1.95;
+      hemi.intensity = 1.65;
+      waterMat.roughness = 0.72;
+      waterMat.metalness = 0.02;
+      scene.environment = null;
+      scene.environmentIntensity = 0;
     } else if (quality === 'medium') {
-      // PADRÃO: sem sombra (evita manchas pretas), visão longa e fluida
-      texDistUniform.value = 165.0;
-      fog.near = 400;
-      fog.far = 1050;
-      structureCullDist = 440;
+      // PADRÃO: equilibrado, boa visão à distância sem peso de sombras
+      texDistUniform.value = 125.0;
+      fog.near = 220;
+      fog.far = 540;
+      structureCullDist = 260;
       bushInst.visible = true;
       sunLight.castShadow = false;
       sunLight.intensity = 1.9;
-      hemi.intensity = 1.35;
+      hemi.intensity = 1.38;
       waterMat.roughness = 0.35;
-      waterMat.metalness = 0.18;
+      waterMat.metalness = 0.16;
       scene.environment = envMap;
-      scene.environmentIntensity = 0.68;
+      scene.environmentIntensity = 0.52;
     } else {
-      // ULTRA: visão máxima do mapa com sombras suaves PCF e texturas nítidas
-      texDistUniform.value = 260.0;
-      fog.near = 540;
-      fog.far = 1350;
-      structureCullDist = 600;
+      // ULTRA: visão máxima com sombras suaves PCF e IBL completo
+      texDistUniform.value = 210.0;
+      fog.near = 350;
+      fog.far = 820;
+      structureCullDist = 400;
       bushInst.visible = true;
       sunLight.castShadow = true;
       sunLight.shadow.mapSize.set(1024, 1024);
@@ -4285,7 +4019,7 @@ export function createIslandWorld(
       waterMat.roughness = 0.18;
       waterMat.metalness = 0.32;
       scene.environment = envMap;
-      scene.environmentIntensity = 1.0;
+      scene.environmentIntensity = 0.9;
     }
     if (sunLight.shadow.map) {
       sunLight.shadow.map.dispose();
@@ -4297,7 +4031,7 @@ export function createIslandWorld(
     dt: number,
     elapsed: number,
     camPos?: THREE.Vector3,
-    lootRenderDist = 38,
+    lootRenderDist = 28,
   ) => {
     cloudGroup.rotation.y = elapsed * 0.0025;
 
@@ -4306,7 +4040,7 @@ export function createIslandWorld(
     const cy = camPos ? camPos.y : 0;
     skyDome.position.set(cx, 0, cz);
     const renderMaxSq = lootRenderDist * lootRenderDist;
-    const animMaxSq = 28 * 28;
+    const animMaxSq = 16 * 16;
 
     // Distance-cull distant structures & vehicles when on the ground (keep visible in airplane/skydive)
     if (camPos) {

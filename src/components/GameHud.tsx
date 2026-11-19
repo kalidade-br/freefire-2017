@@ -27,6 +27,7 @@ import {
 } from '../game/types';
 import {
   BERMUDA_MAP_RANGE,
+  HAS_SENTOSA,
   riverCenterZ,
   sampleMainIslandEdgeRadius,
   sampleSentosaEdgeRadius,
@@ -166,14 +167,16 @@ export const GameHud: React.FC<GameHudProps> = ({
     input.setVirtualJoystick(vehTouchRef.current.x, vehTouchRef.current.y);
   };
 
+  const inVehicleActive = Boolean(hud.inVehicle);
+
   useEffect(() => {
-    if (!hud.inVehicle) {
+    if (!inVehicleActive) {
       if (vehTouchRef.current.x !== 0 || vehTouchRef.current.y !== 0) {
         vehTouchRef.current = { x: 0, y: 0 };
         input.setVirtualJoystick(0, 0);
       }
     }
-  }, [hud.inVehicle, input]);
+  }, [inVehicleActive, input]);
 
   useEffect(() => {
     if (
@@ -182,7 +185,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       hud.isDead ||
       hud.isPlayerDowned
     ) {
-      setAutoSprintActive(false);
+      setAutoSprintActive((prev) => (prev ? false : prev));
       input.setTouchAutoSprint(false);
       input.setTouchSprint(false);
     }
@@ -193,16 +196,16 @@ export const GameHud: React.FC<GameHudProps> = ({
       hud.isSwimming ||
       hud.isDead ||
       hud.isPlayerDowned ||
-      hud.inVehicle ||
+      inVehicleActive ||
       isPaused ||
       (gameState !== GameState.WAITING && gameState !== GameState.PLAYING)
     ) {
       fireDragRef.current = null;
-      setFireKnob({ x: 0, y: 0 });
-      setIsFirePressed(false);
+      setFireKnob((prev) => (prev.x === 0 && prev.y === 0 ? prev : { x: 0, y: 0 }));
+      setIsFirePressed((prev) => (prev ? false : prev));
       input.setTouchFire(false);
     }
-  }, [hud.isSwimming, hud.isDead, hud.isPlayerDowned, hud.inVehicle, isPaused, gameState, input]);
+  }, [hud.isSwimming, hud.isDead, hud.isPlayerDowned, inVehicleActive, isPaused, gameState, input]);
 
   useEffect(() => {
     const coarse =
@@ -298,8 +301,10 @@ export const GameHud: React.FC<GameHudProps> = ({
     ctx.lineWidth = 15;
     drawMainPoly();
     ctx.stroke();
-    drawSentosaPoly();
-    ctx.stroke();
+    if (HAS_SENTOSA) {
+      drawSentosaPoly();
+      ctx.stroke();
+    }
 
     // Sand beach & grassy terrain fill
     ctx.fillStyle = '#5a6d3a';
@@ -309,25 +314,27 @@ export const GameHud: React.FC<GameHudProps> = ({
     ctx.fill();
     ctx.stroke();
 
-    drawSentosaPoly();
-    ctx.fill();
-    ctx.stroke();
+    if (HAS_SENTOSA) {
+      drawSentosaPoly();
+      ctx.fill();
+      ctx.stroke();
+    }
 
-    // Peak mountain & Observatório elevation shading
-    const peakP = toPx(35, -75);
+    // Peak mountain elevation shading
+    const peakP = toPx(30, -55);
     ctx.fillStyle = 'rgba(116, 112, 90, 0.45)';
     ctx.beginPath();
-    ctx.arc(peakP.x, peakP.y, 34, 0, Math.PI * 2);
+    ctx.arc(peakP.x, peakP.y, 28, 0, Math.PI * 2);
     ctx.fill();
 
     // Northern River & Dam basin
     ctx.strokeStyle = '#1fc6df';
     ctx.lineWidth = 11;
     ctx.beginPath();
-    for (let wx = -720; wx <= 720; wx += 20) {
+    for (let wx = -540; wx <= 540; wx += 20) {
       const wz = riverCenterZ(wx);
       const p = toPx(wx, wz);
-      if (wx === -720) ctx.moveTo(p.x, p.y);
+      if (wx === -540) ctx.moveTo(p.x, p.y);
       else ctx.lineTo(p.x, p.y);
     }
     ctx.stroke();
@@ -439,7 +446,7 @@ export const GameHud: React.FC<GameHudProps> = ({
     const mapRange = BERMUDA_MAP_RANGE;
     const isGround = gameState === GameState.WAITING || gameState === GameState.PLAYING;
     const isZoomed = minimapZoomed && isGround;
-    const radarHalfRange = 220; // 440m x 440m crisp tactical view on ground
+    const radarHalfRange = 185; // 370m x 370m crisp tactical view on ground
 
     const minWorldX = isZoomed ? hud.playerX - radarHalfRange : -mapRange;
     const minWorldZ = isZoomed ? hud.playerZ - radarHalfRange : -mapRange;

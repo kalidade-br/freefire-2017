@@ -163,6 +163,8 @@ export default function App() {
     loadCharacterConfig(),
   );
   const [profile, setProfile] = useState<PlayerProfile>(() => loadProfile());
+  const profileRef = useRef<PlayerProfile>(profile);
+  profileRef.current = profile;
 
   const [showCharModal, setShowCharModal] = useState(false);
   const [showArsenalModal, setShowArsenalModal] = useState(false);
@@ -269,28 +271,26 @@ export default function App() {
         const rankedActive = engine.getRankedMode();
         const isWin = next === GameState.WIN;
         const placement = isWin ? 1 : Math.max(2, snap.aliveCount);
-
-        setProfile((prev) => {
-          let delta = 0;
-          if (rankedActive) {
-            delta = computeRankedPointDelta({
+        const curProfile = profileRef.current;
+        const delta = rankedActive
+          ? computeRankedPointDelta({
               isWin,
               placement,
               kills: snap.kills,
               damageDealt: snap.damageDealt,
-              currentPoints: prev.rankPoints,
-            });
-            setLastRankDelta(delta);
-          } else {
-            setLastRankDelta(null);
-          }
+              currentPoints: curProfile.rankPoints,
+            })
+          : null;
+        setLastRankDelta(delta);
 
+        setProfile((prev) => {
+          const appliedDelta = delta ?? 0;
           const updated: PlayerProfile = {
             ...prev,
             matchesPlayed: prev.matchesPlayed + 1,
             wins: isWin ? prev.wins + 1 : prev.wins,
             gold: prev.gold + (isWin ? 250 : 60),
-            rankPoints: rankedActive ? Math.max(0, prev.rankPoints + delta) : prev.rankPoints,
+            rankPoints: rankedActive ? Math.max(0, prev.rankPoints + appliedDelta) : prev.rankPoints,
             rankedMatches: rankedActive ? prev.rankedMatches + 1 : prev.rankedMatches,
             rankedWins: rankedActive && isWin ? prev.rankedWins + 1 : prev.rankedWins,
             totalKills: prev.totalKills + snap.kills,
