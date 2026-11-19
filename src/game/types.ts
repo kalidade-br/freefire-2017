@@ -15,7 +15,7 @@ export enum GameState {
 
 export type PlayerStance = 'stand' | 'crouch' | 'prone';
 
-export type WeaponId = 'g18' | 'm4a1' | 'ump45' | 'm1014' | 'awm';
+export type WeaponId = 'g18' | 'deagle' | 'm4a1' | 'xm8' | 'scar' | 'ak47' | 'ump45' | 'm1014' | 'awm';
 
 export type ScopeType = 'none' | '1x' | '2x' | '4x' | 'sniper';
 
@@ -339,8 +339,12 @@ export const VENDING_SHOP_OFFERS: VendingShopOffer[] = [
   { id: 'vest3', label: 'Colete Nível 3', sub: '220 Blindagem', cost: 450, category: 'gear' },
   { id: 'helmet3', label: 'Capacete Nível 3', sub: '180 Proteção', cost: 400, category: 'gear' },
   { id: 'scope4x', label: 'Mira 4x', sub: 'Zoom Tático', cost: 250, category: 'gear' },
+  { id: 'deagle', label: 'Desert Eagle', sub: 'Pistola Pesada', cost: 200, category: 'weapon', weaponId: 'deagle' },
   { id: 'ump45', label: 'SMG UMP-17', sub: 'Curto/Médio', cost: 300, category: 'weapon', weaponId: 'ump45' },
   { id: 'm4a1', label: 'Carabina M4-17', sub: 'Rifle Assalto', cost: 350, category: 'weapon', weaponId: 'm4a1' },
+  { id: 'scar', label: 'Rifle SCAR', sub: 'Estabilidade', cost: 380, category: 'weapon', weaponId: 'scar' },
+  { id: 'ak47', label: 'Fuzil AK-47', sub: 'Alto Impacto', cost: 400, category: 'weapon', weaponId: 'ak47' },
+  { id: 'xm8', label: 'Fuzil XM8', sub: 'Precisão Tática', cost: 420, category: 'weapon', weaponId: 'xm8' },
   { id: 'awm', label: 'Sniper AWM-17', sub: 'Alto Dano', cost: 700, category: 'weapon', weaponId: 'awm' },
 ];
 
@@ -384,6 +388,9 @@ export interface HudSnapshot {
   isSprinting: boolean;
   isAiming: boolean;
   isGrounded: boolean;
+  inWater: boolean;
+  isSwimming: boolean;
+  isOnSurfboard: boolean;
   isReloading: boolean;
   reloadProgress: number; // 0..1
   isDead: boolean;
@@ -496,6 +503,38 @@ export interface WalkablePlatform {
   rotY: number;
   topY: number;
   minY: number;
+  slopeAxis?: 'x' | 'z';
+  topYNeg?: number;
+  topYPos?: number;
+}
+
+export interface BuildingDoorway {
+  inX: number;
+  inZ: number;
+  outX: number;
+  outZ: number;
+}
+
+export interface BuildingNavBox {
+  lx: number;
+  lz: number;
+  halfW: number;
+  halfD: number;
+}
+
+export interface BuildingNavZone {
+  cx: number;
+  cz: number;
+  halfW: number;
+  halfD: number;
+  rotY: number;
+  baseY: number;
+  extraBoxes?: BuildingNavBox[];
+  hub?: { x: number; z: number };
+  secondFloorY?: number;
+  stairBottom?: { x: number; z: number };
+  stairTop?: { x: number; z: number };
+  doors: BuildingDoorway[];
 }
 
 export interface PoiMarker {
@@ -511,7 +550,17 @@ export interface MinimapBuilding {
   w: number;
   d: number;
   rotY: number;
-  kind: 'house' | 'shed' | 'container' | 'tower' | 'bridge';
+  kind:
+    | 'house'
+    | 'casaL'
+    | 'casaGod'
+    | 'celeiro'
+    | 'sobrado'
+    | 'guarita'
+    | 'shed'
+    | 'container'
+    | 'tower'
+    | 'bridge';
 }
 
 export interface MinimapRoad {
@@ -598,11 +647,11 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     shortName: 'G18',
     category: 'HG',
     damage: 19,
-    fireRateMs: 92,
+    fireRateMs: 112,
     magSize: 15,
-    reloadTimeSec: 0.52,
+    reloadTimeSec: 0.28,
     range: 75,
-    spread: 0.005,
+    spread: 0.0045,
     pellets: 1,
     automatic: true,
     defaultScope: 'none',
@@ -610,6 +659,26 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     allowsAttachments: true,
     supportsAimAssist: true,
     moveSpeedMult: 1.04,
+  },
+  deagle: {
+    id: 'deagle',
+    slot: 3,
+    name: 'DESERT EAGLE',
+    shortName: 'D. EAGLE',
+    category: 'HG',
+    damage: 76,
+    fireRateMs: 365,
+    magSize: 7,
+    reloadTimeSec: 0.34,
+    range: 120,
+    spread: 0.0022,
+    pellets: 1,
+    automatic: false,
+    defaultScope: 'none',
+    allowsCustomScope: false,
+    allowsAttachments: true,
+    supportsAimAssist: true,
+    moveSpeedMult: 1.03,
   },
   m4a1: {
     id: 'm4a1',
@@ -620,8 +689,8 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     damage: 30,
     fireRateMs: 115,
     magSize: 30,
-    reloadTimeSec: 0.65,
-    range: 210,
+    reloadTimeSec: 0.36,
+    range: 215,
     spread: 0.002,
     pellets: 1,
     automatic: true,
@@ -631,6 +700,66 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     supportsAimAssist: true,
     moveSpeedMult: 0.96,
   },
+  xm8: {
+    id: 'xm8',
+    slot: 1,
+    name: 'FUZIL XM8',
+    shortName: 'XM8',
+    category: 'AR',
+    damage: 33,
+    fireRateMs: 102,
+    magSize: 28,
+    reloadTimeSec: 0.35,
+    range: 230,
+    spread: 0.0015,
+    pellets: 1,
+    automatic: true,
+    defaultScope: 'none',
+    allowsCustomScope: true,
+    allowsAttachments: true,
+    supportsAimAssist: true,
+    moveSpeedMult: 0.98,
+  },
+  scar: {
+    id: 'scar',
+    slot: 1,
+    name: 'RIFLE SCAR',
+    shortName: 'SCAR',
+    category: 'AR',
+    damage: 31,
+    fireRateMs: 110,
+    magSize: 30,
+    reloadTimeSec: 0.35,
+    range: 225,
+    spread: 0.0018,
+    pellets: 1,
+    automatic: true,
+    defaultScope: 'none',
+    allowsCustomScope: true,
+    allowsAttachments: true,
+    supportsAimAssist: true,
+    moveSpeedMult: 0.97,
+  },
+  ak47: {
+    id: 'ak47',
+    slot: 1,
+    name: 'FUZIL AK-47',
+    shortName: 'AK-47',
+    category: 'AR',
+    damage: 38,
+    fireRateMs: 126,
+    magSize: 30,
+    reloadTimeSec: 0.38,
+    range: 220,
+    spread: 0.0026,
+    pellets: 1,
+    automatic: true,
+    defaultScope: 'none',
+    allowsCustomScope: true,
+    allowsAttachments: true,
+    supportsAimAssist: true,
+    moveSpeedMult: 0.94,
+  },
   ump45: {
     id: 'ump45',
     slot: 2,
@@ -638,10 +767,10 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     shortName: 'UMP-17',
     category: 'SMG',
     damage: 24,
-    fireRateMs: 78,
+    fireRateMs: 84,
     magSize: 32,
-    reloadTimeSec: 0.55,
-    range: 130,
+    reloadTimeSec: 0.32,
+    range: 132,
     spread: 0.003,
     pellets: 1,
     automatic: true,
@@ -660,7 +789,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     damage: 19,
     fireRateMs: 540,
     magSize: 6,
-    reloadTimeSec: 0.78,
+    reloadTimeSec: 0.42,
     range: 48,
     spread: 0.042,
     pellets: 6,
@@ -680,7 +809,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     damage: 155,
     fireRateMs: 1220,
     magSize: 5,
-    reloadTimeSec: 0.92,
+    reloadTimeSec: 0.8,
     range: 390,
     spread: 0,
     pellets: 1,

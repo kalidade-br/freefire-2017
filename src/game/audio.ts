@@ -6,19 +6,33 @@ export type LobbyMusicMode = 'off' | 'lobby' | 'waiting' | 'drop';
 type SfxBufferKey =
   | 'kill'
   | 'g18'
+  | 'deagle'
+  | 'ump45'
   | 'm4a1'
+  | 'xm8'
+  | 'scar'
+  | 'ak47'
   | 'awm'
   | 'run'
   | 'jump'
   | 'proneDown'
   | 'proneUp'
   | 'backpack'
-  | 'medkit';
+  | 'medkit'
+  | 'gloo'
+  | 'safeWeak'
+  | 'safeStrong1'
+  | 'safeStrong2';
 
 const SFX_URLS: Record<SfxBufferKey, string> = {
   kill: '/audio/kill_sfx.mp3',
   g18: '/audio/g18-1tiro.mp3',
+  deagle: '/audio/desert-1tiro.mp3',
+  ump45: '/audio/ump-1tiro.mp3',
   m4a1: '/audio/m4a1-1tiro.mp3',
+  xm8: '/audio/xm8-1tiro.mp3',
+  scar: '/audio/scar-1tiro.mp3',
+  ak47: '/audio/ak-1tiro.mp3',
   awm: '/audio/awm-1tiro.mp3',
   run: '/audio/correndo.mp3',
   jump: '/audio/pulo.mp3',
@@ -26,6 +40,10 @@ const SFX_URLS: Record<SfxBufferKey, string> = {
   proneUp: '/audio/levantar.mp3',
   backpack: '/audio/abrindo-mochila.mp3',
   medkit: '/audio/usando-kit-medico.mp3',
+  gloo: '/audio/gelo.mp3',
+  safeWeak: '/audio/dano-safe-fraco-ou-medio.mp3',
+  safeStrong1: '/audio/dano-safe-forte1.mp3',
+  safeStrong2: '/audio/dano-safe-forte2.mp3',
 };
 
 interface SampleShotProfile {
@@ -37,7 +55,12 @@ interface SampleShotProfile {
 
 const SAMPLE_SHOT_PROFILES: Partial<Record<WeaponId, SampleShotProfile>> = {
   g18: { offset: 0.0, duration: 0.48, gain: 0.85, fadeStart: 0.28 },
+  deagle: { offset: 0.282, duration: 0.66, gain: 2.35, fadeStart: 0.44 },
+  ump45: { offset: 0.372, duration: 0.52, gain: 0.85, fadeStart: 0.28 },
   m4a1: { offset: 0.296, duration: 0.48, gain: 0.85, fadeStart: 0.26 },
+  xm8: { offset: 0.273, duration: 0.48, gain: 0.88, fadeStart: 0.26 },
+  scar: { offset: 0.355, duration: 0.52, gain: 6.5, fadeStart: 0.34 },
+  ak47: { offset: 0.475, duration: 0.54, gain: 6.8, fadeStart: 0.35 },
   awm: { offset: 0.38, duration: 0.61, gain: 1.15, fadeStart: 0.45 },
 };
 
@@ -77,6 +100,23 @@ const BALLISTIC_PROFILES: Record<WeaponId, WeaponBallisticProfile> = {
     whipDelay: 0,
     boltHz: 2750,
   },
+  deagle: {
+    crackHz: 3850,
+    crackGain: 0.78,
+    crackDur: 0.052,
+    bodyHz: 710,
+    bodyGain: 0.68,
+    bodyDur: 0.14,
+    punchStartHz: 162,
+    punchEndHz: 32,
+    punchDur: 0.16,
+    punchGain: 0.68,
+    tailStartHz: 1950,
+    tailDur: 0.38,
+    tailGain: 0.32,
+    whipDelay: 0.014,
+    boltHz: 2150,
+  },
   ump45: {
     crackHz: 2800,
     crackGain: 0.5,
@@ -110,6 +150,57 @@ const BALLISTIC_PROFILES: Record<WeaponId, WeaponBallisticProfile> = {
     tailGain: 0.25,
     whipDelay: 0.016,
     boltHz: 2600,
+  },
+  xm8: {
+    crackHz: 4450,
+    crackGain: 0.66,
+    crackDur: 0.04,
+    bodyHz: 940,
+    bodyGain: 0.46,
+    bodyDur: 0.09,
+    punchStartHz: 185,
+    punchEndHz: 41,
+    punchDur: 0.082,
+    punchGain: 0.44,
+    tailStartHz: 2450,
+    tailDur: 0.29,
+    tailGain: 0.23,
+    whipDelay: 0.015,
+    boltHz: 2720,
+  },
+  scar: {
+    crackHz: 4100,
+    crackGain: 0.65,
+    crackDur: 0.042,
+    bodyHz: 840,
+    bodyGain: 0.49,
+    bodyDur: 0.096,
+    punchStartHz: 172,
+    punchEndHz: 37,
+    punchDur: 0.09,
+    punchGain: 0.43,
+    tailStartHz: 2200,
+    tailDur: 0.3,
+    tailGain: 0.24,
+    whipDelay: 0.015,
+    boltHz: 2540,
+  },
+  ak47: {
+    crackHz: 3900,
+    crackGain: 0.7,
+    crackDur: 0.048,
+    bodyHz: 730,
+    bodyGain: 0.54,
+    bodyDur: 0.11,
+    punchStartHz: 158,
+    punchEndHz: 34,
+    punchDur: 0.105,
+    punchGain: 0.5,
+    tailStartHz: 1950,
+    tailDur: 0.34,
+    tailGain: 0.27,
+    whipDelay: 0.017,
+    boltHz: 2320,
   },
   m1014: {
     crackHz: 2450,
@@ -188,6 +279,7 @@ class SoundEngine {
   private lobbyMusicMode: LobbyMusicMode = 'off';
   private lobbyFadeTimer: number | null = null;
   private recentRemoteShots: number[] = [];
+  private lastSafeDmgAudioMs = 0;
 
   public configure(volume: number, muted: boolean): void {
     this.volume = Math.max(0, Math.min(1, volume));
@@ -252,18 +344,28 @@ class SoundEngine {
     if (this.sfxLoadStarted || !this.ctx) return;
     this.sfxLoadStarted = true;
     const ctx = this.ctx;
+    const fetchAudioBuffer = async (targetUrl: string): Promise<ArrayBuffer> => {
+      const res = await fetch(targetUrl);
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok || ct.includes('text/html')) {
+        throw new Error('No audio asset');
+      }
+      return res.arrayBuffer();
+    };
     (Object.keys(SFX_URLS) as SfxBufferKey[]).forEach((key) => {
-      const url = SFX_URLS[key];
-      void fetch(url)
-        .then((res) =>
-          res.ok ? res.arrayBuffer() : Promise.reject(new Error('HTTP ' + res.status)),
-        )
+      const localUrl = SFX_URLS[key];
+      const fileName = localUrl.split('/').pop() || '';
+      const rawGithubUrl = `https://raw.githubusercontent.com/kalidade-br/freefire-soms/main/${encodeURIComponent(fileName)}`;
+      const netlifyUrl = `https://freefire-soms.netlify.app/${encodeURIComponent(fileName)}`;
+      void fetchAudioBuffer(localUrl)
+        .catch(() => fetchAudioBuffer(rawGithubUrl))
+        .catch(() => fetchAudioBuffer(netlifyUrl))
         .then((arr) => ctx.decodeAudioData(arr))
         .then((decoded) => {
           this.sfxBuffers.set(key, decoded);
         })
         .catch(() => {
-          // Synth fallback remains active if any fetch/decode fails
+          // Synth fallback remains active if local and remote fetch/decode fail
         });
     });
   }
@@ -400,9 +502,18 @@ class SoundEngine {
     const airMaxHz = Math.max(480, 14500 * Math.exp(-dist / 42));
     const silenceFactor = silenced ? 0.36 : 1;
 
-    // Use real Free Fire 1-shot MP3 buffer for G18, M4A1 & AWM (each trigger plays 1 clean shot!)
+    // Use real Free Fire 1-shot MP3 buffer when available (each trigger plays 1 clean shot!)
     const sampleKey: SfxBufferKey | null =
-      weaponId === 'g18' || weaponId === 'm4a1' || weaponId === 'awm' ? weaponId : null;
+      weaponId === 'g18' ||
+      weaponId === 'deagle' ||
+      weaponId === 'ump45' ||
+      weaponId === 'm4a1' ||
+      weaponId === 'xm8' ||
+      weaponId === 'scar' ||
+      weaponId === 'ak47' ||
+      weaponId === 'awm'
+        ? weaponId
+        : null;
     const sampleBuf = sampleKey ? this.sfxBuffers.get(sampleKey) : undefined;
     const sampleProfile = sampleKey ? SAMPLE_SHOT_PROFILES[weaponId] : undefined;
 
@@ -1028,6 +1139,22 @@ class SoundEngine {
   public playGlooDeploy(): void {
     if (!this.ready() || !this.ctx || !this.masterGain || !this.noiseBuffer) return;
     const now = this.ctx.currentTime;
+    const glooBuf = this.sfxBuffers.get('gloo');
+    if (glooBuf) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = glooBuf;
+      const g = this.ctx.createGain();
+      const offset = glooBuf.duration > 0.9 ? 0.525 : 0;
+      const dur = Math.max(0.12, Math.min(0.62, glooBuf.duration - offset));
+      g.gain.setValueAtTime(6.8, now);
+      g.gain.setValueAtTime(6.8, now + Math.max(0.05, dur - 0.14));
+      g.gain.exponentialRampToValueAtTime(0.001, now + dur);
+      src.connect(g);
+      g.connect(this.masterGain);
+      src.start(now, offset, dur + 0.02);
+      return;
+    }
+
     const thud = this.ctx.createOscillator();
     const tg = this.ctx.createGain();
     thud.type = 'sine';
@@ -1055,6 +1182,64 @@ class SoundEngine {
       c.start(t);
       c.stop(t + 0.15);
     });
+  }
+
+  public playSafeZoneDamage(isStrong: boolean): void {
+    if (!this.ready() || !this.ctx || !this.masterGain) return;
+    const nowMs = performance.now();
+    if (nowMs - this.lastSafeDmgAudioMs < 820) return;
+    this.lastSafeDmgAudioMs = nowMs;
+
+    const now = this.ctx.currentTime;
+    let buf: AudioBuffer | undefined;
+    let offset = 0;
+    let dur = 0.42;
+    let peakGain = 6.8;
+
+    if (!isStrong) {
+      buf = this.sfxBuffers.get('safeWeak');
+      offset = 0.46;
+      dur = 0.42;
+      peakGain = 7.5;
+    } else if (Math.random() < 0.5) {
+      buf = this.sfxBuffers.get('safeStrong1') || this.sfxBuffers.get('safeStrong2');
+      offset = 0.08;
+      dur = 0.58;
+      peakGain = 6.5;
+    } else {
+      buf = this.sfxBuffers.get('safeStrong2') || this.sfxBuffers.get('safeStrong1');
+      offset = 0.44;
+      dur = 0.45;
+      peakGain = 6.8;
+    }
+
+    if (buf) {
+      const safeOff = buf.duration > offset + 0.08 ? offset : 0;
+      const safeDur = Math.max(0.08, Math.min(dur, buf.duration - safeOff));
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(peakGain, now);
+      g.gain.setValueAtTime(peakGain, now + Math.max(0.04, safeDur - 0.1));
+      g.gain.exponentialRampToValueAtTime(0.001, now + safeDur);
+      src.connect(g);
+      g.connect(this.masterGain);
+      src.start(now, safeOff, safeDur + 0.02);
+      return;
+    }
+
+    // Synth fallback if safe zone MP3s are still loading
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = isStrong ? 'sawtooth' : 'triangle';
+    osc.frequency.setValueAtTime(isStrong ? 210 : 145, now);
+    osc.frequency.exponentialRampToValueAtTime(isStrong ? 72 : 68, now + 0.22);
+    g.gain.setValueAtTime(isStrong ? 0.3 : 0.2, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+    osc.connect(g);
+    g.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.25);
   }
 
   public playGrenadePin(): void {

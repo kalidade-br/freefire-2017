@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { getAdamData } from './adamAssets';
 import { CharacterRig } from './characterBuilder';
 import { PlayerStance } from './types';
 
@@ -18,6 +19,8 @@ export interface CharacterAnimInput {
   isHealing?: boolean;
   isReloading?: boolean;
   isDriving?: boolean;
+  isSwimming?: boolean;
+  isOnSurfboard?: boolean;
   hasWeapon?: boolean;
   turnDeltaRad?: number;
   pitchRad: number;
@@ -35,9 +38,12 @@ export class CharacterAnimator {
   private landingDip = 0;
   private turnBank = 0;
   private reloadPhase = 0;
+  private fireHold = 0;
+  private combatUpperBlend = 0;
 
   public triggerFire(): void {
     this.recoil = 1.0;
+    this.fireHold = 0.55;
   }
 
   public triggerPunch(): void {
@@ -63,6 +69,8 @@ export class CharacterAnimator {
     this.landingDip = 0;
     this.turnBank = 0;
     this.reloadPhase = 0;
+    this.fireHold = 0;
+    this.combatUpperBlend = 0;
   }
 
   private playAdamClip(
@@ -116,6 +124,7 @@ export class CharacterAnimator {
     // 1. Death clip
     if (input.isDead) {
       rig.setParachuteVisible(false);
+      rig.setSurfboardVisible(false);
       rig.contactShadow.visible = false;
       vis.position.set(0, 0, 0);
       vis.rotation.set(0, 0, 0);
@@ -127,6 +136,7 @@ export class CharacterAnimator {
     // 2. Driving vehicle seated clip
     if (input.isDriving) {
       rig.setParachuteVisible(false);
+      rig.setSurfboardVisible(false);
       rig.contactShadow.visible = false;
       vis.position.set(0, 0.04, 0);
       vis.rotation.set(0, 0, -this.turnBank * 0.3);
@@ -138,6 +148,7 @@ export class CharacterAnimator {
     // 3. Skydiving / Parachuting
     if (input.isSkydiving) {
       rig.setParachuteVisible(false);
+      rig.setSurfboardVisible(false);
       rig.contactShadow.visible = false;
       vis.position.set(0, 0.95, 0);
       vis.rotation.set(1.22, 0, Math.sin(this.idleTime * 5) * 0.08 + this.turnBank);
@@ -148,6 +159,7 @@ export class CharacterAnimator {
 
     if (input.isParachuting) {
       rig.setParachuteVisible(true);
+      rig.setSurfboardVisible(false);
       rig.contactShadow.visible = false;
       vis.position.set(0, 0, 0);
       vis.rotation.set(0.08, 0, Math.sin(this.idleTime * 2.2) * 0.05 + this.turnBank * 0.5);
@@ -157,7 +169,8 @@ export class CharacterAnimator {
     }
 
     rig.setParachuteVisible(false);
-    rig.contactShadow.visible = input.isGrounded;
+    rig.setSurfboardVisible(Boolean(input.isOnSurfboard));
+    rig.contactShadow.visible = input.isGrounded && !input.isSwimming && !input.isOnSurfboard;
 
     // 4. Lobby Idle
     if (input.isLobby) {
@@ -165,6 +178,51 @@ export class CharacterAnimator {
       vis.rotation.set(0, 0, 0);
       this.playAdamClip(rig, 'Idle_Loop', 0.22, 1.0);
       mixer.update(dt);
+      return;
+    }
+
+    // 4b. Swimming in water (without surfboard) — Freestyle horizontal crawl when moving, treading water when idle
+    if (input.isSwimming && !input.isOnSurfboard) {
+      const bob = Math.sin(this.idleTime * 4.0) * 0.04;
+      this.playAdamClip(rig, 'Idle_Loop', 0.14, 0.85);
+      if (isMoving) {
+        vis.position.set(0, 0.34 + bob, -0.62);
+        vis.rotation.set(1.42, 0, Math.sin(this.idleTime * 5.6) * 0.15 + this.turnBank * 0.45);
+      } else {
+        vis.position.set(0, -0.10 + bob, 0);
+        vis.rotation.set(0.08, 0, Math.sin(this.idleTime * 2.4) * 0.04);
+      }
+      mixer.update(dt);
+      if (isMoving) {
+        const kick = Math.sin(this.idleTime * 9.8) * 0.3;
+        const phaseL = this.idleTime * 6.4;
+        const phaseR = phaseL + Math.PI;
+        if (rig.adamSpineBone) rig.adamSpineBone.rotateX(-0.28);
+        if (rig.adamHeadBone) rig.adamHeadBone.rotateX(-0.86);
+        if (rig.adamThighLBone) rig.adamThighLBone.rotateX(-0.2 + kick);
+        if (rig.adamThighRBone) rig.adamThighRBone.rotateX(-0.2 - kick);
+        if (rig.adamUpperArmLBone) {
+          rig.adamUpperArmLBone.rotateX(1.12 + Math.sin(phaseL) * 1.12);
+          rig.adamUpperArmLBone.rotateZ(0.32 + Math.max(0, Math.cos(phaseL)) * 0.45);
+        }
+        if (rig.adamUpperArmRBone) {
+          rig.adamUpperArmRBone.rotateX(1.12 + Math.sin(phaseR) * 1.12);
+          rig.adamUpperArmRBone.rotateZ(-0.32 - Math.max(0, Math.cos(phaseR)) * 0.45);
+        }
+      } else {
+        const scull = Math.sin(this.idleTime * 4.2);
+        if (rig.adamHeadBone) rig.adamHeadBone.rotateX(-0.08);
+        if (rig.adamThighLBone) rig.adamThighLBone.rotateX(-0.14 + scull * 0.22);
+        if (rig.adamThighRBone) rig.adamThighRBone.rotateX(-0.14 - scull * 0.22);
+        if (rig.adamUpperArmLBone) {
+          rig.adamUpperArmLBone.rotateZ(0.55 + scull * 0.2);
+          rig.adamUpperArmLBone.rotateX(0.45 + Math.cos(this.idleTime * 4.2) * 0.24);
+        }
+        if (rig.adamUpperArmRBone) {
+          rig.adamUpperArmRBone.rotateZ(-0.55 - scull * 0.2);
+          rig.adamUpperArmRBone.rotateX(0.45 - Math.cos(this.idleTime * 4.2) * 0.24);
+        }
+      }
       return;
     }
 
@@ -185,29 +243,79 @@ export class CharacterAnimator {
       return;
     }
 
-    // 6. Prone
+    // 6. Prone (Deitado de bruços: barriga e pernas retas no chão, cabeça e arma erguidas à frente)
     if (input.stance === 'prone') {
-      vis.position.set(0, 0.16, 0);
-      vis.rotation.set(1.38, 0, 0);
-      this.playAdamClip(
-        rig,
-        isMoving ? 'Crouch_Fwd_Loop' : 'Crouch_Idle_Loop',
-        0.18,
-        isMoving ? 0.75 : 0.6,
-      );
+      if (isMoving) {
+        this.walkPhase += dt * 5.8;
+      }
+      const crawl = isMoving ? Math.sin(this.walkPhase) : 0;
+      vis.position.set(0, 0.23, -0.74);
+      vis.rotation.set(1.45, 0, crawl * 0.07);
+      this.playAdamClip(rig, 'Idle_Loop', 0.14, 0.75);
       mixer.update(dt);
-      if (rig.adamHeadBone) {
-        rig.adamHeadBone.rotateX(-0.75 + input.pitchRad * 0.25);
+
+      if (rig.adamThighLBone) rig.adamThighLBone.rotateX(-0.22 + crawl * 0.14);
+      if (rig.adamThighRBone) rig.adamThighRBone.rotateX(-0.22 - crawl * 0.14);
+      if (rig.adamSpineBone) rig.adamSpineBone.rotateX(-0.64);
+      if (rig.adamHeadBone) rig.adamHeadBone.rotateX(-0.52 + input.pitchRad * 0.28);
+
+      const adamData = getAdamData();
+      if (hasWeapon && rig.adamUpperBones && adamData?.aimPoseQuats) {
+        const aimQuats = adamData.aimPoseQuats;
+        for (let i = 0; i < rig.adamUpperBones.length; i++) {
+          const entry = rig.adamUpperBones[i];
+          if (
+            entry.name.startsWith('clavicle_') ||
+            entry.name.startsWith('upperarm_') ||
+            entry.name.startsWith('lowerarm_') ||
+            entry.name.startsWith('hand_')
+          ) {
+            const targetQ = aimQuats[entry.name];
+            if (targetQ) entry.bone.quaternion.copy(targetQ);
+          }
+        }
+        if (rig.adamSpineBone) {
+          rig.adamSpineBone.rotateX(-this.recoil * 0.08);
+        }
+      } else {
+        if (rig.adamUpperArmLBone) {
+          rig.adamUpperArmLBone.rotateX(1.95 + crawl * 0.35);
+          rig.adamUpperArmLBone.rotateZ(0.28);
+        }
+        if (rig.adamUpperArmRBone) {
+          rig.adamUpperArmRBone.rotateX(1.95 - crawl * 0.35);
+          rig.adamUpperArmRBone.rotateZ(-0.28);
+        }
+        if (rig.adamLowerArmLBone) rig.adamLowerArmLBone.rotateX(0.65);
+        if (rig.adamLowerArmRBone) rig.adamLowerArmRBone.rotateX(0.65);
       }
       return;
     }
 
-    // 7. Standing / Crouching Ground Locomotion
-    vis.position.set(0, -this.landingDip * 0.08, 0);
+    // 7. Standing / Crouching / Surfboard Locomotion
+    const waveBob = input.isOnSurfboard ? Math.sin(this.idleTime * 4.4) * 0.024 : 0;
+    if (input.isOnSurfboard) {
+      rig.surfboardGroup.position.set(0, 0.02 + waveBob, 0);
+      rig.surfboardGroup.rotation.set(isMoving ? -0.055 : 0.015, 0, -this.turnBank * 0.85);
+    }
+
+    vis.position.set(0, (input.isOnSurfboard ? 0.08 + waveBob : 0) - this.landingDip * 0.08, 0);
     vis.rotation.set(
-      this.hitStagger * -0.14,
+      this.hitStagger * -0.14 + (input.isOnSurfboard && isMoving ? -0.04 : 0),
       0,
-      isMoving ? -this.turnBank * 0.42 : 0,
+      isMoving ? -this.turnBank * (input.isOnSurfboard ? 0.68 : 0.42) : 0,
+    );
+
+    const combatStance =
+      hasWeapon &&
+      !input.isHealing &&
+      !input.isReloading &&
+      (input.isAiming || input.isFiring || this.fireHold > 0 || this.recoil > 0.05);
+    this.combatUpperBlend = THREE.MathUtils.damp(
+      this.combatUpperBlend,
+      combatStance ? 1 : 0,
+      combatStance ? 42 : 14,
+      dt,
     );
 
     if (input.isHealing) {
@@ -222,20 +330,32 @@ export class CharacterAnimator {
         0.14,
         isMoving ? THREE.MathUtils.clamp(input.speed / 3.2, 0.75, 1.35) : 1.0,
       );
-    } else if (!input.isGrounded) {
+    } else if (!input.isGrounded && !input.isOnSurfboard) {
       this.playAdamClip(rig, 'Jump_Loop', 0.12, 1.0);
     } else if (input.isReloading && hasWeapon) {
       this.playAdamClip(rig, 'Pistol_Reload', 0.12, 1.35);
+    } else if (input.isOnSurfboard) {
+      if (hasWeapon) {
+        if (input.isFiring || this.recoil > 0.25 || this.fireHold > 0.22) {
+          this.playAdamClip(rig, 'Pistol_Shoot', 0.06, 1.35);
+        } else if (input.isAiming || combatStance) {
+          this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.1, 1.0);
+        } else {
+          this.playAdamClip(rig, 'Pistol_Idle_Loop', 0.14, 1.0);
+        }
+      } else {
+        this.playAdamClip(rig, 'Idle_Loop', 0.14, 1.0);
+      }
     } else if (isMoving) {
-      if (input.isSprinting && !input.isAiming) {
+      if (input.isSprinting && !combatStance) {
         this.playAdamClip(
           rig,
           'Sprint_Loop',
           0.14,
           THREE.MathUtils.clamp(input.speed / 7.2, 0.85, 1.35),
         );
-      } else if (hasWeapon && (input.isAiming || input.isFiring || this.recoil > 0.15) && input.speed < 2.2) {
-        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.12, 1.0);
+      } else if (combatStance && input.speed < 1.6) {
+        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.1, 1.0);
       } else {
         this.playAdamClip(
           rig,
@@ -245,10 +365,10 @@ export class CharacterAnimator {
         );
       }
     } else if (hasWeapon) {
-      if (input.isFiring || this.recoil > 0.45) {
-        this.playAdamClip(rig, 'Pistol_Shoot', 0.08, 1.3);
-      } else if (input.isAiming) {
-        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.12, 1.0);
+      if (input.isFiring || this.recoil > 0.25 || this.fireHold > 0.22) {
+        this.playAdamClip(rig, 'Pistol_Shoot', 0.06, 1.35);
+      } else if (input.isAiming || combatStance) {
+        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.1, 1.0);
       } else {
         this.playAdamClip(rig, 'Pistol_Idle_Loop', 0.16, 1.0);
       }
@@ -258,12 +378,25 @@ export class CharacterAnimator {
 
     mixer.update(dt);
 
+    // Lock upper body & gun forward toward target while firing/aiming even during movement
+    const adamData = getAdamData();
+    if (this.combatUpperBlend > 0.01 && rig.adamUpperBones && adamData?.aimPoseQuats) {
+      const aimQuats = adamData.aimPoseQuats;
+      for (let i = 0; i < rig.adamUpperBones.length; i++) {
+        const entry = rig.adamUpperBones[i];
+        const targetQ = aimQuats[entry.name];
+        if (targetQ) {
+          entry.bone.quaternion.slerp(targetQ, this.combatUpperBlend);
+        }
+      }
+    }
+
     // Subtle additive bone pitch & recoil kick on spine/head while standing/aiming
-    if (rig.adamSpineBone && (input.isAiming || input.isFiring || this.recoil > 0.05)) {
-      rig.adamSpineBone.rotateX(-input.pitchRad * 0.34 - this.recoil * 0.08);
+    if (rig.adamSpineBone && (combatStance || this.combatUpperBlend > 0.05)) {
+      rig.adamSpineBone.rotateX(-input.pitchRad * 0.44 - this.recoil * 0.12);
     }
     if (rig.adamHeadBone) {
-      rig.adamHeadBone.rotateX(-input.pitchRad * 0.25);
+      rig.adamHeadBone.rotateX(-input.pitchRad * 0.24);
     }
   }
 
@@ -271,6 +404,7 @@ export class CharacterAnimator {
     const dt = input.dt;
     this.idleTime += dt;
     this.recoil = THREE.MathUtils.damp(this.recoil, 0, 18, dt);
+    this.fireHold = Math.max(0, this.fireHold - dt);
     this.punchTimer = Math.max(0, this.punchTimer - dt);
     this.hitFlash = THREE.MathUtils.damp(this.hitFlash, 0, 10, dt);
     this.hitStagger = THREE.MathUtils.damp(this.hitStagger, 0, 12, dt);
@@ -377,7 +511,34 @@ export class CharacterAnimator {
     }
 
     rig.setParachuteVisible(false);
-    rig.contactShadow.visible = input.isGrounded;
+    rig.setSurfboardVisible(Boolean(input.isOnSurfboard));
+    rig.contactShadow.visible = input.isGrounded && !input.isSwimming && !input.isOnSurfboard;
+
+    if (input.isOnSurfboard) {
+      const waveBob = Math.sin(this.idleTime * 4.4) * 0.024;
+      rig.surfboardGroup.position.set(0, 0.02 + waveBob, 0);
+      rig.surfboardGroup.rotation.set(input.speed > 0.35 ? -0.055 : 0.015, 0, -this.turnBank * 0.85);
+    }
+
+    if (input.isSwimming && !input.isOnSurfboard) {
+      const swimStroke = Math.sin(this.idleTime * 6.5);
+      const kick = Math.sin(this.idleTime * 9.5);
+      const isSwMoving = input.speed > 0.35;
+      rig.pelvis.position.y = THREE.MathUtils.damp(rig.pelvis.position.y, isSwMoving ? 0.52 : 0.72, 10, dt);
+      rig.pelvis.rotation.x = THREE.MathUtils.damp(rig.pelvis.rotation.x, isSwMoving ? 1.44 : 0.12, 10, dt);
+      rig.pelvis.rotation.z = swimStroke * (isSwMoving ? 0.14 : 0.04) - this.turnBank * 0.4;
+      rig.torso.rotation.set(isSwMoving ? -0.26 : 0, 0, 0);
+      rig.headGroup.rotation.set(isSwMoving ? -0.88 : -0.1, 0, 0);
+      rig.leftShoulder.rotation.set(isSwMoving ? -2.2 + swimStroke * 1.1 : -0.45, 0, isSwMoving ? 0.28 : 0.52);
+      rig.rightShoulder.rotation.set(isSwMoving ? -2.2 - swimStroke * 1.1 : -0.45, 0, isSwMoving ? -0.28 : -0.52);
+      rig.leftElbow.rotation.set(-0.3, 0, 0);
+      rig.rightElbow.rotation.set(-0.3, 0, 0);
+      rig.leftHip.rotation.set(kick * (isSwMoving ? 0.34 : 0.22), 0, 0.08);
+      rig.rightHip.rotation.set(-kick * (isSwMoving ? 0.34 : 0.22), 0, -0.08);
+      rig.leftKnee.rotation.set(0.14, 0, 0);
+      rig.rightKnee.rotation.set(0.14, 0, 0);
+      return;
+    }
 
     if (input.isLobby) {
       const breath = Math.sin(this.idleTime * 2.0);
@@ -441,32 +602,32 @@ export class CharacterAnimator {
     }
 
     if (input.stance === 'prone') {
-      const crawl = Math.sin(this.walkPhase) * 0.26 * strideBlend;
-      rig.pelvis.position.y = THREE.MathUtils.damp(rig.pelvis.position.y, 0.22, 12, dt);
-      rig.pelvis.rotation.x = THREE.MathUtils.damp(rig.pelvis.rotation.x, 1.42, 12, dt);
-      rig.pelvis.rotation.z = THREE.MathUtils.damp(rig.pelvis.rotation.z, crawl * 0.22, 12, dt);
-      rig.torso.rotation.x = THREE.MathUtils.damp(rig.torso.rotation.x, -0.25, 10, dt);
+      const crawl = Math.sin(this.walkPhase) * 0.24 * strideBlend;
+      rig.pelvis.position.y = THREE.MathUtils.damp(rig.pelvis.position.y, 0.22, 14, dt);
+      rig.pelvis.rotation.x = THREE.MathUtils.damp(rig.pelvis.rotation.x, 1.46, 14, dt);
+      rig.pelvis.rotation.z = THREE.MathUtils.damp(rig.pelvis.rotation.z, crawl * 0.18, 12, dt);
+      rig.torso.rotation.x = THREE.MathUtils.damp(rig.torso.rotation.x, -0.46, 12, dt);
       rig.headGroup.rotation.x = THREE.MathUtils.damp(
         rig.headGroup.rotation.x,
-        -0.95 + input.pitchRad * 0.3,
-        10,
+        -0.84 + input.pitchRad * 0.28,
+        12,
         dt,
       );
       rig.rightShoulder.rotation.x = THREE.MathUtils.damp(
         rig.rightShoulder.rotation.x,
-        -1.35 - this.recoil * 0.22,
-        18,
+        -1.92 - this.recoil * 0.2,
+        20,
         dt,
       );
-      rig.rightShoulder.rotation.y = 0.12;
-      rig.rightShoulder.rotation.z = -0.1;
-      rig.rightElbow.rotation.set(-0.85, 0, 0);
-      rig.leftShoulder.rotation.set(-1.3 + crawl, -0.25, 0.15);
-      rig.leftElbow.rotation.set(-0.9, 0, 0);
-      rig.leftHip.rotation.set(0.08 + crawl * 0.5, 0, 0.14);
-      rig.rightHip.rotation.set(0.08 - crawl * 0.5, 0, -0.14);
-      rig.leftKnee.rotation.set(0.18, 0, 0);
-      rig.rightKnee.rotation.set(0.18, 0, 0);
+      rig.rightShoulder.rotation.y = 0.14;
+      rig.rightShoulder.rotation.z = -0.14;
+      rig.rightElbow.rotation.set(-0.92, 0, 0);
+      rig.leftShoulder.rotation.set(-1.85 + crawl, -0.22, 0.16);
+      rig.leftElbow.rotation.set(-0.92, 0, 0);
+      rig.leftHip.rotation.set(0.04 + crawl * 0.35, 0, 0.1);
+      rig.rightHip.rotation.set(0.04 - crawl * 0.35, 0, -0.1);
+      rig.leftKnee.rotation.set(0.08, 0, 0);
+      rig.rightKnee.rotation.set(0.08, 0, 0);
       return;
     }
 

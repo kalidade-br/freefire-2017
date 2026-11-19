@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { getAdamData } from './adamAssets';
 import { soundEngine } from './audio';
 import { CharacterAnimator } from './characterAnimator';
 import { CharacterRig, createCharacterRig } from './characterBuilder';
@@ -12,6 +13,7 @@ import {
   AttachmentKind,
   AttachmentSlotKey,
   BackpackItem,
+  BuildingNavZone,
   CharacterConfig,
   DamagePopup,
   DeathBoxItemEntry,
@@ -29,6 +31,7 @@ import {
   ScopeType,
   VENDING_SHOP_OFFERS,
   VehicleHudState,
+  WalkablePlatform,
   WEAPONS,
   WeaponAttachments,
   WeaponDef,
@@ -39,11 +42,13 @@ import {
 } from './types';
 import { preloadAdamAssets } from './adamAssets';
 import {
+  BERMUDA_HALF,
   botSurfaceHeightAt,
   createIslandWorld,
   LootVisual,
   nearestBridgePos,
   riverCenterZ,
+  SENTOSA_CENTER,
   setBotAdamClip,
   TargetDummy,
   upgradeBotsToAdam,
@@ -53,11 +58,11 @@ import {
 } from './worldBuilder';
 
 const SAFE_ZONE_PHASES = [
-  { waitSec: 90, shrinkSec: 60, targetRadius: 320, damagePerSec: 2 },
-  { waitSec: 75, shrinkSec: 55, targetRadius: 195, damagePerSec: 5 },
-  { waitSec: 60, shrinkSec: 45, targetRadius: 110, damagePerSec: 10 },
-  { waitSec: 45, shrinkSec: 40, targetRadius: 48, damagePerSec: 16 },
-  { waitSec: 35, shrinkSec: 35, targetRadius: 10, damagePerSec: 25 },
+  { waitSec: 95, shrinkSec: 65, targetRadius: 560, damagePerSec: 2 },
+  { waitSec: 80, shrinkSec: 60, targetRadius: 340, damagePerSec: 5 },
+  { waitSec: 65, shrinkSec: 50, targetRadius: 190, damagePerSec: 10 },
+  { waitSec: 50, shrinkSec: 40, targetRadius: 85, damagePerSec: 16 },
+  { waitSec: 35, shrinkSec: 35, targetRadius: 18, damagePerSec: 25 },
 ];
 
 const BACKPACK_CAPACITIES: Record<1 | 2 | 3, number> = {
@@ -164,6 +169,13 @@ export class BattleRoyaleEngine {
     opacity: 0.9,
   });
   private solidObstaclesNoTerrain: THREE.Object3D[] = [];
+  private solidObstaclesActive: THREE.Object3D[] = [];
+  private activeObstaclesLastRefresh = -1;
+  private _colScratch: WorldObbCollider[] = [];
+  private _platScratch: WalkablePlatform[] = [];
+  private _botSteerCols: WorldObbCollider[] = [];
+  private _botProbeCols: WorldObbCollider[] = [];
+  private _botNavOut = { x: 0, z: 0, dirX: 0, dirZ: 0 };
   private scratchTargetMeshes: THREE.Object3D[] = [];
   private targetById = new Map<string, TargetDummy>();
   private botOrderScratch: number[] = [];
@@ -290,12 +302,15 @@ export class BattleRoyaleEngine {
   private yaw = 0;
   private characterYaw = 0;
   private combatFacingTimer = 0;
+  private combatPoseTimer = 0;
   private pitch = -0.14;
   private camPosCurrent = new THREE.Vector3();
   private camLookCurrent = new THREE.Vector3();
   private camDistCurrent = 3.75;
+  private camSafeDist = 3.75;
   private camShoulderCurrent = 0.42;
   private camShake = 0;
+  private vehicleLookOverrideTimer = 0;
   private lobbyOrbitYaw = 0.22;
   private lobbyDragging = false;
   private lobbyLastX = 0;
@@ -303,6 +318,9 @@ export class BattleRoyaleEngine {
   private stance: PlayerStance = 'stand';
   private isGrounded = true;
   private isSprinting = false;
+  private inWater = false;
+  private isSwimming = false;
+  private isOnSurfboard = false;
   private isAiming = false;
   private wasAiming = false;
   private lockedTargetId: string | null = null;
@@ -357,7 +375,9 @@ export class BattleRoyaleEngine {
       attachments: emptyAttachments(),
     },
   };
-  private lastShotTime = 0;
+  private slotLastShotTime: Record<WeaponSlotId, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
+  private prevWeaponSlot: WeaponSlotId = 1;
+  private hudDirty = false;
   private consecutiveShots = 0;
   private wasFireDown = false;
   private reloadTimer = 0;
@@ -374,18 +394,18 @@ export class BattleRoyaleEngine {
   private zoneShrinkTotal = 60;
   private zoneCurrentX = 0;
   private zoneCurrentZ = 0;
-  private zoneCurrentRadius = 510;
+  private zoneCurrentRadius = 890;
   private zoneStartX = 0;
   private zoneStartZ = 0;
-  private zoneStartRadius = 510;
+  private zoneStartRadius = 890;
   private zoneNextX = 0;
   private zoneNextZ = 0;
-  private zoneNextRadius = 320;
+  private zoneNextRadius = 560;
   private zoneDmgAccum = 0;
 
   private airplaneProgress = 0; // 0..1 across island
-  private planeStart = new THREE.Vector3(-490, 118, -320);
-  private planeEnd = new THREE.Vector3(490, 118, 320);
+  private planeStart = new THREE.Vector3(-870, 128, -560);
+  private planeEnd = new THREE.Vector3(870, 128, 560);
   private aliveCount = 51;
   private kills = 0;
   private damageDealt = 0;
@@ -477,6 +497,7 @@ export class BattleRoyaleEngine {
     this.solidObstaclesNoTerrain = this.world.obstacleMeshes.filter(
       (m) => m.name !== 'terrain-mesh',
     );
+    this.refreshActiveObstacles();
     for (let i = 0; i < 16; i++) {
       const mesh = new THREE.Mesh(this.tracerGeo, this.tracerMat);
       mesh.visible = false;
@@ -649,15 +670,15 @@ export class BattleRoyaleEngine {
   }
 
   private getEnemyRenderDist(): number {
-    if (this.settings.quality === 'low') return 58;
-    if (this.settings.quality === 'high') return 122;
-    return 86;
+    if (this.settings.quality === 'low') return 130;
+    if (this.settings.quality === 'high') return 230;
+    return 175;
   }
 
   private getLootRenderDist(): number {
-    if (this.settings.quality === 'low') return 24;
-    if (this.settings.quality === 'high') return 52;
-    return 36;
+    if (this.settings.quality === 'low') return 28;
+    if (this.settings.quality === 'high') return 56;
+    return 40;
   }
 
   public applyQualitySettings(settings: GameSettings): void {
@@ -673,15 +694,14 @@ export class BattleRoyaleEngine {
             ? Math.min(window.devicePixelRatio, 2)
             : Math.min(window.devicePixelRatio, 1.35);
     this.renderer.setPixelRatio(scale);
-    this.renderer.shadowMap.enabled = !this.isSoftwareGl && settings.quality !== 'low';
-    this.renderer.shadowMap.type =
-      settings.quality === 'high' ? THREE.PCFShadowMap : THREE.BasicShadowMap;
+    this.renderer.shadowMap.enabled = !this.isSoftwareGl && settings.quality === 'high';
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMappingExposure =
-      settings.quality === 'low' ? 1.02 : settings.quality === 'high' ? 1.14 : 1.08;
+      settings.quality === 'low' ? 1.12 : settings.quality === 'high' ? 1.16 : 1.15;
     if (this.world) {
       this.world.applyQuality(settings.quality, this.isSoftwareGl);
       this.world.camera.far =
-        settings.quality === 'low' ? 320 : settings.quality === 'high' ? 620 : 440;
+        settings.quality === 'low' ? 960 : settings.quality === 'high' ? 1520 : 1220;
       this.world.camera.updateProjectionMatrix();
     }
   }
@@ -1097,22 +1117,71 @@ export class BattleRoyaleEngine {
     this.playerRig.setBackWeapons(holstered[1] ?? null, holstered[0] ?? null);
   }
 
-  public selectWeaponSlot(slot: WeaponSlotId): void {
-    if (this.isDead || this.isPlayerDowned) return;
-    if (slot !== 4 && !this.weapons[slot]) return;
+  private performSlotSwitch(slot: WeaponSlotId): boolean {
+    if (this.isDead || this.isPlayerDowned) return false;
+    if (slot !== 4 && !this.weapons[slot]) return false;
     this.isPlacingGloo = false;
     this.isHoldingGrenade = false;
-    if (slot !== this.activeSlot) {
-      this.activeSlot = slot;
-      this.isReloading = false;
-      this.reloadTimer = 0;
-      this.lockedTargetId = null;
-      this.aimBreakAccum = 0;
-      this.bugDoCapaTimer = 0;
-      this.consecutiveShots = 0;
-      this.syncPlayerWeaponAndBackVisuals();
-      soundEngine.playWeaponSwitch();
+    if (slot === this.activeSlot) return false;
+
+    const prevSlot = this.activeSlot;
+    if (prevSlot === 4 || this.weapons[prevSlot]) {
+      this.prevWeaponSlot = prevSlot;
     }
+    this.activeSlot = slot;
+    this.isReloading = false;
+    this.reloadTimer = 0;
+    this.lockedTargetId = null;
+    this.aimBreakAccum = 0;
+    this.bugDoCapaTimer = 0;
+    this.consecutiveShots = 0;
+
+    // Free Fire Double-AWM / Quick-Swap fluidity: switching guns cancels long bolt/pump lock
+    const newW = this.getActiveWeaponState();
+    if (newW) {
+      const newDef = WEAPONS[newW.weaponId];
+      if (newDef.category === 'SR' || newDef.category === 'SG') {
+        const nowMs = performance.now();
+        const minReadyThreshold = nowMs - Math.max(0, newDef.fireRateMs - 200);
+        if (this.slotLastShotTime[slot] > minReadyThreshold) {
+          this.slotLastShotTime[slot] = minReadyThreshold;
+        }
+      }
+      if (newDef.category === 'HG') {
+        this.isAiming = false;
+        this.input.setTouchAim(false);
+      }
+    } else {
+      this.isAiming = false;
+      this.input.setTouchAim(false);
+    }
+
+    this.syncPlayerWeaponAndBackVisuals();
+    soundEngine.playWeaponSwitch();
+    this.hudDirty = true;
+    return true;
+  }
+
+  public quickSwapWeapon(): boolean {
+    const candidates: WeaponSlotId[] = [];
+    if (this.prevWeaponSlot !== this.activeSlot && (this.prevWeaponSlot === 4 || this.weapons[this.prevWeaponSlot])) {
+      candidates.push(this.prevWeaponSlot);
+    }
+    const fallbackOrder: readonly WeaponSlotId[] = [1, 2, 3, 4];
+    for (let i = 0; i < fallbackOrder.length; i++) {
+      const s = fallbackOrder[i];
+      if (s !== this.activeSlot && (s === 4 || this.weapons[s])) {
+        candidates.push(s);
+      }
+    }
+    for (let i = 0; i < candidates.length; i++) {
+      if (this.performSlotSwitch(candidates[i])) return true;
+    }
+    return false;
+  }
+
+  public selectWeaponSlot(slot: WeaponSlotId): void {
+    this.performSlotSwitch(slot);
   }
 
   public setActiveWeaponScope(scope: ScopeType): void {
@@ -1122,6 +1191,7 @@ export class BattleRoyaleEngine {
     if (!def.allowsCustomScope) return;
     if (!this.ownedScopes.includes(scope)) return;
     active.scope = scope;
+    this.hudDirty = true;
     soundEngine.playUiClick(740);
   }
 
@@ -1133,18 +1203,43 @@ export class BattleRoyaleEngine {
     const idx = this.ownedScopes.indexOf(active.scope);
     const next = this.ownedScopes[(idx + 1) % this.ownedScopes.length];
     active.scope = next;
+    this.hudDirty = true;
     soundEngine.playUiClick(740);
   }
 
   public useMedkit(): void {
     const state = this.stateMachine.getState();
     if (state !== GameState.PLAYING && state !== GameState.WAITING) return;
-    if (this.isDead || this.isPlayerDowned || this.usingMedkit) return;
+    if (this.isDead || this.isPlayerDowned || this.usingMedkit || this.isSwimming) return;
     if (this.medkitCount <= 0 || this.hp >= this.maxHp) return;
     this.usingMedkit = true;
     this.medkitTimer = this.medkitDuration;
     this.isReloading = false;
+    this.hudDirty = true;
     soundEngine.startMedkitAudio();
+  }
+
+  private updateMedkitChannel(dt: number, cancelOnFireOrSprint: boolean): void {
+    if (!this.usingMedkit) return;
+    const fireDown = this.isSwimming ? false : this.input.getFireActive();
+    if (cancelOnFireOrSprint && (fireDown || this.input.isSprinting)) {
+      this.usingMedkit = false;
+      this.medkitTimer = 0;
+      this.hudDirty = true;
+      soundEngine.stopMedkitAudio();
+      return;
+    }
+    this.medkitTimer -= dt;
+    if (this.medkitTimer <= 0) {
+      this.usingMedkit = false;
+      this.medkitTimer = 0;
+      if (this.medkitCount > 0) {
+        this.medkitCount -= 1;
+        this.hp = Math.min(this.maxHp, this.hp + 75);
+        soundEngine.completeMedkitAudio();
+      }
+      this.hudDirty = true;
+    }
   }
 
   public dropMedkit(): void {
@@ -1375,6 +1470,29 @@ export class BattleRoyaleEngine {
     soundEngine.playUiClick(400);
   }
 
+  public swapWeaponSlots(slotA: 1 | 2 | 3, slotB: 1 | 2 | 3): void {
+    if (slotA === slotB) return;
+    if (slotA === 3 || slotB === 3) return;
+    const wA = this.weapons[slotA];
+    const wB = this.weapons[slotB];
+    if (!wA && !wB) return;
+    this.weapons[slotA] = wB;
+    this.weapons[slotB] = wA;
+    const tmpShot = this.slotLastShotTime[slotA];
+    this.slotLastShotTime[slotA] = this.slotLastShotTime[slotB];
+    this.slotLastShotTime[slotB] = tmpShot;
+    if (this.activeSlot === slotA) {
+      this.activeSlot = slotB;
+    } else if (this.activeSlot === slotB) {
+      this.activeSlot = slotA;
+    }
+    this.isReloading = false;
+    this.reloadTimer = 0;
+    this.syncPlayerWeaponAndBackVisuals();
+    this.hudDirty = true;
+    soundEngine.playWeaponSwitch();
+  }
+
   public dropWeaponSlot(slot: 1 | 2 | 3): void {
     const w = this.weapons[slot];
     if (!w) return;
@@ -1470,8 +1588,8 @@ export class BattleRoyaleEngine {
   ): void {
     const fx = -Math.sin(this.yaw);
     const fz = -Math.cos(this.yaw);
-    const dx = THREE.MathUtils.clamp(this.pos.x + fx * 1.45, -505, 505);
-    const dz = THREE.MathUtils.clamp(this.pos.z + fz * 1.45, -505, 505);
+    const dx = THREE.MathUtils.clamp(this.pos.x + fx * 1.45, -BERMUDA_HALF + 15, BERMUDA_HALF - 15);
+    const dz = THREE.MathUtils.clamp(this.pos.z + fz * 1.45, -BERMUDA_HALF + 15, BERMUDA_HALF - 15);
     const dy = this.resolveFloorHeight(dx, dz, this.pos.y + 0.5) + 0.04;
     this.world.spawnDroppedLoot({
       ...partial,
@@ -1483,7 +1601,7 @@ export class BattleRoyaleEngine {
 
   private resetPlayerForWaiting(): void {
     this.waitingTimer = 10;
-    this.resetPlayerForMatch(-215, -205, true);
+    this.resetPlayerForMatch(-345, -495, true);
   }
 
   private initSafeZone(): void {
@@ -1493,14 +1611,14 @@ export class BattleRoyaleEngine {
     this.zoneShrinkTotal = SAFE_ZONE_PHASES[0].shrinkSec;
     this.zoneCurrentX = 0;
     this.zoneCurrentZ = 0;
-    this.zoneCurrentRadius = 510;
+    this.zoneCurrentRadius = 890;
     this.zoneStartX = 0;
     this.zoneStartZ = 0;
-    this.zoneStartRadius = 510;
+    this.zoneStartRadius = 890;
     this.zoneDmgAccum = 0;
-    this.pickNextZoneCenter(0, 0, 510, SAFE_ZONE_PHASES[0].targetRadius);
+    this.pickNextZoneCenter(0, 0, 890, SAFE_ZONE_PHASES[0].targetRadius);
     this.world.safeZoneMesh.position.set(0, 75, 0);
-    this.world.safeZoneMesh.scale.set(510, 1, 510);
+    this.world.safeZoneMesh.scale.set(890, 1, 890);
     this.world.safeZoneMesh.visible = false;
   }
 
@@ -1513,12 +1631,12 @@ export class BattleRoyaleEngine {
     const maxShift = Math.max(0, currR - nextR) * 0.62;
     let nx = currX;
     let nz = currZ;
-    for (let attempt = 0; attempt < 12; attempt++) {
+    for (let attempt = 0; attempt < 16; attempt++) {
       const ang = Math.random() * Math.PI * 2;
       const dist = Math.random() * maxShift;
       const candX = currX + Math.cos(ang) * dist;
       const candZ = currZ + Math.sin(ang) * dist;
-      if (Math.hypot(candX, candZ) <= 340 && this.world.groundHeightAt(candX, candZ) > 0.6) {
+      if (Math.hypot(candX, candZ) <= 640 && this.world.groundHeightAt(candX, candZ) > 0.6) {
         nx = candX;
         nz = candZ;
         break;
@@ -1541,6 +1659,7 @@ export class BattleRoyaleEngine {
     this.yaw = 0;
     this.characterYaw = 0;
     this.combatFacingTimer = 0;
+    this.combatPoseTimer = 0;
     this.pitch = -0.14;
     this.stance = 'stand';
     this.isGrounded = true;
@@ -1558,9 +1677,14 @@ export class BattleRoyaleEngine {
     this.revivingBotId = null;
     this.reviveTimer = 0;
     this.camDistCurrent = 3.75;
+    this.camSafeDist = 3.75;
     this.camShoulderCurrent = 0.42;
+    this.vehicleLookOverrideTimer = 0;
     this.isDead = false;
     this.isPlayerDowned = false;
+    this.inWater = false;
+    this.isSwimming = false;
+    this.isOnSurfboard = false;
     this.playerBleedHp = 100;
     this.playerRevivingAllyId = null;
     this.deathTimer = 0;
@@ -1594,6 +1718,8 @@ export class BattleRoyaleEngine {
 
     // Start ONLY with Glock G18 (Slot 3) when dropping into Battle Royale
     this.activeSlot = 3;
+    this.prevWeaponSlot = 1;
+    this.slotLastShotTime = { 1: 0, 2: 0, 3: 0, 4: 0 };
     this.ownedScopes = ['none'];
     this.weapons = {
       1: null,
@@ -1650,8 +1776,10 @@ export class BattleRoyaleEngine {
     }
     const chosenAllyNicks = shuffledNicks.slice(0, 3);
 
-    // Pick land POIs excluding bridges
-    const landPois = this.world.pois.filter((p) => !p.name.startsWith('PONTE'));
+    // Pick land POIs excluding bridges and Nurek Dam
+    const landPois = this.world.pois.filter(
+      (p) => !p.name.startsWith('PONTE') && !p.name.startsWith('NUREK'),
+    );
 
     // Reset all 50 bots with Solo/Duo/Squad team assignments
     for (let i = 0; i < this.world.targets.length; i++) {
@@ -1698,6 +1826,8 @@ export class BattleRoyaleEngine {
       }
       b.weaponId = 'g18';
       b.secondaryWeaponId = undefined;
+      b.ammoInMag = WEAPONS.g18.magSize;
+      b.reloadTimer = 0;
       b.ammoCount = 45;
       b.medkits = 1;
       b.gloos = 2;
@@ -1711,6 +1841,14 @@ export class BattleRoyaleEngine {
       b.revivingMateId = null;
       b.reviveTimer = 0;
       b.huntTimer = 1.0 + (i % 5) * 0.55;
+      b.stuckTimer = 0;
+      b.steerSign = i % 2 === 0 ? 1 : -1;
+      b.steerLockTimer = 0;
+      b.navCheckTimer = 0;
+      b.vaultTimer = 0;
+      b.escapeTimer = 0;
+      b.badLootId = null;
+      b.badLootTimer = 0;
       b.vy = 0;
       b.targetId = null;
       b.aiTimer = 0.2 + ((i * 19) % 15) * 0.05;
@@ -1761,17 +1899,23 @@ export class BattleRoyaleEngine {
 
       if (isWaitingLobby) {
         b.airState = 'ground';
-        const wx = -215 + Math.cos(ang) * (8 + (i % 5) * 6);
-        const wz = -205 + Math.sin(ang) * (8 + (i % 5) * 6);
+        const wx = -345 + Math.cos(ang) * (8 + (i % 5) * 6);
+        const wz = -495 + Math.sin(ang) * (8 + (i % 5) * 6);
         const ws = botSurfaceHeightAt(wx, wz);
         const sy = Math.max(1.0, ws.y);
         b.group.position.set(wx, sy, wz);
+        this.resolveEntityHorizontalCollisions(b.group.position, 0.44, null, false);
+        this.resolveEntityHorizontalCollisions(b.group.position, 0.44, null, false);
+        b.group.position.y = Math.max(0.8, this.resolveFloorHeight(b.group.position.x, b.group.position.z, b.group.position.y + 0.5));
+        b.navCheckX = b.group.position.x;
+        b.navCheckZ = b.group.position.z;
         b.group.rotation.set(0, (i * 1.1) % (Math.PI * 2), 0);
         b.group.visible = i < 16;
         if (b.parachuteMesh) b.parachuteMesh.visible = false;
         b.aiState = 'roam';
-        b.goalX = wx + Math.cos(i) * 14;
-        b.goalZ = wz + Math.sin(i) * 14;
+        b.goalX = b.group.position.x + Math.cos(i) * 14;
+        b.goalY = b.group.position.y;
+        b.goalZ = b.group.position.z + Math.sin(i) * 14;
       } else if (startOnGround) {
         b.airState = 'ground';
         const gx = b.isAlly ? startX + ((i === 0 ? -3.4 : i === 1 ? 3.4 : 0)) : lx;
@@ -1779,12 +1923,18 @@ export class BattleRoyaleEngine {
         const gs = botSurfaceHeightAt(gx, gz);
         const gy = Math.max(0.8, gs.y);
         b.group.position.set(gx, gy, gz);
+        this.resolveEntityHorizontalCollisions(b.group.position, 0.44, null, false);
+        this.resolveEntityHorizontalCollisions(b.group.position, 0.44, null, false);
+        b.group.position.y = Math.max(0.8, this.resolveFloorHeight(b.group.position.x, b.group.position.z, b.group.position.y + 0.5));
+        b.navCheckX = b.group.position.x;
+        b.navCheckZ = b.group.position.z;
         b.group.rotation.set(0, 0, 0);
         b.group.visible = true;
         if (b.parachuteMesh) b.parachuteMesh.visible = false;
         b.aiState = b.isAlly ? 'roam' : 'loot';
-        b.goalX = gx;
-        b.goalZ = gz;
+        b.goalX = b.group.position.x;
+        b.goalY = b.group.position.y;
+        b.goalZ = b.group.position.z;
       } else {
         b.airState = 'inPlane';
         if (b.isAlly) {
@@ -1801,6 +1951,7 @@ export class BattleRoyaleEngine {
         if (b.parachuteMesh) b.parachuteMesh.visible = false;
         b.aiState = 'loot';
         b.goalX = lx;
+        b.goalY = 1.0;
         b.goalZ = lz;
       }
     }
@@ -1818,9 +1969,9 @@ export class BattleRoyaleEngine {
   private enterAirplanePhase(): void {
     this.airplaneProgress = 0;
     const angle = Math.random() * Math.PI * 2;
-    const r = 505;
-    this.planeStart.set(Math.cos(angle) * r, 118, Math.sin(angle) * r);
-    this.planeEnd.set(-Math.cos(angle) * r, 118, -Math.sin(angle) * r);
+    const r = 870;
+    this.planeStart.set(Math.cos(angle) * r, 128, Math.sin(angle) * r);
+    this.planeEnd.set(-Math.cos(angle) * r, 128, -Math.sin(angle) * r);
     this.world.airplaneGroup.visible = true;
     this.world.airplaneGroup.position.copy(this.planeStart);
     this.world.airplaneGroup.lookAt(this.planeEnd);
@@ -1852,8 +2003,9 @@ export class BattleRoyaleEngine {
       this.renderActiveScene();
 
       this.hudEmitAccum += dt;
-      if (this.hudEmitAccum >= 0.05) {
+      if (this.hudDirty || this.hudEmitAccum >= 0.025) {
         this.hudEmitAccum = 0;
+        this.hudDirty = false;
         this.onHudUpdate(this.buildHudSnapshot());
       }
 
@@ -1981,6 +2133,10 @@ export class BattleRoyaleEngine {
       this.world.camera.position,
       inMatchView ? this.getLootRenderDist() : 120,
     );
+    if (this.elapsed - this.activeObstaclesLastRefresh >= 0.08 || this.activeObstaclesLastRefresh < 0) {
+      this.activeObstaclesLastRefresh = this.elapsed;
+      this.refreshActiveObstacles();
+    }
     this.updateDeployedGloos(dt);
     this.updateThrownGrenades(dt);
     this.updateExplosionVfx(dt);
@@ -2103,19 +2259,31 @@ export class BattleRoyaleEngine {
 
       if (this.launchPadFlightTimer > 0) {
         this.launchPadFlightTimer = Math.max(0, this.launchPadFlightTimer - dt);
+        this.isSprinting = false;
         this.vel.y -= 14.5 * dt;
       } else {
-        const moveSpeed = isChute ? 17 : 26;
+        const airMoveActive =
+          Math.abs(this.input.moveX) > 0.05 || Math.abs(this.input.moveZ) > 0.05;
+        this.isSprinting = this.input.isSprinting && airMoveActive;
+        const sprintMult = this.isSprinting ? 1.28 : 1.0;
+        const moveSpeed = (isChute ? 17 : 26) * sprintMult;
         const mx = (forwardX * this.input.moveZ + rightX * this.input.moveX) * moveSpeed;
         const mz = (forwardZ * this.input.moveZ + rightZ * this.input.moveX) * moveSpeed;
         this.vel.x = THREE.MathUtils.damp(this.vel.x, mx, 4, dt);
         this.vel.z = THREE.MathUtils.damp(this.vel.z, mz, 4, dt);
-        this.vel.y = THREE.MathUtils.damp(this.vel.y, isChute ? -8.5 : -28, 3.5, dt);
+        const targetFallY = isChute
+          ? this.isSprinting
+            ? -10.5
+            : -8.5
+          : this.isSprinting
+            ? -34
+            : -28;
+        this.vel.y = THREE.MathUtils.damp(this.vel.y, targetFallY, 3.5, dt);
       }
 
       this.pos.addScaledVector(this.vel, dt);
-      this.pos.x = THREE.MathUtils.clamp(this.pos.x, -505, 505);
-      this.pos.z = THREE.MathUtils.clamp(this.pos.z, -505, 505);
+      this.pos.x = THREE.MathUtils.clamp(this.pos.x, -BERMUDA_HALF + 15, BERMUDA_HALF - 15);
+      this.pos.z = THREE.MathUtils.clamp(this.pos.z, -BERMUDA_HALF + 15, BERMUDA_HALF - 15);
 
       const groundY = Math.max(0, this.resolveFloorHeight(this.pos.x, this.pos.z, this.pos.y));
       const altitude = this.pos.y - groundY;
@@ -2143,7 +2311,7 @@ export class BattleRoyaleEngine {
         speed: Math.hypot(this.vel.x, this.vel.z),
         stance: 'stand',
         isGrounded: false,
-        isSprinting: false,
+        isSprinting: this.isSprinting,
         isAiming: false,
         isFiring: false,
         isLobby: false,
@@ -2279,6 +2447,7 @@ export class BattleRoyaleEngine {
         const tickDmg = Math.floor(this.zoneDmgAccum);
         this.zoneDmgAccum -= tickDmg;
         this.damageFlashTimer = 0.14;
+        soundEngine.playSafeZoneDamage(this.zonePhase >= 3);
         if (this.isPlayerDowned) {
           this.playerBleedHp = Math.max(0, this.playerBleedHp - tickDmg);
           if (this.playerBleedHp <= 0) {
@@ -2354,6 +2523,18 @@ export class BattleRoyaleEngine {
     return maxRange;
   }
 
+  private refreshActiveObstacles(): void {
+    const src = this.solidObstaclesNoTerrain;
+    const dst = this.solidObstaclesActive;
+    dst.length = 0;
+    for (let i = 0; i < src.length; i++) {
+      const m = src[i];
+      const root = m.userData.cullRoot as THREE.Object3D | undefined;
+      if (root && !root.visible) continue;
+      dst.push(m);
+    }
+  }
+
   private hasLineOfSightToPoint(origin: THREE.Vector3, targetPoint: THREE.Vector3): boolean {
     _rayDir.copy(targetPoint).sub(origin);
     const dist = _rayDir.length();
@@ -2364,7 +2545,7 @@ export class BattleRoyaleEngine {
     }
     this.raycaster.set(origin, _rayDir);
     this.raycaster.far = dist - 0.35;
-    const hits = this.raycaster.intersectObjects(this.solidObstaclesNoTerrain, false);
+    const hits = this.raycaster.intersectObjects(this.solidObstaclesActive, false);
     return hits.length === 0;
   }
 
@@ -2402,6 +2583,14 @@ export class BattleRoyaleEngine {
     const bx = bot.group.position.x;
     const by = bot.group.position.y;
     const bz = bot.group.position.z;
+    if (bot.hitMeshes.length >= 2) {
+      bot.group.updateMatrixWorld(true);
+      const hitMesh = part === 'head' ? bot.hitMeshes[1] : bot.hitMeshes[0];
+      if (hitMesh) {
+        hitMesh.getWorldPosition(out);
+        return out;
+      }
+    }
     if (bot.isDowned) {
       const fwdX = Math.sin(bot.group.rotation.y);
       const fwdZ = Math.cos(bot.group.rotation.y);
@@ -2421,6 +2610,9 @@ export class BattleRoyaleEngine {
     const fy = Math.sin(this.pitch);
     const fz = -Math.cos(this.yaw) * cp;
 
+    // Player eye origin for reliable LOS even at very close range or behind low cover
+    _rayOrigin.set(this.pos.x, this.pos.y + 1.42, this.pos.z);
+
     let best: TargetDummy | null = null;
     let bestScore = Infinity;
 
@@ -2430,6 +2622,7 @@ export class BattleRoyaleEngine {
       if (t.downTimer > 0 && !t.isDowned) continue;
 
       this.getBotBodyPoint(t, 'chest', _v2);
+      this.getBotBodyPoint(t, 'head', _v3);
       const by = t.group.position.y;
       const dx = _v2.x - camPos.x;
       const dyChest = _v2.y - camPos.y;
@@ -2437,35 +2630,51 @@ export class BattleRoyaleEngine {
 
       // Forward projection along camera ray to enemy distance
       const proj = dx * fx + dyChest * fy + dz * fz;
-      if (proj < 1.0 || proj > maxRange) continue;
+      const playerDist = Math.hypot(_v2.x - this.pos.x, _v2.z - this.pos.z);
+      if (proj < 0.8 || playerDist > maxRange) continue;
 
       // Exact 3D point where the crosshair ray passes the enemy
       const rayX = camPos.x + fx * proj;
       const rayY = camPos.y + fy * proj;
       const rayZ = camPos.z + fz * proj;
 
-      // Distance-scaled vertical body capture: generous near legs/chest at medium-long range
-      // while avoiding high empty sky far above the enemy's head
-      const rayLocalY = rayY - by;
-      const distVertPad = THREE.MathUtils.clamp(proj * 0.022, 0.14, 1.15);
-      const headTopLocalY = (t.isDowned ? 1.12 : t.headOffsetY + 0.24) + distVertPad * 0.65;
-      const minLocalY = (t.isDowned ? -0.35 : -0.25) - distVertPad;
-      if (rayLocalY > headTopLocalY || rayLocalY < minLocalY) continue;
+      // Dynamic vertical bounds track standing, crouching, medkit-kneeling, and crawling poses
+      const distVertPad = THREE.MathUtils.clamp(proj * 0.026, 0.24, 1.25);
+      const headTopWorldY = Math.max(_v3.y + 0.34, by + 0.95) + distVertPad * 0.72;
+      const minWorldY = Math.min(_v2.y - 0.95, by - 0.28) - distVertPad;
+      if (rayY > headTopWorldY || rayY < minWorldY) continue;
 
-      // Distance-scaled horizontal sticky zone around torso (honors wider angular cone at all ranges)
+      // Wide close-range & angular sticky zone around torso
       const horizErr = Math.hypot(rayX - _v2.x, rayZ - _v2.z);
       const farFalloff =
         proj > 120 ? THREE.MathUtils.clamp(1 - (proj - 120) / 145, 0.55, 1.0) : 1.0;
+      const minStickRadius = playerDist < 12 ? 2.25 : 1.55;
       const maxHorizErr = THREE.MathUtils.clamp(
         Math.tan(maxAngleRad) * proj * farFalloff,
-        1.25,
-        5.8 * farFalloff,
+        minStickRadius,
+        7.8 * farFalloff,
       );
 
-      if (horizErr <= maxHorizErr) {
-        const score = Math.atan2(horizErr, proj);
+      // Screen-space reticle halo capture helps close-quarters engagements snap cleanly
+      let inScreenHalo = false;
+      if (playerDist < 16) {
+        _camDesired.copy(_v2).project(cam);
+        if (_camDesired.z >= -1 && _camDesired.z <= 1) {
+          const ndcDist = Math.hypot(_camDesired.x, _camDesired.y);
+          if (ndcDist <= (this.isAiming ? 0.38 : 0.34)) {
+            inScreenHalo = true;
+          }
+        }
+      }
+
+      if (horizErr <= maxHorizErr || inScreenHalo) {
+        const score = Math.atan2(horizErr, Math.max(1.5, proj));
         if (score < bestScore) {
-          if (this.hasLineOfSightToPoint(camPos, _v2)) {
+          if (
+            this.hasLineOfSightToPoint(_rayOrigin, _v2) ||
+            this.hasLineOfSightToPoint(_rayOrigin, _v3) ||
+            this.hasLineOfSightToPoint(camPos, _v3)
+          ) {
             bestScore = score;
             best = t;
           }
@@ -2509,7 +2718,7 @@ export class BattleRoyaleEngine {
       ) {
         this.raycaster.far = Math.max(0.2, hitDist - 0.15);
         const obstacleHits = this.raycaster.intersectObjects(
-          this.solidObstaclesNoTerrain,
+          this.solidObstaclesActive,
           false,
         );
         if (obstacleHits.length === 0) return true;
@@ -2517,7 +2726,7 @@ export class BattleRoyaleEngine {
     }
 
     // 2. Classic FF red proximity zone near the crosshair (wide distance-scaled sticky capture)
-    const redZoneCone = this.isAiming ? 0.24 : 0.21;
+    const redZoneCone = this.isAiming ? 0.31 : 0.28;
     return this.findAimAssistTarget(redZoneCone, maxRange) !== null;
   }
 
@@ -2623,8 +2832,8 @@ export class BattleRoyaleEngine {
       this.resolveHorizontalCollisions(0.4);
       this.resolveHorizontalCollisions(0.4);
       this.pos.y += this.vel.y * dt;
-      this.pos.x = THREE.MathUtils.clamp(this.pos.x, -512, 512);
-      this.pos.z = THREE.MathUtils.clamp(this.pos.z, -512, 512);
+      this.pos.x = THREE.MathUtils.clamp(this.pos.x, -BERMUDA_HALF + 8, BERMUDA_HALF - 8);
+      this.pos.z = THREE.MathUtils.clamp(this.pos.z, -BERMUDA_HALF + 8, BERMUDA_HALF - 8);
 
       const floorY = Math.max(-0.2, this.resolveFloorHeight(this.pos.x, this.pos.z, this.pos.y));
       if (this.pos.y <= floorY) {
@@ -2671,6 +2880,7 @@ export class BattleRoyaleEngine {
 
     this.pullingUpTimer = Math.max(0, this.pullingUpTimer - dt);
     this.bugDoCapaTimer = Math.max(0, this.bugDoCapaTimer - dt);
+    this.combatPoseTimer = Math.max(0, this.combatPoseTimer - dt);
     this.vaultTimer = Math.max(0, this.vaultTimer - dt);
     this.canVaultWindow = this.findNearbyWindowSill();
 
@@ -2703,33 +2913,26 @@ export class BattleRoyaleEngine {
       }
     }
 
-    // Weapon slot switching (1/2/3/4 keys, HUD clicks, or mouse wheel)
-    let nextSlot = edges.slot;
-    if (!nextSlot && edges.cycleSlotDir !== 0) {
-      const available: WeaponSlotId[] = ([1, 2, 3] as const).filter(
-        (s) => this.weapons[s] !== null,
-      );
-      available.push(4);
-      if (available.length > 1) {
-        const curIdx = Math.max(0, available.indexOf(this.activeSlot));
-        const movedIdx =
-          (curIdx + edges.cycleSlotDir + available.length) % available.length;
-        nextSlot = available[movedIdx];
+    // Weapon slot switching (1/2/3/4 keys, HUD clicks, Q quick-swap, or mouse wheel)
+    let justSwitchedSlot = false;
+    if (edges.quickSwap) {
+      justSwitchedSlot = this.quickSwapWeapon();
+    } else {
+      let nextSlot = edges.slot;
+      if (!nextSlot && edges.cycleSlotDir !== 0) {
+        const available: WeaponSlotId[] = ([1, 2, 3] as const).filter(
+          (s) => this.weapons[s] !== null,
+        );
+        available.push(4);
+        if (available.length > 1) {
+          const curIdx = Math.max(0, available.indexOf(this.activeSlot));
+          const movedIdx =
+            (curIdx + edges.cycleSlotDir + available.length) % available.length;
+          nextSlot = available[movedIdx];
+        }
       }
-    }
-    if (nextSlot && (nextSlot === 4 || this.weapons[nextSlot])) {
-      this.isPlacingGloo = false;
-      this.isHoldingGrenade = false;
-      if (nextSlot !== this.activeSlot) {
-        this.activeSlot = nextSlot;
-        this.isReloading = false;
-        this.reloadTimer = 0;
-        this.lockedTargetId = null;
-        this.aimBreakAccum = 0;
-        this.bugDoCapaTimer = 0;
-        this.consecutiveShots = 0;
-        this.syncPlayerWeaponAndBackVisuals();
-        soundEngine.playWeaponSwitch();
+      if (nextSlot && (nextSlot === 4 || this.weapons[nextSlot])) {
+        justSwitchedSlot = this.performSlotSwitch(nextSlot);
       }
     }
 
@@ -2742,16 +2945,57 @@ export class BattleRoyaleEngine {
     const activeWeaponState = this.getActiveWeaponState();
     const activeDef = activeWeaponState ? WEAPONS[activeWeaponState.weaponId] : null;
     const activeScope: ScopeType = activeWeaponState ? activeWeaponState.scope : 'none';
+    const canUseAimScope =
+      this.activeSlot !== 4 && Boolean(activeDef && activeDef.category !== 'HG');
+
+    // Water / Swim / Surfboard detection (WATER_SURFACE_Y = -0.35)
+    const waterSurfaceY = -0.35;
+    const currentFloorRaw = this.resolveFloorHeight(this.pos.x, this.pos.z, this.pos.y);
+    this.inWater = currentFloorRaw < -0.78;
+    const canMountSurfboard =
+      this.isOnSurfboard || (currentFloorRaw < -0.18 && this.pos.y <= waterSurfaceY + 0.85);
+    if (edges.surfboard && canMountSurfboard) {
+      this.isOnSurfboard = !this.isOnSurfboard;
+      this.hudDirty = true;
+      soundEngine.playWeaponSwitch();
+      if (this.isOnSurfboard && this.pos.y < waterSurfaceY + 0.04) {
+        this.pos.y = waterSurfaceY + 0.04;
+        this.isGrounded = true;
+        this.vel.y = 0;
+      }
+    }
+    if (this.isOnSurfboard && currentFloorRaw >= -0.12 && this.pos.y <= currentFloorRaw + 0.28) {
+      this.isOnSurfboard = false;
+      this.hudDirty = true;
+    }
+    this.isSwimming = this.inWater && !this.isOnSurfboard;
+
+    if (this.isSwimming) {
+      this.stance = 'stand';
+      this.isAiming = false;
+      this.isPlacingGloo = false;
+      this.isHoldingGrenade = false;
+      this.usingMedkit = false;
+      this.isReloading = false;
+      this.medkitTimer = 0;
+      soundEngine.stopMedkitAudio();
+    }
 
     // Stance transitions (including Window Vault on jump near house window sill!)
     const prevStance = this.stance;
-    if (edges.crouch) {
-      this.stance = this.stance === 'crouch' ? 'stand' : 'crouch';
+    if (!this.isSwimming) {
+      if (edges.crouch) {
+        this.stance = this.stance === 'crouch' ? 'stand' : 'crouch';
+      }
+      if (edges.prone) {
+        this.stance = this.stance === 'prone' ? 'stand' : 'prone';
+      }
     }
-    if (edges.prone) {
-      this.stance = this.stance === 'prone' ? 'stand' : 'prone';
-    }
-    if (edges.jump && this.isGrounded) {
+    const onWaterSurface =
+      this.inWater &&
+      this.pos.y <= (this.isOnSurfboard ? waterSurfaceY + 0.22 : -0.72) &&
+      this.vel.y <= 0.6;
+    if (edges.jump && (this.isGrounded || onWaterSurface)) {
       if (this.stance !== 'stand') {
         this.stance = 'stand';
       } else if (this.canVaultWindow) {
@@ -2765,7 +3009,7 @@ export class BattleRoyaleEngine {
         this.isGrounded = false;
         soundEngine.playJump();
       } else {
-        this.vel.y = 7.4;
+        this.vel.y = this.isOnSurfboard ? 7.2 : 7.4;
         this.isGrounded = false;
         soundEngine.playJump();
       }
@@ -2790,29 +3034,32 @@ export class BattleRoyaleEngine {
       this.wasLockedWhileCrouched = false;
     }
 
-    // Aim & Fire edge transitions
-    this.isAiming = this.input.getAimActive();
+    // Aim & Fire edge transitions (Pistols, Fists & Swimming without surfboard stay off ADS)
+    if ((!canUseAimScope || this.isSwimming) && this.input.getAimActive()) {
+      this.input.setTouchAim(false);
+    }
+    this.isAiming = canUseAimScope && !this.isSwimming ? this.input.getAimActive() : false;
     if (this.isAiming && (this.isPlacingGloo || this.isHoldingGrenade)) {
       this.isPlacingGloo = false;
       this.isHoldingGrenade = false;
     }
     const justStartedAiming = this.isAiming && !this.wasAiming;
-    const fireDown = this.input.getFireActive();
-    const justStartedFiring = fireDown && !this.wasFireDown;
+    const fireDown = this.isSwimming ? false : (this.input.getFireActive() || edges.fireTap);
+    const justStartedFiring = (fireDown && !this.wasFireDown) || edges.fireTap;
 
     // Handle tactical Gloo Wall deployment or Grenade throw on primary click OR HUD confirm tap
     let gadgetHandledClick = false;
-    if ((justStartedFiring || edges.fireTap) && this.isPlacingGloo) {
+    if (justStartedFiring && this.isPlacingGloo) {
       this.deployGlooWall();
       gadgetHandledClick = true;
-    } else if ((justStartedFiring || edges.fireTap) && this.isHoldingGrenade) {
+    } else if (justStartedFiring && this.isHoldingGrenade) {
       this.throwGrenade();
       gadgetHandledClick = true;
     }
     const weaponFireDown =
       fireDown && !gadgetHandledClick && !this.isPlacingGloo && !this.isHoldingGrenade;
 
-    if (!weaponFireDown || performance.now() - this.lastShotTime > 380) {
+    if (!weaponFireDown || performance.now() - this.slotLastShotTime[this.activeSlot] > 380) {
       this.consecutiveShots = 0;
     }
 
@@ -2825,14 +3072,18 @@ export class BattleRoyaleEngine {
     }
 
     const isFirstPersonAds =
-      this.isAiming && !this.isPlacingGloo && !this.isHoldingGrenade;
+      this.isAiming && !this.isPlacingGloo && !this.isHoldingGrenade && !this.isSwimming;
     const targetShoulderOffset = isFirstPersonAds ? 0 : 0.42;
     const targetCamDist = isFirstPersonAds ? 0.08 : 3.75;
-    const targetCamHeight =
+    const rawCamHeight =
       this.stance === 'prone' ? 0.65 : this.stance === 'crouch' ? 1.15 : 1.55;
+    const targetCamHeight = this.isSwimming
+      ? Math.max(rawCamHeight, waterSurfaceY + 0.58 - this.pos.y)
+      : rawCamHeight;
 
     // Classic Free Fire Aim-Assist config check before applying look input
     const assistAllowed =
+      !this.isSwimming &&
       this.settings.aimAssistMode === 'default' &&
       Boolean(activeDef?.supportsAimAssist) &&
       !this.isPlacingGloo &&
@@ -2867,8 +3118,8 @@ export class BattleRoyaleEngine {
         this.aimBreakAccum = Math.max(0, this.aimBreakAccum - dt * 1.25);
       }
 
-      const breakFlick = 0.24 * Math.max(0.42, sprayControl);
-      const breakAccumLimit = 0.98 * Math.max(0.32, sprayControl);
+      const breakFlick = 0.30 * Math.max(0.48, sprayControl);
+      const breakAccumLimit = 1.18 * Math.max(0.36, sprayControl);
       if (absRawYawIn > breakFlick || this.aimBreakAccum > breakAccumLimit) {
         // Strong pull or sustained spray fatigue broke the lock
         this.lockedTargetId = null;
@@ -2887,13 +3138,13 @@ export class BattleRoyaleEngine {
     }
 
     // Upward drag detection ("puxar capa" via mouse or dragging Fire Button upward)
-    if (edges.dy * invert < -0.35) {
-      this.pullingUpTimer = 0.24;
+    if (edges.dy * invert < -0.26) {
+      this.pullingUpTimer = 0.28;
     }
 
     // Track if crouched with target inside crosshair area (even before firing, for Bug do Capa)
     if (this.stance === 'crouch' && activeDef && !weaponFireDown) {
-      const crouchPreview = this.findAimAssistTarget(this.isAiming ? 0.24 : 0.21, activeDef.range);
+      const crouchPreview = this.findAimAssistTarget(this.isAiming ? 0.31 : 0.28, activeDef.range);
       if (crouchPreview) {
         this.wasLockedWhileCrouched = true;
       }
@@ -2915,8 +3166,15 @@ export class BattleRoyaleEngine {
           const existing = this.targetById.get(this.lockedTargetId);
           if (existing && existing.downTimer <= 0 && !existing.eliminated && existing.group.visible) {
             this.getBotBodyPoint(existing, 'chest', _v2);
-            const dist = _v2.distanceTo(this.world.camera.position);
-            if (dist <= activeDef.range && this.hasLineOfSightToPoint(this.world.camera.position, _v2)) {
+            this.getBotBodyPoint(existing, 'head', _v3);
+            _rayOrigin.set(this.pos.x, this.pos.y + targetCamHeight, this.pos.z);
+            const dist = _v2.distanceTo(_rayOrigin);
+            if (
+              dist <= activeDef.range &&
+              (this.hasLineOfSightToPoint(_rayOrigin, _v2) ||
+                this.hasLineOfSightToPoint(_rayOrigin, _v3) ||
+                this.hasLineOfSightToPoint(this.world.camera.position, _v3))
+            ) {
               target = existing;
             } else {
               this.lockedTargetId = null;
@@ -2932,11 +3190,11 @@ export class BattleRoyaleEngine {
           const coneRad =
             justStartedFiring || justStartedAiming
               ? this.isAiming
-                ? 0.26
-                : 0.23
+                ? 0.33
+                : 0.30
               : this.isAiming
-                ? 0.23
-                : 0.20;
+                ? 0.30
+                : 0.27;
           target = this.findAimAssistTarget(coneRad, activeDef.range);
           if (target) {
             this.lockedTargetId = target.id;
@@ -2948,7 +3206,7 @@ export class BattleRoyaleEngine {
           this.getBotBodyPoint(target, 'chest', _v1);
           this.getBotBodyPoint(target, 'head', _v3);
           const pivotY = this.pos.y + targetCamHeight;
-          const crouchOffset = !target.isDowned && this.stance === 'crouch' ? -0.05 : 0;
+          const crouchOffset = !target.isDowned && this.stance === 'crouch' ? -0.04 : 0;
 
           const chestAim = this.computeExactAnglesToTarget(
             _v1.x,
@@ -2966,13 +3224,13 @@ export class BattleRoyaleEngine {
           );
           const headTopAim = this.computeExactAnglesToTarget(
             _v3.x,
-            _v3.y + (target.isDowned ? 0.12 : 0.15),
+            _v3.y + (target.isDowned ? 0.12 : 0.16),
             _v3.z,
             targetCamHeight,
             targetShoulderOffset,
           );
 
-          if (chestAim.horiz > 0.4) {
+          if (chestAim.horiz > 0.15) {
             let deltaYaw = chestAim.yaw - this.yaw;
             while (deltaYaw > Math.PI) deltaYaw -= Math.PI * 2;
             while (deltaYaw < -Math.PI) deltaYaw += Math.PI * 2;
@@ -2981,9 +3239,9 @@ export class BattleRoyaleEngine {
             const horizOffsetAtTarget = Math.abs(Math.sin(deltaYaw)) * chestAim.horiz;
             const alreadyOnHead =
               !target.isDowned &&
-              horizOffsetAtTarget <= 0.18 &&
-              currentHitWorldY >= _v3.y - 0.15 &&
-              currentHitWorldY <= _v3.y + 0.155;
+              horizOffsetAtTarget <= 0.22 &&
+              currentHitWorldY >= _v3.y - 0.17 &&
+              currentHitWorldY <= _v3.y + 0.17;
 
             this.aimAssistActive = sprayControl > 0.3;
             if (this.stance === 'crouch' && !target.isDowned) {
@@ -2997,7 +3255,7 @@ export class BattleRoyaleEngine {
               this.pitch = THREE.MathUtils.lerp(this.pitch, startPitch, 0.96);
             } else {
               // Strong burst lock that weakens progressively if player sprays nonstop
-              const yawLambda = (this.isAiming ? 65 : 56) * sprayControl;
+              const yawLambda = (this.isAiming ? 68 : 60) * sprayControl;
               this.yaw += deltaYaw * (1 - Math.exp(-yawLambda * dt));
 
               if (target.isDowned) {
@@ -3020,27 +3278,27 @@ export class BattleRoyaleEngine {
               } else {
                 const chestPitch = chestAim.pitch;
                 const headPitch = headAim.pitch;
-                const headTopPitch = Math.max(headPitch + 0.008, headTopAim.pitch);
-                const chestHeadSpan = Math.max(0.012, headPitch - chestPitch);
+                const headTopPitch = Math.max(headPitch + 0.01, headTopAim.pitch);
+                const chestHeadSpan = Math.max(0.014, headPitch - chestPitch);
 
-                if (rawPitchInput > 0.00025) {
-                  // Responsive upward climb onto head (scaled by chest->head angular span)
-                  const climbScale = THREE.MathUtils.clamp(chestHeadSpan / 0.055, 0.34, 0.78);
+                if (rawPitchInput > 0.00015) {
+                  // Responsive upward climb onto head (scaled cleanly for close & kneeling targets too)
+                  const climbScale = THREE.MathUtils.clamp(chestHeadSpan / 0.046, 0.46, 0.94);
                   const scaledUp = Math.min(
                     rawPitchInput * climbScale,
-                    Math.max(0.018, chestHeadSpan * 0.65),
+                    Math.max(0.022, chestHeadSpan * 0.78),
                   );
                   this.pitch = THREE.MathUtils.clamp(this.pitch + scaledUp, -1.05, 0.85);
 
-                  if (this.pitch > headTopPitch + 0.022) {
+                  if (this.pitch > headTopPitch + 0.028) {
                     // Player intentionally pulled high into empty air above head -> release lock so shots go over!
                     this.lockedTargetId = null;
                     this.aimBreakAccum = 0;
                     this.aimAssistActive = false;
                   } else if (
-                    sprayControl > 0.45 &&
+                    sprayControl > 0.42 &&
                     this.pitch > headPitch + 0.006 &&
-                    rawPitchInput <= 0.13
+                    rawPitchInput <= 0.14
                   ) {
                     this.pitch = headPitch + 0.002;
                   }
@@ -3055,10 +3313,10 @@ export class BattleRoyaleEngine {
                   }
                 } else {
                   const inHeadZone =
-                    this.pitch >= headPitch - chestHeadSpan * 0.38 &&
-                    this.pitch <= headTopPitch + 0.01;
-                  const dampRate = (this.isAiming ? 36 : 30) * sprayControl;
-                  if (this.pitch > headTopPitch + 0.018) {
+                    this.pitch >= headPitch - chestHeadSpan * 0.42 &&
+                    this.pitch <= headTopPitch + 0.012;
+                  const dampRate = (this.isAiming ? 38 : 32) * sprayControl;
+                  if (this.pitch > headTopPitch + 0.022) {
                     // Never pull aim DOWN from empty air above head back onto head!
                     this.lockedTargetId = null;
                     this.aimBreakAccum = 0;
@@ -3080,7 +3338,7 @@ export class BattleRoyaleEngine {
         }
       } else if (justStartedAiming) {
         // One-time Aim-FOV snap when opening scope using actual distance-scaled body capture
-        const aimSnapTarget = this.findAimAssistTarget(0.27, activeDef.range);
+        const aimSnapTarget = this.findAimAssistTarget(0.31, activeDef.range);
         if (aimSnapTarget) {
           this.getBotBodyPoint(aimSnapTarget, 'chest', _v1);
           this.getBotBodyPoint(aimSnapTarget, 'head', _v3);
@@ -3094,7 +3352,7 @@ export class BattleRoyaleEngine {
             targetShoulderOffset,
           );
 
-          if (chestAim.horiz > 0.4) {
+          if (chestAim.horiz > 0.15) {
             let deltaYawToCenter = chestAim.yaw - this.yaw;
             while (deltaYawToCenter > Math.PI) deltaYawToCenter -= Math.PI * 2;
             while (deltaYawToCenter < -Math.PI) deltaYawToCenter += Math.PI * 2;
@@ -3103,9 +3361,9 @@ export class BattleRoyaleEngine {
             const horizOffsetAtTarget = Math.abs(Math.sin(deltaYawToCenter)) * chestAim.horiz;
             const alreadyOnHead =
               !aimSnapTarget.isDowned &&
-              horizOffsetAtTarget <= 0.18 &&
-              currentHitWorldY >= _v3.y - 0.15 &&
-              currentHitWorldY <= _v3.y + 0.155;
+              horizOffsetAtTarget <= 0.22 &&
+              currentHitWorldY >= _v3.y - 0.17 &&
+              currentHitWorldY <= _v3.y + 0.17;
 
             const snapPt = alreadyOnHead ? _v3 : _v1;
             const desired = this.computeExactAnglesToTarget(
@@ -3234,24 +3492,7 @@ export class BattleRoyaleEngine {
     }
 
     // Medkit healing channel (4.0s synced with usando-kit-medico.mp3; cancels on sprint or gunfire)
-    if (this.usingMedkit) {
-      if (fireDown || this.input.isSprinting) {
-        this.usingMedkit = false;
-        this.medkitTimer = 0;
-        soundEngine.stopMedkitAudio();
-      } else {
-        this.medkitTimer -= dt;
-        if (this.medkitTimer <= 0) {
-          this.usingMedkit = false;
-          this.medkitTimer = 0;
-          if (this.medkitCount > 0) {
-            this.medkitCount -= 1;
-            this.hp = Math.min(this.maxHp, this.hp + 75);
-            soundEngine.completeMedkitAudio();
-          }
-        }
-      }
-    }
+    this.updateMedkitChannel(dt, true);
 
     // Reload (supports Extended Magazine capacity & faster reload)
     if (edges.reload && activeWeaponState && !this.isReloading) {
@@ -3274,7 +3515,7 @@ export class BattleRoyaleEngine {
       }
     }
 
-    // Movement Speed (weapon mobility + Stock attachment + Medkit slow)
+    // Movement Speed (weapon mobility + Stock attachment + Medkit slow; suppress sprint during firing pose)
     const hasMove = Math.abs(this.input.moveX) > 0.05 || Math.abs(this.input.moveZ) > 0.05;
     this.isSprinting =
       this.input.isSprinting &&
@@ -3283,22 +3524,34 @@ export class BattleRoyaleEngine {
       this.stance === 'stand' &&
       !this.isAiming &&
       !fireDown &&
+      this.combatPoseTimer <= 0.12 &&
       !this.usingMedkit;
 
     const weaponSpeedMult =
       this.activeSlot === 4 ? 1.07 : activeDef ? activeDef.moveSpeedMult : 1.0;
     const stockAimBonus =
       this.isAiming && activeWeaponState?.attachments.stock === 'stock' ? 1.14 : 1.0;
-    const baseSpeed =
-      this.stance === 'prone'
-        ? 2.2
-        : this.stance === 'crouch'
-          ? 3.8
-          : this.isSprinting
-            ? 9.1
-            : this.isAiming
-              ? 3.9 * stockAimBonus
-              : 5.85;
+    const baseSpeed = this.isOnSurfboard
+      ? this.stance === 'crouch'
+        ? 6.4
+        : this.isSprinting
+          ? 11.4
+          : this.isAiming
+            ? 5.8 * stockAimBonus
+            : 8.4
+      : this.isSwimming
+        ? this.isSprinting
+          ? 6.2
+          : 4.2
+        : this.stance === 'prone'
+          ? 2.2
+          : this.stance === 'crouch'
+            ? 3.8
+            : this.isSprinting
+              ? 9.1
+              : this.isAiming
+                ? 3.9 * stockAimBonus
+                : 5.85;
     const maxSpeed = baseSpeed * weaponSpeedMult * (this.usingMedkit ? 0.55 : 1.0);
 
     const forwardX = -Math.sin(this.yaw);
@@ -3309,7 +3562,7 @@ export class BattleRoyaleEngine {
     if (this.vaultTimer <= 0.15) {
       const targetVx = (forwardX * this.input.moveZ + rightX * this.input.moveX) * maxSpeed;
       const targetVz = (forwardZ * this.input.moveZ + rightZ * this.input.moveX) * maxSpeed;
-      const accel = this.isGrounded ? 18 : 6.5;
+      const accel = this.isOnSurfboard ? 10 : this.isSwimming ? 8 : this.isGrounded ? 18 : 6.5;
       this.vel.x = THREE.MathUtils.damp(this.vel.x, targetVx, accel, dt);
       this.vel.z = THREE.MathUtils.damp(this.vel.z, targetVz, accel, dt);
     }
@@ -3324,22 +3577,38 @@ export class BattleRoyaleEngine {
     this.resolveHorizontalCollisions(0.4);
     this.pos.y += this.vel.y * dt;
 
-    // Expanded 520m Island boundary clamp
-    this.pos.x = THREE.MathUtils.clamp(this.pos.x, -512, 512);
-    this.pos.z = THREE.MathUtils.clamp(this.pos.z, -512, 512);
+    // Full Bermuda Island boundary clamp
+    this.pos.x = THREE.MathUtils.clamp(this.pos.x, -BERMUDA_HALF + 8, BERMUDA_HALF - 8);
+    this.pos.z = THREE.MathUtils.clamp(this.pos.z, -BERMUDA_HALF + 8, BERMUDA_HALF - 8);
 
-    // Terrain + Walkable Platforms (Bridges, House Floors, Shed Slabs, Pier, Runway)
+    // Terrain + Water Buoyancy + Walkable Platforms (Bridges, House Floors, Shed Slabs, Pier, Runway)
     const wasGrounded = this.isGrounded;
-    const floorY = Math.max(-0.2, this.resolveFloorHeight(this.pos.x, this.pos.z, this.pos.y));
+    const resolvedFloor = this.resolveFloorHeight(this.pos.x, this.pos.z, this.pos.y);
+    const floorY = this.isOnSurfboard
+      ? Math.max(resolvedFloor, waterSurfaceY + 0.04)
+      : resolvedFloor < -0.78
+        ? Math.max(resolvedFloor, -1.28)
+        : Math.max(-0.85, resolvedFloor);
 
     if (this.pos.y <= floorY) {
       this.pos.y = floorY;
       this.vel.y = 0;
       this.isGrounded = true;
-      if (!wasGrounded) {
+      if (!wasGrounded && !this.isSwimming && !this.isOnSurfboard) {
         this.animator.triggerLanding();
         soundEngine.playLanding();
       }
+    } else if (
+      wasGrounded &&
+      this.vel.y <= 0 &&
+      !edges.jump &&
+      !this.isSwimming &&
+      !this.isOnSurfboard &&
+      this.pos.y - floorY <= 0.24
+    ) {
+      this.pos.y = floorY;
+      this.vel.y = 0;
+      this.isGrounded = true;
     } else if (this.pos.y > floorY + 0.15) {
       this.isGrounded = false;
     }
@@ -3350,16 +3619,18 @@ export class BattleRoyaleEngine {
       horizSpeed > 0.45 &&
       this.isGrounded &&
       !this.isDead &&
+      !this.isSwimming &&
+      !this.isOnSurfboard &&
       this.vaultTimer <= 0.05;
     const moveSpeedRatio = activelyMoving
       ? THREE.MathUtils.clamp(horizSpeed / 9.1, 0.22, 1.05)
       : 0;
     soundEngine.updateRunAudio(activelyMoving, moveSpeedRatio, this.stance, dt);
 
-    // Hide character body during ALL ADS scopes; hide held gun while unarmed/Medkit/Reviving
+    // Hide character body during ALL ADS scopes; hide held gun while unarmed/Medkit/Reviving/Swimming
     this.playerRig.root.visible = !isFirstPersonAds;
     this.playerRig.weaponMount.visible =
-      this.activeSlot !== 4 && !this.usingMedkit && !this.revivingBotId;
+      this.activeSlot !== 4 && !this.usingMedkit && !this.revivingBotId && !this.isSwimming;
 
     if (this.usingMedkit) {
       const pulse = 1 + Math.sin(this.elapsed * 8.5) * 0.14;
@@ -3372,8 +3643,14 @@ export class BattleRoyaleEngine {
     }
 
     // Decoupled character facing vs camera aim
-    if (this.isAiming || weaponFireDown || this.isPlacingGloo || this.isHoldingGrenade) {
-      this.combatFacingTimer = 0.28;
+    if (
+      this.isAiming ||
+      weaponFireDown ||
+      this.combatPoseTimer > 0 ||
+      this.isPlacingGloo ||
+      this.isHoldingGrenade
+    ) {
+      this.combatFacingTimer = 0.6;
     } else {
       this.combatFacingTimer = Math.max(0, this.combatFacingTimer - dt);
     }
@@ -3407,15 +3684,17 @@ export class BattleRoyaleEngine {
       isGrounded: this.isGrounded,
       isSprinting: this.isSprinting,
       isAiming: this.isAiming,
-      isFiring: weaponFireDown,
+      isFiring: weaponFireDown || this.combatPoseTimer > 0.12,
       isReloading: this.isReloading,
       isHealing: this.usingMedkit || Boolean(this.revivingBotId),
       isDriving: false,
+      isSwimming: this.isSwimming,
+      isOnSurfboard: this.isOnSurfboard,
       isLobby: false,
       isSkydiving: false,
       isParachuting: false,
       isDead: false,
-      hasWeapon: this.activeSlot !== 4,
+      hasWeapon: this.activeSlot !== 4 && !this.isSwimming,
       pitchRad: this.pitch,
       turnDeltaRad,
     });
@@ -3459,24 +3738,24 @@ export class BattleRoyaleEngine {
       snapCameraNow,
     );
 
-    // Fire or Melee Punch AFTER camera & aim-assist sync
+    // Fire or Melee Punch AFTER camera & aim-assist sync (per-slot cooldown = zero Double-AWM / rush swap delay)
     if (weaponFireDown) {
       const nowMs = performance.now();
       if (this.activeSlot === 4) {
-        if (nowMs - this.lastShotTime >= 390) {
-          this.lastShotTime = nowMs;
+        if (nowMs - this.slotLastShotTime[4] >= 390) {
+          this.slotLastShotTime[4] = nowMs;
           this.performMeleePunch();
         }
       } else if (activeWeaponState && !this.isReloading) {
         const def = WEAPONS[activeWeaponState.weaponId];
-        const canFire = def.automatic ? true : !this.wasFireDown;
-        if (canFire && nowMs - this.lastShotTime >= def.fireRateMs) {
-          this.lastShotTime = nowMs;
+        const canFire = def.automatic ? true : (!this.wasFireDown || edges.fireTap || justSwitchedSlot);
+        if (canFire && nowMs - this.slotLastShotTime[this.activeSlot] >= def.fireRateMs) {
+          this.slotLastShotTime[this.activeSlot] = nowMs;
           this.fireActiveWeapon(activeWeaponState);
         }
       }
     }
-    this.wasFireDown = fireDown;
+    this.wasFireDown = this.input.getFireActive();
 
     this.crosshairCheckAccum += dt;
     if (this.crosshairCheckAccum >= 0.05) {
@@ -3487,10 +3766,10 @@ export class BattleRoyaleEngine {
 
   private resolveFloorHeight(x: number, z: number, currentY: number): number {
     let floorY = this.world.groundHeightAt(x, z);
-    const plats = this.world.platforms;
+    const plats = this._platScratch;
+    this.world.queryStaticPlatformsNear(x, z, plats);
     for (let i = 0; i < plats.length; i++) {
       const p = plats[i];
-      if (currentY + 0.85 < p.topY) continue;
       const dx = x - p.cx;
       const dz = z - p.cz;
       const cos = Math.cos(p.rotY);
@@ -3498,62 +3777,100 @@ export class BattleRoyaleEngine {
       const lx = dx * cos - dz * sin;
       const lz = dx * sin + dz * cos;
       if (Math.abs(lx) <= p.halfW + 0.15 && Math.abs(lz) <= p.halfD + 0.15) {
-        if (p.topY > floorY) floorY = p.topY;
+        let platY = p.topY;
+        if (p.slopeAxis && p.topYNeg !== undefined && p.topYPos !== undefined) {
+          if (p.slopeAxis === 'z') {
+            const t = THREE.MathUtils.clamp((lz + p.halfD) / Math.max(0.01, p.halfD * 2), 0, 1);
+            platY = THREE.MathUtils.lerp(p.topYNeg, p.topYPos, t);
+          } else {
+            const t = THREE.MathUtils.clamp((lx + p.halfW) / Math.max(0.01, p.halfW * 2), 0, 1);
+            platY = THREE.MathUtils.lerp(p.topYNeg, p.topYPos, t);
+          }
+        }
+        if (currentY + 0.85 < platY) continue;
+        if (platY > floorY) floorY = platY;
       }
     }
     return floorY;
   }
 
   private resolveHorizontalCollisions(radius: number): void {
-    const py = this.pos.y;
-    const cols = this.world.colliders;
-    for (let i = 0; i < cols.length; i++) {
-      const c = cols[i];
-      if (this.vaultTimer > 0 && c.tag === 'house-window-sill') continue;
-      if (this.activeVehicleId && c.tag === `vehicle-${this.activeVehicleId}`) continue;
-      if (py + 1.55 < c.minY || py + 0.25 > c.maxY) continue;
+    this.resolveEntityHorizontalCollisions(
+      this.pos,
+      radius,
+      this.activeVehicleId,
+      this.vaultTimer > 0,
+    );
+  }
 
-      const dx = this.pos.x - c.cx;
-      const dz = this.pos.z - c.cz;
-      const maxExtent = c.halfW + c.halfD + radius;
-      if (Math.abs(dx) > maxExtent || Math.abs(dz) > maxExtent) continue;
+  private resolveEntityHorizontalCollisions(
+    posObj: { x: number; y: number; z: number },
+    radius: number,
+    ignoreVehicleId: string | null = null,
+    ignoreWindowSill = false,
+  ): number {
+    const py = posObj.y;
+    const staticNear = this._colScratch;
+    this.world.queryStaticCollidersNear(posObj.x, posObj.z, radius + 2.2, staticNear);
+    const allCols = this.world.colliders;
+    const staticCount = this.world.staticColliderCount;
+    const rSq = radius * radius;
+    let totalPush = 0;
 
-      const cos = Math.cos(c.rotY);
-      const sin = Math.sin(c.rotY);
-      // Transform circle center into collider's local space
-      const lx = dx * cos - dz * sin;
-      const lz = dx * sin + dz * cos;
+    for (let pass = 0; pass < 2; pass++) {
+      const cols = pass === 0 ? staticNear : allCols;
+      const startIdx = pass === 0 ? 0 : staticCount;
+      for (let i = startIdx; i < cols.length; i++) {
+        const c = cols[i];
+        if (ignoreWindowSill && c.tag === 'house-window-sill') continue;
+        if (ignoreVehicleId && c.tag === `vehicle-${ignoreVehicleId}`) continue;
+        if (py + 1.55 < c.minY || py + 0.28 > c.maxY) continue;
 
-      const clampedX = Math.max(-c.halfW, Math.min(c.halfW, lx));
-      const clampedZ = Math.max(-c.halfD, Math.min(c.halfD, lz));
-      const diffX = lx - clampedX;
-      const diffZ = lz - clampedZ;
-      const distSq = diffX * diffX + diffZ * diffZ;
+        const dx = posObj.x - c.cx;
+        const dz = posObj.z - c.cz;
+        const maxExtent = c.halfW + c.halfD + radius;
+        if (Math.abs(dx) > maxExtent || Math.abs(dz) > maxExtent) continue;
 
-      if (distSq >= radius * radius) continue;
+        const cos = Math.cos(c.rotY);
+        const sin = Math.sin(c.rotY);
+        const lx = dx * cos - dz * sin;
+        const lz = dx * sin + dz * cos;
 
-      let pushLx = 0;
-      let pushLz = 0;
-      if (distSq > 1e-6) {
-        const dist = Math.sqrt(distSq);
-        const push = radius - dist;
-        pushLx = (diffX / dist) * push;
-        pushLz = (diffZ / dist) * push;
-      } else {
-        // Center is inside box; push out along closest face
-        const penX = c.halfW - Math.abs(lx);
-        const penZ = c.halfD - Math.abs(lz);
-        if (penX < penZ) {
-          pushLx = (lx >= 0 ? 1 : -1) * (penX + radius);
+        const clampedX = Math.max(-c.halfW, Math.min(c.halfW, lx));
+        const clampedZ = Math.max(-c.halfD, Math.min(c.halfD, lz));
+        const diffX = lx - clampedX;
+        const diffZ = lz - clampedZ;
+        const distSq = diffX * diffX + diffZ * diffZ;
+
+        if (distSq >= rSq) continue;
+
+        let pushLx = 0;
+        let pushLz = 0;
+        if (distSq > 1e-6) {
+          const dist = Math.sqrt(distSq);
+          const push = radius - dist;
+          pushLx = (diffX / dist) * push;
+          pushLz = (diffZ / dist) * push;
+          totalPush += push;
         } else {
-          pushLz = (lz >= 0 ? 1 : -1) * (penZ + radius);
+          const penX = c.halfW - Math.abs(lx);
+          const penZ = c.halfD - Math.abs(lz);
+          if (penX < penZ) {
+            const p = penX + radius;
+            pushLx = (lx >= 0 ? 1 : -1) * p;
+            totalPush += p;
+          } else {
+            const p = penZ + radius;
+            pushLz = (lz >= 0 ? 1 : -1) * p;
+            totalPush += p;
+          }
         }
-      }
 
-      // Rotate push vector back to world space
-      this.pos.x += pushLx * cos + pushLz * sin;
-      this.pos.z += -pushLx * sin + pushLz * cos;
+        posObj.x += pushLx * cos + pushLz * sin;
+        posObj.z += -pushLx * sin + pushLz * cos;
+      }
     }
+    return totalPush;
   }
 
   private computeShotDamage(
@@ -3640,28 +3957,36 @@ export class BattleRoyaleEngine {
   }
 
   private isPointInsideCollider(x: number, y: number, z: number): boolean {
-    const cols = this.world.colliders;
-    for (let i = 0; i < cols.length; i++) {
-      const c = cols[i];
-      if (y < c.minY || y > c.maxY) continue;
-      const dx = x - c.cx;
-      const dz = z - c.cz;
-      const maxE = c.halfW + c.halfD;
-      if (Math.abs(dx) > maxE || Math.abs(dz) > maxE) continue;
-      const cos = Math.cos(c.rotY);
-      const sin = Math.sin(c.rotY);
-      const lx = dx * cos - dz * sin;
-      const lz = dx * sin + dz * cos;
-      if (Math.abs(lx) <= c.halfW && Math.abs(lz) <= c.halfD) {
-        return true;
+    const staticNear = this._colScratch;
+    this.world.queryStaticCollidersNear(x, z, 1.5, staticNear);
+    const allCols = this.world.colliders;
+    const staticCount = this.world.staticColliderCount;
+
+    for (let pass = 0; pass < 2; pass++) {
+      const cols = pass === 0 ? staticNear : allCols;
+      const startIdx = pass === 0 ? 0 : staticCount;
+      for (let i = startIdx; i < cols.length; i++) {
+        const c = cols[i];
+        if (y < c.minY || y > c.maxY) continue;
+        const dx = x - c.cx;
+        const dz = z - c.cz;
+        const maxE = c.halfW + c.halfD;
+        if (Math.abs(dx) > maxE || Math.abs(dz) > maxE) continue;
+        const cos = Math.cos(c.rotY);
+        const sin = Math.sin(c.rotY);
+        const lx = dx * cos - dz * sin;
+        const lz = dx * sin + dz * cos;
+        if (Math.abs(lx) <= c.halfW && Math.abs(lz) <= c.halfD) {
+          return true;
+        }
       }
     }
     return false;
   }
 
   private computeGlooPlacement(): { x: number; y: number; z: number } {
-    const x = THREE.MathUtils.clamp(this.pos.x - Math.sin(this.yaw) * 3.8, -508, 508);
-    const z = THREE.MathUtils.clamp(this.pos.z - Math.cos(this.yaw) * 3.8, -508, 508);
+    const x = THREE.MathUtils.clamp(this.pos.x - Math.sin(this.yaw) * 3.8, -BERMUDA_HALF + 12, BERMUDA_HALF - 12);
+    const z = THREE.MathUtils.clamp(this.pos.z - Math.cos(this.yaw) * 3.8, -BERMUDA_HALF + 12, BERMUDA_HALF - 12);
     const y = Math.max(-0.2, this.resolveFloorHeight(x, z, this.pos.y + 1.2));
     return { x, y, z };
   }
@@ -3686,8 +4011,9 @@ export class BattleRoyaleEngine {
     const mesh = new THREE.Mesh(this.glooWallGeo, this.glooWallMat);
     mesh.position.set(x, y + 1.175, z);
     mesh.rotation.y = wallYaw;
-    mesh.castShadow = !this.isSoftwareGl;
-    mesh.receiveShadow = !this.isSoftwareGl;
+    const enableShadow = !this.isSoftwareGl && this.settings.quality === 'high';
+    mesh.castShadow = enableShadow;
+    mesh.receiveShadow = enableShadow;
     mesh.userData.glooId = id;
     this.world.scene.add(mesh);
 
@@ -3703,6 +4029,7 @@ export class BattleRoyaleEngine {
     };
     this.world.colliders.push(collider);
     this.solidObstaclesNoTerrain.push(mesh);
+    this.solidObstaclesActive.push(mesh);
     this.deployedGloos.push({ id, mesh, collider, hp: 450, life: 55 });
   }
 
@@ -3715,8 +4042,8 @@ export class BattleRoyaleEngine {
     const dist = Math.hypot(dx, dz) || 1;
     const nx = dx / dist;
     const nz = dz / dist;
-    const gx = THREE.MathUtils.clamp(bx + nx * 3.1, -504, 504);
-    const gz = THREE.MathUtils.clamp(bz + nz * 3.1, -504, 504);
+    const gx = THREE.MathUtils.clamp(bx + nx * 3.1, -BERMUDA_HALF + 16, BERMUDA_HALF - 16);
+    const gz = THREE.MathUtils.clamp(bz + nz * 3.1, -BERMUDA_HALF + 16, BERMUDA_HALF - 16);
     const gy = Math.max(-0.2, this.resolveFloorHeight(gx, gz, bot.group.position.y + 1.0));
     const wallYaw = Math.atan2(-nx, -nz);
 
@@ -3735,6 +4062,8 @@ export class BattleRoyaleEngine {
     if (cIdx >= 0) this.world.colliders.splice(cIdx, 1);
     const oIdx = this.solidObstaclesNoTerrain.indexOf(g.mesh);
     if (oIdx >= 0) this.solidObstaclesNoTerrain.splice(oIdx, 1);
+    const aIdx = this.solidObstaclesActive.indexOf(g.mesh);
+    if (aIdx >= 0) this.solidObstaclesActive.splice(aIdx, 1);
     this.deployedGloos.splice(index, 1);
   }
 
@@ -4009,7 +4338,8 @@ export class BattleRoyaleEngine {
   private performMeleePunch(): void {
     this.animator.triggerPunch();
     soundEngine.playPunchSwing();
-    this.combatFacingTimer = 0.35;
+    this.combatFacingTimer = 0.42;
+    this.combatPoseTimer = 0.38;
 
     const fwdX = -Math.sin(this.yaw);
     const fwdZ = -Math.cos(this.yaw);
@@ -4088,6 +4418,8 @@ export class BattleRoyaleEngine {
 
     slotState.ammoInMag -= 1;
     this.consecutiveShots += 1;
+    this.combatPoseTimer = 0.6;
+    this.combatFacingTimer = 0.6;
     this.animator.triggerFire();
     const isSilenced = slotState.attachments.muzzle === 'silencer';
     soundEngine.playGunshot(def.id, isSilenced);
@@ -4096,6 +4428,7 @@ export class BattleRoyaleEngine {
     this.lastGunfightTimer = 14;
 
     const cam = this.world.camera;
+    const camToPivotDist = cam.position.distanceTo(this.camLookCurrent);
     this.fillActiveTargetMeshes();
 
     let spreadMult = 1.0;
@@ -4131,18 +4464,19 @@ export class BattleRoyaleEngine {
       );
       let endDist = Math.min(effectiveRange * 0.55, terrainDist);
 
-      // 2. Test tiny enemy hitboxes first (~20 boxes -> < 0.01ms)
+      // 2. Test tiny enemy hitboxes first (skip targets standing behind the player between camera & pivot)
       this.raycaster.far = terrainDist;
-      const targetHits =
+      const rawTargetHits =
         this.scratchTargetMeshes.length > 0
           ? this.raycaster.intersectObjects(this.scratchTargetMeshes, false)
           : [];
+      const minForwardDist = Math.max(0.2, camToPivotDist - 0.55);
+      const tHit = rawTargetHits.find((h) => h.distance >= minForwardDist) ?? rawTargetHits[0];
 
-      if (targetHits.length > 0) {
-        const tHit = targetHits[0];
+      if (tHit) {
         this.raycaster.far = Math.max(0.2, tHit.distance - 0.1);
         const wallHits = this.raycaster.intersectObjects(
-          this.solidObstaclesNoTerrain,
+          this.solidObstaclesActive,
           false,
         );
         if (wallHits.length > 0) {
@@ -4200,7 +4534,7 @@ export class BattleRoyaleEngine {
       } else if (p === 0) {
         this.raycaster.far = Math.min(effectiveRange * 0.85, terrainDist);
         const wallHits = this.raycaster.intersectObjects(
-          this.solidObstaclesNoTerrain,
+          this.solidObstaclesActive,
           false,
         );
         if (wallHits.length > 0) {
@@ -4413,6 +4747,441 @@ export class BattleRoyaleEngine {
     _v1.set(bx, by, bz);
     _v2.set(tx, ty, tz);
     return this.hasLineOfSightToPoint(_v1, _v2);
+  }
+
+  private isPointBlockedForBot(x: number, y: number, z: number, radius = 0.46): boolean {
+    const cols = this._botProbeCols;
+    this.world.queryStaticCollidersNear(x, z, radius + 1.5, cols);
+    const allCols = this.world.colliders;
+    const staticCount = this.world.staticColliderCount;
+    const rSq = radius * radius;
+    for (let pass = 0; pass < 2; pass++) {
+      const list = pass === 0 ? cols : allCols;
+      const startIdx = pass === 0 ? 0 : staticCount;
+      for (let i = startIdx; i < list.length; i++) {
+        const c = list[i];
+        if (y + 1.55 < c.minY || y + 0.30 > c.maxY) continue;
+        const dx = x - c.cx;
+        const dz = z - c.cz;
+        const maxE = c.halfW + c.halfD + radius;
+        if (Math.abs(dx) > maxE || Math.abs(dz) > maxE) continue;
+        const cos = Math.cos(c.rotY);
+        const sin = Math.sin(c.rotY);
+        const lx = dx * cos - dz * sin;
+        const lz = dx * sin + dz * cos;
+        const cx = Math.max(-c.halfW, Math.min(c.halfW, lx));
+        const cz = Math.max(-c.halfD, Math.min(c.halfD, lz));
+        const ex = lx - cx;
+        const ez = lz - cz;
+        if (ex * ex + ez * ez < rSq) return true;
+      }
+    }
+    return false;
+  }
+
+  private rayObbClearance(
+    ox: number,
+    oy: number,
+    oz: number,
+    dirX: number,
+    dirZ: number,
+    maxDist: number,
+    radius: number,
+    staticCols: WorldObbCollider[],
+    allCols: WorldObbCollider[],
+    staticCount: number,
+    ignoreWindowSill = false,
+  ): { dist: number; hitWindowSill: boolean } {
+    let bestDist = maxDist;
+    let hitWindowSill = false;
+
+    for (let pass = 0; pass < 2; pass++) {
+      const list = pass === 0 ? staticCols : allCols;
+      const startIdx = pass === 0 ? 0 : staticCount;
+      for (let i = startIdx; i < list.length; i++) {
+        const c = list[i];
+        if (ignoreWindowSill && c.tag === 'house-window-sill') continue;
+        if (oy + 1.55 < c.minY || oy + 0.30 > c.maxY) continue;
+
+        const dx = ox - c.cx;
+        const dz = oz - c.cz;
+        const maxE = c.halfW + c.halfD + maxDist + radius;
+        if (Math.abs(dx) > maxE || Math.abs(dz) > maxE) continue;
+
+        const cos = Math.cos(c.rotY);
+        const sin = Math.sin(c.rotY);
+        const lx = dx * cos - dz * sin;
+        const lz = dx * sin + dz * cos;
+        const ldx = dirX * cos - dirZ * sin;
+        const ldz = dirX * sin + dirZ * cos;
+        const hw = c.halfW + radius;
+        const hd = c.halfD + radius;
+
+        let tMin = 0;
+        let tMax = bestDist;
+
+        if (Math.abs(ldx) < 1e-6) {
+          if (Math.abs(lx) > hw) continue;
+        } else {
+          let tx1 = (-hw - lx) / ldx;
+          let tx2 = (hw - lx) / ldx;
+          if (tx1 > tx2) {
+            const tmp = tx1;
+            tx1 = tx2;
+            tx2 = tmp;
+          }
+          if (tx1 > tMin) tMin = tx1;
+          if (tx2 < tMax) tMax = tx2;
+          if (tMin > tMax) continue;
+        }
+
+        if (Math.abs(ldz) < 1e-6) {
+          if (Math.abs(lz) > hd) continue;
+        } else {
+          let tz1 = (-hd - lz) / ldz;
+          let tz2 = (hd - lz) / ldz;
+          if (tz1 > tz2) {
+            const tmp = tz1;
+            tz1 = tz2;
+            tz2 = tmp;
+          }
+          if (tz1 > tMin) tMin = tz1;
+          if (tz2 < tMax) tMax = tz2;
+          if (tMin > tMax) continue;
+        }
+
+        if (tMin < bestDist) {
+          bestDist = tMin;
+          hitWindowSill = c.tag === 'house-window-sill';
+        }
+      }
+    }
+    return { dist: bestDist, hitWindowSill };
+  }
+
+  private resolveSmartBuildingTarget(
+    bot: TargetDummy,
+    bx: number,
+    by: number,
+    bz: number,
+    gx: number,
+    gz: number,
+    gy: number,
+  ): void {
+    this._botNavOut.x = gx;
+    this._botNavOut.z = gz;
+
+    const curB: BuildingNavZone | null = this.world.findBuildingNavZoneAt(bx, bz);
+    if (bot.escapeTimer > 0) {
+      if (!curB) {
+        bot.escapeTimer = 0;
+      } else if (
+        curB.secondFloorY !== undefined &&
+        by >= curB.baseY + 2.0 &&
+        curB.stairTop &&
+        curB.stairBottom
+      ) {
+        const dTop = Math.hypot(curB.stairTop.x - bx, curB.stairTop.z - bz);
+        if (dTop > 1.35) {
+          this._botNavOut.x = curB.stairTop.x;
+          this._botNavOut.z = curB.stairTop.z;
+        } else {
+          this._botNavOut.x = curB.stairBottom.x;
+          this._botNavOut.z = curB.stairBottom.z;
+        }
+        return;
+      } else {
+        this._botNavOut.x = bot.escapeDoorX;
+        this._botNavOut.z = bot.escapeDoorZ;
+        return;
+      }
+    }
+
+    const goalB: BuildingNavZone | null = this.world.findBuildingNavZoneAt(gx, gz);
+    const goalOn2F = goalB?.secondFloorY !== undefined && gy >= goalB.baseY + 2.0;
+
+    // Case A: Bot is currently INSIDE a building (curB)
+    if (curB) {
+      const botOn2F = curB.secondFloorY !== undefined && by >= curB.baseY + 2.0;
+
+      // On 2nd floor wanting to go outside or back down to 1st floor
+      if (botOn2F && (goalB !== curB || !goalOn2F) && curB.stairTop && curB.stairBottom) {
+        const dTop = Math.hypot(curB.stairTop.x - bx, curB.stairTop.z - bz);
+        if (dTop > 1.35) {
+          this._botNavOut.x = curB.stairTop.x;
+          this._botNavOut.z = curB.stairTop.z;
+        } else {
+          this._botNavOut.x = curB.stairBottom.x;
+          this._botNavOut.z = curB.stairBottom.z;
+        }
+        return;
+      }
+
+      // On 1st floor inside curB, wanting to go to 2nd floor of curB
+      if (!botOn2F && goalB === curB && goalOn2F && curB.stairBottom && curB.stairTop) {
+        const dBot = Math.hypot(curB.stairBottom.x - bx, curB.stairBottom.z - bz);
+        if (dBot > 1.35) {
+          if (curB.hub) {
+            const dHub = Math.hypot(curB.hub.x - bx, curB.hub.z - bz);
+            if (dHub > 1.4 && dHub + Math.hypot(curB.stairBottom.x - curB.hub.x, curB.stairBottom.z - curB.hub.z) < dBot + 3.2) {
+              this.world.queryStaticCollidersNear((bx + curB.stairBottom.x) * 0.5, (bz + curB.stairBottom.z) * 0.5, 5.5, this._botSteerCols);
+              const sdx = curB.stairBottom.x - bx;
+              const sdz = curB.stairBottom.z - bz;
+              const hit = this.rayObbClearance(bx, by, bz, sdx / dBot, sdz / dBot, dBot, 0.36, this._botSteerCols, this.world.colliders, this.world.staticColliderCount);
+              if (hit.dist < dBot - 0.6) {
+                this._botNavOut.x = curB.hub.x;
+                this._botNavOut.z = curB.hub.z;
+                return;
+              }
+            }
+          }
+          this._botNavOut.x = curB.stairBottom.x;
+          this._botNavOut.z = curB.stairBottom.z;
+        } else {
+          this._botNavOut.x = curB.stairTop.x;
+          this._botNavOut.z = curB.stairTop.z;
+        }
+        return;
+      }
+
+      // On 1st floor inside curB, wanting to EXIT outside curB
+      if (!botOn2F && goalB !== curB && curB.doors.length > 0) {
+        let bestDoor = curB.doors[0];
+        let bestCost = Infinity;
+        for (let k = 0; k < curB.doors.length; k++) {
+          const d = curB.doors[k];
+          const c =
+            Math.hypot(d.inX - bx, d.inZ - bz) + Math.hypot(gx - d.outX, gz - d.outZ);
+          if (c < bestCost) {
+            bestCost = c;
+            bestDoor = d;
+          }
+        }
+        const dIn = Math.hypot(bestDoor.inX - bx, bestDoor.inZ - bz);
+        const dOut = Math.hypot(bestDoor.outX - bx, bestDoor.outZ - bz);
+        if (dIn > 1.35 && dOut > dIn) {
+          if (curB.hub) {
+            const dHub = Math.hypot(curB.hub.x - bx, curB.hub.z - bz);
+            if (dHub > 1.4) {
+              this.world.queryStaticCollidersNear((bx + bestDoor.inX) * 0.5, (bz + bestDoor.inZ) * 0.5, 5.5, this._botSteerCols);
+              const hit = this.rayObbClearance(
+                bx,
+                by,
+                bz,
+                (bestDoor.inX - bx) / dIn,
+                (bestDoor.inZ - bz) / dIn,
+                dIn,
+                0.36,
+                this._botSteerCols,
+                this.world.colliders,
+                this.world.staticColliderCount,
+              );
+              if (hit.dist < dIn - 0.6) {
+                this._botNavOut.x = curB.hub.x;
+                this._botNavOut.z = curB.hub.z;
+                return;
+              }
+            }
+          }
+          this._botNavOut.x = bestDoor.inX;
+          this._botNavOut.z = bestDoor.inZ;
+        } else {
+          this._botNavOut.x = bestDoor.outX;
+          this._botNavOut.z = bestDoor.outZ;
+        }
+        return;
+      }
+
+      // Both bot & goal inside same Casa L on 1F -> check hub if inner L-wall blocks direct path
+      if (goalB === curB && curB.hub) {
+        const dDirect = Math.hypot(gx - bx, gz - bz);
+        if (dDirect > 2.2) {
+          const dHub = Math.hypot(curB.hub.x - bx, curB.hub.z - bz);
+          if (dHub > 1.4) {
+            this.world.queryStaticCollidersNear((bx + gx) * 0.5, (bz + gz) * 0.5, 5.5, this._botSteerCols);
+            const hit = this.rayObbClearance(
+              bx,
+              by,
+              bz,
+              (gx - bx) / dDirect,
+              (gz - bz) / dDirect,
+              dDirect,
+              0.36,
+              this._botSteerCols,
+              this.world.colliders,
+              this.world.staticColliderCount,
+            );
+            if (hit.dist < dDirect - 0.7) {
+              this._botNavOut.x = curB.hub.x;
+              this._botNavOut.z = curB.hub.z;
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    // Case B: Bot is OUTSIDE, goal is INSIDE goalB -> route to best exterior doorway!
+    if (goalB && goalB.doors.length > 0) {
+      let bestDoor = goalB.doors[0];
+      let bestCost = Infinity;
+      for (let k = 0; k < goalB.doors.length; k++) {
+        const d = goalB.doors[k];
+        const c =
+          Math.hypot(d.outX - bx, d.outZ - bz) + Math.hypot(gx - d.inX, gz - d.inZ);
+        if (c < bestCost) {
+          bestCost = c;
+          bestDoor = d;
+        }
+      }
+      const dOut = Math.hypot(bestDoor.outX - bx, bestDoor.outZ - bz);
+      if (dOut > 1.5) {
+        this._botNavOut.x = bestDoor.outX;
+        this._botNavOut.z = bestDoor.outZ;
+      } else {
+        this._botNavOut.x = bestDoor.inX;
+        this._botNavOut.z = bestDoor.inZ;
+      }
+    }
+  }
+
+  private steerBotDirection(
+    bot: TargetDummy,
+    bx: number,
+    by: number,
+    bz: number,
+    wantDirX: number,
+    wantDirZ: number,
+    avoidWater: boolean,
+  ): boolean {
+    const lookDist = 3.2;
+    const probeR = 0.43;
+    const ignoreSill = bot.vaultTimer > 0;
+    this.world.queryStaticCollidersNear(
+      bx + wantDirX * 1.4,
+      bz + wantDirZ * 1.4,
+      5.2,
+      this._botSteerCols,
+    );
+    const allCols = this.world.colliders;
+    const staticCount = this.world.staticColliderCount;
+
+    const fwd = this.rayObbClearance(
+      bx,
+      by,
+      bz,
+      wantDirX,
+      wantDirZ,
+      lookDist,
+      probeR,
+      this._botSteerCols,
+      allCols,
+      staticCount,
+      ignoreSill,
+    );
+    const fwdWaterBad =
+      avoidWater && botSurfaceHeightAt(bx + wantDirX * 2.1, bz + wantDirZ * 2.1).inWater;
+
+    if (fwd.dist >= 2.95 && !fwdWaterBad) {
+      this._botNavOut.dirX = wantDirX;
+      this._botNavOut.dirZ = wantDirZ;
+      return false;
+    }
+
+    const wantYaw = Math.atan2(wantDirX, wantDirZ);
+    const prefSign = bot.steerSign;
+    const angles = [0.42, 0.84, 1.28, 1.72, 2.25, 2.85];
+
+    let bestScore = fwd.dist - (fwdWaterBad ? 2.6 : 0) + 0.15;
+    let bestDirX = wantDirX;
+    let bestDirZ = wantDirZ;
+    let bestSign = 0;
+
+    for (let a = 0; a < angles.length; a++) {
+      const mag = angles[a];
+      for (let s = 0; s < 2; s++) {
+        const sign = s === 0 ? prefSign : -prefSign;
+        const ang = wantYaw + sign * mag;
+        const cx = Math.sin(ang);
+        const cz = Math.cos(ang);
+        const res = this.rayObbClearance(
+          bx,
+          by,
+          bz,
+          cx,
+          cz,
+          lookDist,
+          probeR,
+          this._botSteerCols,
+          allCols,
+          staticCount,
+          ignoreSill,
+        );
+        const wBad = avoidWater && botSurfaceHeightAt(bx + cx * 2.1, bz + cz * 2.1).inWater;
+        const align = Math.cos(mag);
+        const sideBonus = bot.steerLockTimer > 0 && sign === prefSign ? 0.65 : 0;
+        const clearBonus = res.dist >= 2.6 ? 1.15 : res.dist < 0.85 ? -1.4 : 0;
+        const score =
+          res.dist +
+          align * 1.15 +
+          sideBonus +
+          clearBonus -
+          (wBad ? 2.6 : 0);
+        if (score > bestScore) {
+          bestScore = score;
+          bestDirX = cx;
+          bestDirZ = cz;
+          bestSign = sign;
+        }
+      }
+    }
+
+    if (bestSign !== 0) {
+      bot.steerSign = bestSign > 0 ? 1 : -1;
+      bot.steerLockTimer = 0.72;
+    }
+    this._botNavOut.dirX = bestDirX;
+    this._botNavOut.dirZ = bestDirZ;
+    return fwd.hitWindowSill && fwd.dist < 1.35;
+  }
+
+  private findClearestEscapeVector(
+    bx: number,
+    by: number,
+    bz: number,
+  ): { x: number; z: number } {
+    this.world.queryStaticCollidersNear(bx, bz, 5.5, this._botSteerCols);
+    const allCols = this.world.colliders;
+    const staticCount = this.world.staticColliderCount;
+    let bestClear = -1;
+    let bestX = 0;
+    let bestZ = 1;
+    for (let k = 0; k < 12; k++) {
+      const ang = (k / 12) * Math.PI * 2;
+      const dx = Math.sin(ang);
+      const dz = Math.cos(ang);
+      const hit = this.rayObbClearance(
+        bx,
+        by,
+        bz,
+        dx,
+        dz,
+        4.2,
+        0.44,
+        this._botSteerCols,
+        allCols,
+        staticCount,
+        false,
+      );
+      let score = hit.dist;
+      if (botSurfaceHeightAt(bx + dx * 2.5, bz + dz * 2.5).inWater) score -= 2.2;
+      if (score > bestClear) {
+        bestClear = score;
+        bestX = dx;
+        bestZ = dz;
+      }
+    }
+    return { x: bestX, z: bestZ };
   }
 
   private updateBots(dt: number, state: GameState): void {
@@ -4718,6 +5487,11 @@ export class BattleRoyaleEngine {
           }
           if (state === GameState.PLAYING || bot.group.position.y <= gy + 0.12) {
             bot.group.position.y = gy;
+            this.resolveEntityHorizontalCollisions(bot.group.position, 0.44, null, false);
+            this.resolveEntityHorizontalCollisions(bot.group.position, 0.44, null, false);
+            bot.group.position.y = Math.max(0.4, this.resolveFloorHeight(bot.group.position.x, bot.group.position.z, bot.group.position.y + 0.5));
+            bot.navCheckX = bot.group.position.x;
+            bot.navCheckZ = bot.group.position.z;
             bot.airState = 'ground';
             bot.vy = 0;
             if (bot.parachuteMesh) bot.parachuteMesh.visible = false;
@@ -4756,6 +5530,11 @@ export class BattleRoyaleEngine {
         }
         if (bot.group.position.y <= gy) {
           bot.group.position.y = gy;
+          this.resolveEntityHorizontalCollisions(bot.group.position, 0.44, null, false);
+          this.resolveEntityHorizontalCollisions(bot.group.position, 0.44, null, false);
+          bot.group.position.y = Math.max(0.4, this.resolveFloorHeight(bot.group.position.x, bot.group.position.z, bot.group.position.y + 0.5));
+          bot.navCheckX = bot.group.position.x;
+          bot.navCheckZ = bot.group.position.z;
           bot.airState = 'ground';
           bot.vy = 0;
           if (bot.parachuteMesh) bot.parachuteMesh.visible = false;
@@ -4790,6 +5569,13 @@ export class BattleRoyaleEngine {
       bot.fireCooldown = Math.max(0, bot.fireCooldown - dt);
       bot.glooCooldown = Math.max(0, bot.glooCooldown - dt);
       bot.huntTimer = Math.max(0, bot.huntTimer - dt);
+      bot.steerLockTimer = Math.max(0, bot.steerLockTimer - dt);
+      bot.vaultTimer = Math.max(0, bot.vaultTimer - dt);
+      bot.escapeTimer = Math.max(0, bot.escapeTimer - dt);
+      if (bot.badLootTimer > 0) {
+        bot.badLootTimer = Math.max(0, bot.badLootTimer - dt);
+        if (bot.badLootTimer === 0) bot.badLootId = null;
+      }
 
       const bx = bot.group.position.x;
       const bz = bot.group.position.z;
@@ -4838,13 +5624,48 @@ export class BattleRoyaleEngine {
         cdx /= cdist;
         cdz /= cdist;
         const crawlSpeed = movingCrawl ? 1.25 : 0;
-        const nx = THREE.MathUtils.clamp(bx + cdx * crawlSpeed * dt, -485, 485);
-        const nz = THREE.MathUtils.clamp(bz + cdz * crawlSpeed * dt, -485, 485);
-        const crawlSurf = botSurfaceHeightAt(nx, nz);
-        const ny = Math.max(0.18, crawlSurf.y);
         if (movingCrawl) {
-          bot.group.position.set(nx, ny, nz);
-          bot.group.rotation.y = Math.atan2(cdx, cdz);
+          let crawlGoalX = bot.isAlly ? this.pos.x : bx + cdx * 8;
+          let crawlGoalZ = bot.isAlly ? this.pos.z : bz + cdz * 8;
+          if (bot.isAlly) {
+            this.resolveSmartBuildingTarget(
+              bot,
+              bx,
+              bot.group.position.y,
+              bz,
+              this.pos.x,
+              this.pos.z,
+              this.pos.y,
+            );
+            crawlGoalX = this._botNavOut.x;
+            crawlGoalZ = this._botNavOut.z;
+          }
+          const cgx = crawlGoalX - bx;
+          const cgz = crawlGoalZ - bz;
+          const cgDist = Math.hypot(cgx, cgz) || 1;
+          this.steerBotDirection(
+            bot,
+            bx,
+            bot.group.position.y,
+            bz,
+            cgx / cgDist,
+            cgz / cgDist,
+            true,
+          );
+          const sdx = this._botNavOut.dirX;
+          const sdz = this._botNavOut.dirZ;
+          const nx = THREE.MathUtils.clamp(bx + sdx * crawlSpeed * dt, -BERMUDA_HALF + 25, BERMUDA_HALF - 25);
+          const nz = THREE.MathUtils.clamp(bz + sdz * crawlSpeed * dt, -BERMUDA_HALF + 25, BERMUDA_HALF - 25);
+          bot.group.position.x = nx;
+          bot.group.position.z = nz;
+          this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, false);
+          this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, false);
+          const floorY = Math.max(
+            0.18,
+            this.resolveFloorHeight(bot.group.position.x, bot.group.position.z, bot.group.position.y),
+          );
+          bot.group.position.y = floorY;
+          bot.group.rotation.y = Math.atan2(sdx, sdz);
         }
 
         if (inRenderRange) {
@@ -5045,7 +5866,7 @@ export class BattleRoyaleEngine {
           const rr = Math.min(this.zoneNextRadius * 0.65, 110);
           let gx = this.zoneNextX + Math.cos(ang) * rr;
           let gz = this.zoneNextZ + Math.sin(ang) * rr;
-          if (botSurfaceHeightAt(gx, gz).inWater || gx * gx + gz * gz > 445 * 445) {
+          if (botSurfaceHeightAt(gx, gz).inWater || gx * gx + gz * gz > 840 * 840) {
             gx = this.zoneCurrentX;
             gz = this.zoneCurrentZ;
           }
@@ -5073,60 +5894,107 @@ export class BattleRoyaleEngine {
           } else if (distToPlayer > 78) {
             const formAng = curAllySlot * 1.25 + this.yaw + Math.PI;
             bot.aiState = 'roam';
-            bot.goalX = THREE.MathUtils.clamp(this.pos.x + Math.sin(formAng) * 16, -460, 460);
-            bot.goalZ = THREE.MathUtils.clamp(this.pos.z + Math.cos(formAng) * 16, -460, 460);
+            const playerBldg = this.world.findBuildingNavZoneAt(this.pos.x, this.pos.z);
+            if (playerBldg && playerBldg.doors.length > 0) {
+              bot.goalX = playerBldg.doors[0].outX;
+              bot.goalZ = playerBldg.doors[0].outZ;
+            } else {
+              bot.goalX = THREE.MathUtils.clamp(this.pos.x + Math.sin(formAng) * 7.5, -850, 850);
+              bot.goalZ = THREE.MathUtils.clamp(this.pos.z + Math.cos(formAng) * 7.5, -850, 850);
+            }
           } else {
             let foundAllyLoot = false;
-            if (bot.weaponId === 'g18' || bot.vestLevel < 2 || bot.medkits < 2) {
+            const curBotBldg = this.world.findBuildingNavZoneAt(bx, bz);
+            if (bot.weaponId === 'g18' || bot.weaponId === 'deagle' || bot.vestLevel < 2 || bot.medkits < 2) {
               for (let l = 0; l < this.world.loots.length; l++) {
                 const loot = this.world.loots[l];
-                if (loot.data.collected || loot.data.kind === 'deathbox' || loot.data.kind === 'coin') {
+                if (
+                  loot.data.collected ||
+                  loot.data.kind === 'deathbox' ||
+                  loot.data.kind === 'coin' ||
+                  loot.data.id === bot.badLootId
+                ) {
                   continue;
                 }
                 const ldx = loot.data.x - bx;
                 const ldz = loot.data.z - bz;
-                if (Math.abs(ldx) > 42 || Math.abs(ldz) > 42) continue;
+                if (Math.abs(ldx) > 36 || Math.abs(ldz) > 36) continue;
+                // Only grab loot on the same floor unless inside the same multi-story house
+                if (Math.abs(loot.data.y - bot.group.position.y) > 2.2) {
+                  const lootBldg = this.world.findBuildingNavZoneAt(loot.data.x, loot.data.z);
+                  if (!curBotBldg || curBotBldg !== lootBldg) continue;
+                }
                 const db = Math.hypot(ldx, ldz);
                 const dp = Math.hypot(loot.data.x - this.pos.x, loot.data.z - this.pos.z);
-                if (db < 42 && dp > 5.0) {
+                if (db < 36 && dp > 4.5) {
                   bot.aiState = 'loot';
                   bot.goalX = loot.data.x;
+                  bot.goalY = loot.data.y;
                   bot.goalZ = loot.data.z;
                   foundAllyLoot = true;
                   break;
                 }
               }
             }
-            if (!foundAllyLoot && (distGoal < 4.5 || bot.huntTimer <= 0)) {
-              bot.huntTimer = 4.5 + curAllySlot * 0.8;
+            if (!foundAllyLoot && (distGoal < 3.5 || bot.huntTimer <= 0)) {
+              bot.huntTimer = 3.8 + curAllySlot * 0.7;
               bot.aiState = 'roam';
-              const flankAng = (curAllySlot * 2.1 + this.elapsed * 0.25) % (Math.PI * 2);
-              const tacticalR = 14 + (curAllySlot % 3) * 8;
-              let gx = THREE.MathUtils.clamp(this.pos.x + Math.cos(flankAng) * tacticalR, -460, 460);
-              let gz = THREE.MathUtils.clamp(this.pos.z + Math.sin(flankAng) * tacticalR, -460, 460);
-              if (botSurfaceHeightAt(gx, gz).inWater || gx * gx + gz * gz > 445 * 445) {
-                gx = this.pos.x;
-                gz = this.pos.z;
+              const playerBldg = this.world.findBuildingNavZoneAt(this.pos.x, this.pos.z);
+              let pickedX = this.pos.x;
+              let pickedZ = this.pos.z;
+              let foundClearSpot = false;
+              const baseAng = curAllySlot * 2.094 + this.yaw + Math.PI;
+              const baseR = 4.6 + (curAllySlot % 3) * 1.9;
+              for (let tryIdx = 0; tryIdx < 6; tryIdx++) {
+                const tryAng = baseAng + tryIdx * 1.047;
+                const gx = THREE.MathUtils.clamp(this.pos.x + Math.sin(tryAng) * baseR, -850, 850);
+                const gz = THREE.MathUtils.clamp(this.pos.z + Math.cos(tryAng) * baseR, -850, 850);
+                if (gx * gx + gz * gz > 840 * 840) continue;
+                if (botSurfaceHeightAt(gx, gz).inWater) continue;
+                if (this.isPointBlockedForBot(gx, this.pos.y, gz, 0.52)) continue;
+                const candBldg = this.world.findBuildingNavZoneAt(gx, gz);
+                if (candBldg && candBldg !== playerBldg) continue;
+                pickedX = gx;
+                pickedZ = gz;
+                foundClearSpot = true;
+                break;
               }
-              bot.goalX = gx;
-              bot.goalZ = gz;
+              if (!foundClearSpot && playerBldg && playerBldg.doors.length > 0) {
+                pickedX = playerBldg.doors[0].outX;
+                pickedZ = playerBldg.doors[0].outZ;
+              }
+              bot.goalX = pickedX;
+              bot.goalY = this.pos.y;
+              bot.goalZ = pickedZ;
             }
           }
         } else {
           let foundLoot = false;
-          if (bot.weaponId === 'g18' || bot.vestLevel === 0) {
+          const curBotBldg = this.world.findBuildingNavZoneAt(bx, bz);
+          if (bot.weaponId === 'g18' || bot.weaponId === 'deagle' || bot.vestLevel === 0) {
             for (let l = 0; l < this.world.loots.length; l++) {
               const loot = this.world.loots[l];
-              if (loot.data.collected || loot.data.kind === 'deathbox') continue;
+              if (
+                loot.data.collected ||
+                loot.data.kind === 'deathbox' ||
+                loot.data.id === bot.badLootId
+              ) {
+                continue;
+              }
               const ldx = loot.data.x - bx;
               const ldz = loot.data.z - bz;
-              if (Math.abs(ldx) > 34 || Math.abs(ldz) > 34) continue;
+              if (Math.abs(ldx) > 32 || Math.abs(ldz) > 32) continue;
+              if (Math.abs(loot.data.y - bot.group.position.y) > 2.2) {
+                const lootBldg = this.world.findBuildingNavZoneAt(loot.data.x, loot.data.z);
+                if (!curBotBldg || curBotBldg !== lootBldg) continue;
+              }
               const dp = Math.hypot(loot.data.x - this.pos.x, loot.data.z - this.pos.z);
               if (!bot.isAlly && dp < 15) continue;
               const db = Math.hypot(ldx, ldz);
-              if (db < 34) {
+              if (db < 32) {
                 bot.aiState = 'loot';
                 bot.goalX = loot.data.x;
+                bot.goalY = loot.data.y;
                 bot.goalZ = loot.data.z;
                 foundLoot = true;
                 break;
@@ -5143,7 +6011,7 @@ export class BattleRoyaleEngine {
               // Proactively hunt nearest enemy / gunfight hotspot ("caçar tretação")
               let huntX: number | null = null;
               let huntZ: number | null = null;
-              let bestEnemyDistSq = 210 * 210;
+              let bestEnemyDistSq = 250 * 250;
               for (let j = 0; j < bots.length; j++) {
                 if (i === j) continue;
                 const other = bots[j];
@@ -5168,8 +6036,8 @@ export class BattleRoyaleEngine {
 
               if (huntX !== null && huntZ !== null) {
                 const ang = ((i * 1.7) % (Math.PI * 2));
-                bot.goalX = THREE.MathUtils.clamp(huntX + Math.cos(ang) * 14, -480, 480);
-                bot.goalZ = THREE.MathUtils.clamp(huntZ + Math.sin(ang) * 14, -480, 480);
+                bot.goalX = THREE.MathUtils.clamp(huntX + Math.cos(ang) * 14, -850, 850);
+                bot.goalZ = THREE.MathUtils.clamp(huntZ + Math.sin(ang) * 14, -850, 850);
               } else if (
                 isPlaying &&
                 this.lastGunfightTimer > 0 &&
@@ -5193,7 +6061,7 @@ export class BattleRoyaleEngine {
                   gx = this.zoneNextX + Math.cos(ang) * Math.min(80, this.zoneNextRadius * 0.6);
                   gz = this.zoneNextZ + Math.sin(ang) * Math.min(80, this.zoneNextRadius * 0.6);
                 }
-                if (botSurfaceHeightAt(gx, gz).inWater || gx * gx + gz * gz > 445 * 445) {
+                if (botSurfaceHeightAt(gx, gz).inWater || gx * gx + gz * gz > 840 * 840) {
                   gx = poi.x;
                   gz = poi.z;
                 }
@@ -5210,6 +6078,7 @@ export class BattleRoyaleEngine {
       let moveDirZ = 0;
       let isMoving = false;
       let isCrouchingAction = false;
+      let wantSteerWaterAvoid = true;
 
       if (bot.aiState === 'revive' && bot.revivingMateId) {
         if (bot.revivingMateId === 'player') {
@@ -5222,13 +6091,26 @@ export class BattleRoyaleEngine {
             const dx = this.pos.x - bx;
             const dz = this.pos.z - bz;
             const mDist = Math.hypot(dx, dz);
-            bot.group.rotation.y = lerpAngle(bot.group.rotation.y, Math.atan2(dx, dz), 1 - Math.exp(-12 * dt));
             if (mDist > 2.4) {
-              moveDirX = dx / mDist;
-              moveDirZ = dz / mDist;
+              this.resolveSmartBuildingTarget(
+                bot,
+                bx,
+                bot.group.position.y,
+                bz,
+                this.pos.x,
+                this.pos.z,
+                this.pos.y,
+              );
+              const wdx = this._botNavOut.x - bx;
+              const wdz = this._botNavOut.z - bz;
+              const wDist = Math.hypot(wdx, wdz) || 1;
+              moveDirX = wdx / wDist;
+              moveDirZ = wdz / wDist;
               isMoving = true;
+              bot.group.rotation.y = lerpAngle(bot.group.rotation.y, Math.atan2(moveDirX, moveDirZ), 1 - Math.exp(-12 * dt));
               if (this.playerRevivingAllyId === bot.id) this.playerRevivingAllyId = null;
             } else {
+              bot.group.rotation.y = lerpAngle(bot.group.rotation.y, Math.atan2(dx, dz), 1 - Math.exp(-12 * dt));
               isCrouchingAction = true;
               this.playerRevivingAllyId = bot.id;
               if (
@@ -5265,12 +6147,25 @@ export class BattleRoyaleEngine {
             const dx = mate.group.position.x - bx;
             const dz = mate.group.position.z - bz;
             const mDist = Math.hypot(dx, dz);
-            bot.group.rotation.y = lerpAngle(bot.group.rotation.y, Math.atan2(dx, dz), 1 - Math.exp(-12 * dt));
             if (mDist > 2.4) {
-              moveDirX = dx / mDist;
-              moveDirZ = dz / mDist;
+              this.resolveSmartBuildingTarget(
+                bot,
+                bx,
+                bot.group.position.y,
+                bz,
+                mate.group.position.x,
+                mate.group.position.z,
+                mate.group.position.y,
+              );
+              const wdx = this._botNavOut.x - bx;
+              const wdz = this._botNavOut.z - bz;
+              const wDist = Math.hypot(wdx, wdz) || 1;
+              moveDirX = wdx / wDist;
+              moveDirZ = wdz / wDist;
               isMoving = true;
+              bot.group.rotation.y = lerpAngle(bot.group.rotation.y, Math.atan2(moveDirX, moveDirZ), 1 - Math.exp(-12 * dt));
             } else {
+              bot.group.rotation.y = lerpAngle(bot.group.rotation.y, Math.atan2(dx, dz), 1 - Math.exp(-12 * dt));
               isCrouchingAction = true;
               if (
                 bot.reviveTimer === 0 &&
@@ -5331,6 +6226,7 @@ export class BattleRoyaleEngine {
         let tx = 0;
         let ty = 0;
         let tz = 0;
+        let targetBaseY = 0;
         let targetAlive = false;
         let targetBot: TargetDummy | null = null;
 
@@ -5339,6 +6235,7 @@ export class BattleRoyaleEngine {
             tx = this.pos.x;
             ty = this.pos.y + (this.isPlayerDowned ? 0.48 : 1.15);
             tz = this.pos.z;
+            targetBaseY = this.pos.y;
             targetAlive = true;
           }
         } else {
@@ -5347,6 +6244,7 @@ export class BattleRoyaleEngine {
             tx = targetBot.group.position.x;
             ty = targetBot.group.position.y + (targetBot.isDowned ? 0.45 : targetBot.chestOffsetY);
             tz = targetBot.group.position.z;
+            targetBaseY = targetBot.group.position.y;
             targetAlive = true;
           }
         }
@@ -5362,73 +6260,98 @@ export class BattleRoyaleEngine {
           bot.group.rotation.y = lerpAngle(bot.group.rotation.y, faceYaw, 1 - Math.exp(-15 * dt));
 
           if (dist > 20) {
-            moveDirX = dx / dist;
-            moveDirZ = dz / dist;
+            this.resolveSmartBuildingTarget(bot, bx, bot.group.position.y, bz, tx, tz, targetBaseY);
+            const wdx = this._botNavOut.x - bx;
+            const wdz = this._botNavOut.z - bz;
+            const wDist = Math.hypot(wdx, wdz) || 1;
+            moveDirX = wdx / wDist;
+            moveDirZ = wdz / wDist;
             isMoving = true;
+            wantSteerWaterAvoid = false;
           } else if (dist > 1.8) {
-            const strafeSign = i % 2 === 0 ? 1 : -1;
-            moveDirX = (-dz / dist) * 0.58 * strafeSign;
-            moveDirZ = (dx / dist) * 0.58 * strafeSign;
+            const strafeSign = bot.steerSign;
+            moveDirX = (-dz / dist) * 0.72 * strafeSign;
+            moveDirZ = (dx / dist) * 0.72 * strafeSign;
+            const mLen = Math.hypot(moveDirX, moveDirZ) || 1;
+            moveDirX /= mLen;
+            moveDirZ /= mLen;
             isMoving = true;
           }
 
-          if (bot.fireCooldown <= 0 && dist < 76) {
+          if (bot.reloadTimer > 0) {
+            bot.reloadTimer = Math.max(0, bot.reloadTimer - dt);
+            if (bot.reloadTimer === 0) {
+              bot.ammoInMag = WEAPONS[bot.weaponId].magSize;
+            }
+          } else if (bot.fireCooldown <= 0 && dist < Math.min(82, WEAPONS[bot.weaponId].range)) {
             const def = WEAPONS[bot.weaponId];
-            bot.fireCooldown = Math.max(0.28, (def.fireRateMs / 1000) * 2.5);
-            this.lastGunfightX = bx;
-            this.lastGunfightZ = bz;
-            this.lastGunfightTimer = 14;
-
-            const camDistSq =
-              (bx - this.pos.x) * (bx - this.pos.x) + (bz - this.pos.z) * (bz - this.pos.z);
-            if (isPlaying && inRenderRange && camDistSq < 140 * 140) {
-              soundEngine.playGunshot(bot.weaponId, false, Math.sqrt(camDistSq));
-            }
-            if (camDistSq < 110 * 110) {
-              _v1.set(bx, bot.group.position.y + 1.25, bz);
-              _v2.set(
-                tx + (Math.random() - 0.5) * 1.1,
-                ty + (Math.random() - 0.5) * 0.6,
-                tz + (Math.random() - 0.5) * 1.1,
+            if (bot.ammoInMag <= 0) {
+              bot.reloadTimer = def.reloadTimeSec;
+            } else {
+              bot.ammoInMag -= 1;
+              bot.fireCooldown = Math.max(
+                0.11,
+                (def.fireRateMs / 1000) * (def.automatic ? 1.45 : 1.15),
               );
-              this.spawnTracer(_v1, _v2);
-            }
+              this.lastGunfightX = bx;
+              this.lastGunfightZ = bz;
+              this.lastGunfightTimer = 14;
 
-            if (bot.targetId === 'player') {
-              if (dist < 58 && Math.random() < 0.3) {
-                if (activeVeh && !activeVeh.destroyed && Math.random() < 0.62) {
-                  this.damageVehicle(activeVeh, 16);
-                } else {
-                  const baseShotDmg = dist < 18 ? 14 : dist < 38 ? 10 : 7;
-                  this.applyPlayerDamage(
-                    baseShotDmg,
-                    bx,
-                    bz,
+              const camDistSq =
+                (bx - this.pos.x) * (bx - this.pos.x) + (bz - this.pos.z) * (bz - this.pos.z);
+              if (isPlaying && inRenderRange && camDistSq < 140 * 140) {
+                soundEngine.playGunshot(bot.weaponId, false, Math.sqrt(camDistSq));
+              }
+              if (camDistSq < 110 * 110) {
+                _v1.set(bx, bot.group.position.y + 1.25, bz);
+                _v2.set(
+                  tx + (Math.random() - 0.5) * 1.1,
+                  ty + (Math.random() - 0.5) * 0.6,
+                  tz + (Math.random() - 0.5) * 1.1,
+                );
+                this.spawnTracer(_v1, _v2);
+              }
+
+              if (bot.targetId === 'player') {
+                if (dist < 62 && Math.random() < (def.automatic ? 0.28 : 0.34)) {
+                  if (activeVeh && !activeVeh.destroyed && Math.random() < 0.62) {
+                    this.damageVehicle(activeVeh, Math.max(12, Math.round(def.damage * 0.45)));
+                  } else {
+                    const distFalloff = dist < 18 ? 1.0 : dist < 38 ? 0.72 : 0.48;
+                    const baseShotDmg = Math.max(
+                      6,
+                      Math.min(26, Math.round(def.damage * 0.32 * distFalloff)),
+                    );
+                    this.applyPlayerDamage(
+                      baseShotDmg,
+                      bx,
+                      bz,
+                      bot.nick,
+                      def.shortName,
+                      Math.random() < 0.1,
+                    );
+                  }
+                }
+              } else if (targetBot) {
+                const hitChance = dist < 18 ? 0.48 : dist < 42 ? 0.34 : 0.22;
+                if (Math.random() < hitChance) {
+                  const isHead = !targetBot.isDowned && Math.random() < 0.16;
+                  const { dmg } = this.computeShotDamage(def, dist, isHead, targetBot);
+                  const dealt = Math.round(dmg * 0.78);
+                  const prevDead = targetBot.eliminated || targetBot.downTimer > 0;
+                  this.applyBotHitDamage(
+                    targetBot,
+                    dealt,
+                    false,
                     bot.nick,
                     def.shortName,
-                    Math.random() < 0.12,
+                    isHead,
+                    bx,
+                    bz,
                   );
-                }
-              }
-            } else if (targetBot) {
-              const hitChance = dist < 18 ? 0.48 : dist < 42 ? 0.34 : 0.22;
-              if (Math.random() < hitChance) {
-                const isHead = !targetBot.isDowned && Math.random() < 0.16;
-                const { dmg } = this.computeShotDamage(def, dist, isHead, targetBot);
-                const dealt = Math.round(dmg * 0.78);
-                const prevDead = targetBot.eliminated || targetBot.downTimer > 0;
-                this.applyBotHitDamage(
-                  targetBot,
-                  dealt,
-                  false,
-                  bot.nick,
-                  def.shortName,
-                  isHead,
-                  bx,
-                  bz,
-                );
-                if (!prevDead && (targetBot.eliminated || targetBot.downTimer > 0)) {
-                  bot.hp = Math.min(bot.maxHp, bot.hp + 45);
+                  if (!prevDead && (targetBot.eliminated || targetBot.downTimer > 0)) {
+                    bot.hp = Math.min(bot.maxHp, bot.hp + 45);
+                  }
                 }
               }
             }
@@ -5440,23 +6363,50 @@ export class BattleRoyaleEngine {
         let targetGoalZ = bot.goalZ;
         if (
           (bot.aiState === 'roam' || bot.aiState === 'loot') &&
-          !curRoamSurf.onBridge &&
-          Math.sign(bz - riverCenterZ(bx)) !== Math.sign(targetGoalZ - riverCenterZ(targetGoalX))
+          !curRoamSurf.onBridge
         ) {
-          const bridge = nearestBridgePos(bx);
-          if (Math.hypot(bridge.x - bx, bridge.z - bz) < 125 && Math.abs(bx - bridge.x) > 4.0) {
-            targetGoalX = bridge.x;
-            targetGoalZ = bridge.z;
+          const onSentosaNow = Math.hypot(bx - SENTOSA_CENTER.x, bz - SENTOSA_CENTER.z) < 175;
+          const goalOnSentosa = Math.hypot(targetGoalX - SENTOSA_CENTER.x, targetGoalZ - SENTOSA_CENTER.z) < 175;
+          if (onSentosaNow !== goalOnSentosa) {
+            const bridge = nearestBridgePos(bx, bz, 'sentosa');
+            if (Math.hypot(bridge.x - bx, bridge.z - bz) < 220) {
+              targetGoalX = bridge.x;
+              targetGoalZ = bridge.z;
+            }
+          } else if (
+            Math.sign(bz - riverCenterZ(bx)) !== Math.sign(targetGoalZ - riverCenterZ(targetGoalX))
+          ) {
+            const bridge = nearestBridgePos(bx, bz, 'river');
+            if (Math.hypot(bridge.x - bx, bridge.z - bz) < 165 && Math.abs(bx - bridge.x) > 4.0) {
+              targetGoalX = bridge.x;
+              targetGoalZ = bridge.z;
+            }
           }
         }
-        const dx = targetGoalX - bx;
-        const dz = targetGoalZ - bz;
-        const dist = Math.hypot(dx, dz);
-        if (dist > 1.4) {
+        const rawDist = Math.hypot(targetGoalX - bx, targetGoalZ - bz);
+        if (rawDist > 1.4 || bot.escapeTimer > 0) {
+          const goalFloorGuess =
+            bot.aiState === 'loot'
+              ? bot.goalY
+              : bot.isAlly
+                ? this.pos.y
+                : bot.group.position.y;
+          this.resolveSmartBuildingTarget(
+            bot,
+            bx,
+            bot.group.position.y,
+            bz,
+            targetGoalX,
+            targetGoalZ,
+            goalFloorGuess,
+          );
+          const dx = this._botNavOut.x - bx;
+          const dz = this._botNavOut.z - bz;
+          const dist = Math.hypot(dx, dz) || 1;
           moveDirX = dx / dist;
           moveDirZ = dz / dist;
           isMoving = true;
-          bot.group.rotation.y = lerpAngle(bot.group.rotation.y, Math.atan2(dx, dz), 1 - Math.exp(-12 * dt));
+          bot.group.rotation.y = lerpAngle(bot.group.rotation.y, Math.atan2(moveDirX, moveDirZ), 1 - Math.exp(-12 * dt));
         } else if (bot.aiState === 'loot') {
           for (let l = 0; l < this.world.loots.length; l++) {
             const loot = this.world.loots[l];
@@ -5492,12 +6442,19 @@ export class BattleRoyaleEngine {
                 loot.data.weaponId &&
                 loot.data.weaponId !== 'awm'
               ) {
-                if (bot.weaponId !== 'g18' && bot.weaponId !== loot.data.weaponId) {
-                  bot.secondaryWeaponId = bot.weaponId;
-                }
-                bot.weaponId = loot.data.weaponId;
-                if (bot.backGunMesh) {
-                  bot.backGunMesh.visible = bot.weaponId !== 'g18';
+                const newWid = loot.data.weaponId;
+                const isNewPistol = WEAPONS[newWid].category === 'HG';
+                const isCurPistol = WEAPONS[bot.weaponId].category === 'HG';
+                if (!isNewPistol || isCurPistol) {
+                  if (!isCurPistol && bot.weaponId !== newWid) {
+                    bot.secondaryWeaponId = bot.weaponId;
+                  }
+                  bot.weaponId = newWid;
+                  bot.ammoInMag = WEAPONS[newWid].magSize;
+                  bot.reloadTimer = 0;
+                  if (bot.backGunMesh) {
+                    bot.backGunMesh.visible = bot.weaponId !== 'g18' && bot.weaponId !== 'deagle';
+                  }
                 }
               } else if (loot.data.kind === 'vest') {
                 const lvl = loot.data.level ?? 1;
@@ -5523,19 +6480,40 @@ export class BattleRoyaleEngine {
         }
       }
 
-      // 3. Apply locomotion + water/bridge terrain height (cull & stagger distant animations)
+      // 3. Apply intelligent whisker-steered locomotion + OBB collision + smooth stairs/water
       const animateLimbs = inRenderRange && botCamDistSq < 60 * 60;
 
       if (isMoving && !isCrouchingAction) {
         const curSurf = botSurfaceHeightAt(bx, bz);
-        const speedMul = curSurf.inWater ? 0.78 : 1.0;
+        const speedMul = curSurf.inWater ? 0.78 : bot.aiState === 'combat' ? 0.88 : 1.0;
         const stepDist = bot.moveSpeed * speedMul * dt;
-        let nx = THREE.MathUtils.clamp(bx + moveDirX * stepDist, -485, 485);
-        let nz = THREE.MathUtils.clamp(bz + moveDirZ * stepDist, -485, 485);
+
+        // Multi-ray OBB obstacle avoidance (all bots & allies steer cleanly around walls/rocks/props)
+        const hitSill = this.steerBotDirection(
+          bot,
+          bx,
+          bot.group.position.y,
+          bz,
+          moveDirX,
+          moveDirZ,
+          wantSteerWaterAvoid && !curSurf.inWater,
+        );
+        moveDirX = this._botNavOut.dirX;
+        moveDirZ = this._botNavOut.dirZ;
+        if (bot.aiState !== 'combat') {
+          bot.group.rotation.y = lerpAngle(
+            bot.group.rotation.y,
+            Math.atan2(moveDirX, moveDirZ),
+            1 - Math.exp(-12 * dt),
+          );
+        }
+
+        let nx = THREE.MathUtils.clamp(bx + moveDirX * stepDist, -875, 875);
+        let nz = THREE.MathUtils.clamp(bz + moveDirZ * stepDist, -875, 875);
 
         const rSq = nx * nx + nz * nz;
-        if (rSq > 460 * 460) {
-          const invR = 460 / Math.sqrt(rSq);
+        if (rSq > 860 * 860) {
+          const invR = 860 / Math.sqrt(rSq);
           nx *= invR;
           nz *= invR;
           bot.goalX = 0;
@@ -5545,63 +6523,216 @@ export class BattleRoyaleEngine {
         const nextSurf = botSurfaceHeightAt(nx, nz);
         if (curSurf.inWater) {
           // Never freeze in water: wade smoothly and steer goal onto nearest dry ground
-          bot.group.position.set(nx, Math.max(0.14, nextSurf.y), nz);
+          bot.group.position.x = nx;
+          bot.group.position.z = nz;
           if (nextSurf.inWater) {
-            if (rSq > 395 * 395) {
-              bot.goalX = bx * 0.55;
-              bot.goalZ = bz * 0.55;
+            if (rSq > 790 * 790) {
+              bot.goalX = bx * 0.65;
+              bot.goalZ = bz * 0.65;
             } else {
-              const northSurf = botSurfaceHeightAt(bx, bz + 18);
-              const southSurf = botSurfaceHeightAt(bx, bz - 18);
+              const northSurf = botSurfaceHeightAt(bx, bz + 20);
+              const southSurf = botSurfaceHeightAt(bx, bz - 20);
               if (!northSurf.inWater && southSurf.inWater) {
                 bot.goalX = bx;
-                bot.goalZ = bz + 20;
+                bot.goalZ = bz + 24;
               } else if (!southSurf.inWater && northSurf.inWater) {
                 bot.goalX = bx;
-                bot.goalZ = bz - 20;
+                bot.goalZ = bz - 24;
               } else if (northSurf.y >= southSurf.y) {
                 bot.goalX = bx;
-                bot.goalZ = bz + 20;
+                bot.goalZ = bz + 24;
               } else {
                 bot.goalX = bx;
-                bot.goalZ = bz - 20;
+                bot.goalZ = bz - 24;
               }
             }
           }
         } else if (nextSurf.inWater && (bot.aiState === 'roam' || bot.aiState === 'loot')) {
-          // Try hugging riverbank along X or Z toward dry ground/bridge; wade cleanly if blocked
-          const tx = THREE.MathUtils.clamp(bx + moveDirX * stepDist * 0.85, -485, 485);
-          const tz = THREE.MathUtils.clamp(bz + moveDirZ * stepDist * 0.85, -485, 485);
+          const tx = THREE.MathUtils.clamp(bx + moveDirX * stepDist * 0.85, -875, 875);
+          const tz = THREE.MathUtils.clamp(bz + moveDirZ * stepDist * 0.85, -875, 875);
           const surfX = botSurfaceHeightAt(tx, bz);
           const surfZ = botSurfaceHeightAt(bx, tz);
           if (!surfX.inWater && Math.abs(tx - bx) > 0.005) {
-            bot.group.position.set(tx, surfX.y, bz);
+            bot.group.position.x = tx;
+            bot.group.position.z = bz;
           } else if (!surfZ.inWater && Math.abs(tz - bz) > 0.005) {
-            bot.group.position.set(bx, surfZ.y, tz);
+            bot.group.position.x = bx;
+            bot.group.position.z = tz;
           } else {
-            bot.group.position.set(nx, Math.max(0.14, nextSurf.y), nz);
+            bot.group.position.x = nx;
+            bot.group.position.z = nz;
           }
         } else {
-          bot.group.position.set(nx, Math.max(0.14, nextSurf.y), nz);
+          bot.group.position.x = nx;
+          bot.group.position.z = nz;
         }
+
+        // Exact same 2-pass OBB wall/prop/vehicle/gloo collision sliding & floor platforms as the player!
+        const ignoreSill = bot.vaultTimer > 0;
+        const push1 = this.resolveEntityHorizontalCollisions(bot.group.position, 0.38, null, ignoreSill);
+        const push2 = this.resolveEntityHorizontalCollisions(bot.group.position, 0.38, null, ignoreSill);
+        bot.group.position.x = THREE.MathUtils.clamp(bot.group.position.x, -875, 875);
+        bot.group.position.z = THREE.MathUtils.clamp(bot.group.position.z, -875, 875);
+
+        const botFloorRaw = this.resolveFloorHeight(
+          bot.group.position.x,
+          bot.group.position.z,
+          bot.group.position.y,
+        );
+        const floorY =
+          nextSurf.inWater && !nextSurf.onBridge
+            ? Math.max(botFloorRaw, -1.25)
+            : Math.max(-0.85, botFloorRaw);
+        if (bot.vy > 0 || bot.group.position.y > floorY + 0.25) {
+          bot.vy -= 20.5 * dt;
+          bot.group.position.y += bot.vy * dt;
+          if (bot.group.position.y <= floorY) {
+            bot.group.position.y = floorY;
+            bot.vy = 0;
+          }
+        } else {
+          bot.group.position.y = floorY;
+          bot.vy = 0;
+        }
+
+        // Real progress monitor + 3-stage smart unstuck escalation across ALL states
+        const actualMoved = Math.hypot(bot.group.position.x - bx, bot.group.position.z - bz);
+        bot.navCheckTimer += dt;
+        let stalledThisTick = push1 + push2 > 0.025 || actualMoved < stepDist * 0.32;
+        if (bot.navCheckTimer >= 0.45) {
+          const netMoved = Math.hypot(
+            bot.group.position.x - bot.navCheckX,
+            bot.group.position.z - bot.navCheckZ,
+          );
+          if (netMoved < 0.52) {
+            stalledThisTick = true;
+            bot.stuckTimer += 0.35;
+          } else if (netMoved > 1.1 && push1 + push2 < 0.01) {
+            bot.stuckTimer = Math.max(0, bot.stuckTimer - 0.35);
+          }
+          bot.navCheckX = bot.group.position.x;
+          bot.navCheckZ = bot.group.position.z;
+          bot.navCheckTimer = 0;
+        }
+
+        if (stalledThisTick) {
+          bot.stuckTimer += dt;
+          // Stage 1: flip steer side / drop blocked loot target
+          if (bot.stuckTimer > 0.28) {
+            if (bot.steerLockTimer <= 0) {
+              bot.steerSign = bot.steerSign === 1 ? -1 : 1;
+              bot.steerLockTimer = 1.05;
+            }
+            if (bot.aiState === 'loot') {
+              for (let l = 0; l < this.world.loots.length; l++) {
+                const ld = this.world.loots[l].data;
+                if (!ld.collected && Math.hypot(ld.x - bot.goalX, ld.z - bot.goalZ) < 1.0) {
+                  bot.badLootId = ld.id;
+                  bot.badLootTimer = 10;
+                  break;
+                }
+              }
+              bot.aiState = 'roam';
+            }
+          }
+          // Stage 2: smart window vault OR force building doorway escape!
+          if (bot.stuckTimer > 0.72) {
+            const stuckBldg = this.world.findBuildingNavZoneAt(
+              bot.group.position.x,
+              bot.group.position.z,
+            );
+            if (hitSill && bot.vaultTimer <= 0 && bot.vy === 0) {
+              bot.vaultTimer = 0.52;
+              bot.vy = 6.8;
+            } else if (stuckBldg && stuckBldg.doors.length > 0 && bot.escapeTimer <= 0) {
+              let bestD = stuckBldg.doors[0];
+              let bestDist = Infinity;
+              for (let k = 0; k < stuckBldg.doors.length; k++) {
+                const d = stuckBldg.doors[k];
+                const dd = Math.hypot(d.inX - bot.group.position.x, d.inZ - bot.group.position.z);
+                if (dd < bestDist) {
+                  bestDist = dd;
+                  bestD = d;
+                }
+              }
+              bot.escapeDoorX = bestD.outX;
+              bot.escapeDoorZ = bestD.outZ;
+              bot.escapeTimer = 2.6;
+            }
+          }
+          // Stage 3: clear 360-degree escape vector & pick fresh valid objective
+          if (bot.stuckTimer > 1.35) {
+            const esc = this.findClearestEscapeVector(
+              bot.group.position.x,
+              bot.group.position.y,
+              bot.group.position.z,
+            );
+            bot.group.position.x = THREE.MathUtils.clamp(
+              bot.group.position.x + esc.x * 1.15,
+              -875,
+              875,
+            );
+            bot.group.position.z = THREE.MathUtils.clamp(
+              bot.group.position.z + esc.z * 1.15,
+              -875,
+              875,
+            );
+            this.resolveEntityHorizontalCollisions(bot.group.position, 0.38, null, false);
+            bot.goalX = THREE.MathUtils.clamp(bot.group.position.x + esc.x * 12, -850, 850);
+            bot.goalZ = THREE.MathUtils.clamp(bot.group.position.z + esc.z * 12, -850, 850);
+            bot.stuckTimer = 0;
+            bot.huntTimer = 0;
+            bot.aiTimer = 0;
+          }
+        } else {
+          bot.stuckTimer = Math.max(0, bot.stuckTimer - dt * 2.2);
+        }
+      } else {
+        const idleSurf = botSurfaceHeightAt(bot.group.position.x, bot.group.position.z);
+        const botFloorRaw = this.resolveFloorHeight(
+          bot.group.position.x,
+          bot.group.position.z,
+          bot.group.position.y,
+        );
+        const floorY =
+          idleSurf.inWater && !idleSurf.onBridge
+            ? Math.max(botFloorRaw, -1.25)
+            : Math.max(-0.85, botFloorRaw);
+        bot.group.position.y = floorY;
+        bot.vy = 0;
       }
+
+      const botSurfNow = botSurfaceHeightAt(bot.group.position.x, bot.group.position.z);
+      const botInWater = botSurfNow.inWater && !botSurfNow.onBridge;
 
       if (bot.isAdam && bot.mixer) {
         if (animateLimbs) {
-          if (isCrouchingAction) {
-            if (bot.gunMesh) bot.gunMesh.visible = false;
-            setBotAdamClip(bot, 'Fixing_Kneeling', 1.1, 0.14);
-          } else if (isMoving) {
-            setBotAdamClip(
-              bot,
-              bot.aiState === 'combat' ? 'Jog_Fwd_Loop' : 'Sprint_Loop',
-              THREE.MathUtils.clamp(bot.moveSpeed / 5.4, 0.8, 1.2),
-              0.16,
-            );
-          } else if (bot.aiState === 'combat') {
-            setBotAdamClip(bot, bot.fireCooldown > 0.18 ? 'Pistol_Shoot' : 'Pistol_Idle_Loop', 1.0, 0.12);
+          if (bot.gunMesh) bot.gunMesh.visible = !isCrouchingAction && !botInWater;
+          if (botInWater) {
+            if (bot.visualRoot) {
+              bot.visualRoot.position.set(0, isMoving ? 0.34 : -0.08, isMoving ? -0.58 : 0);
+              bot.visualRoot.rotation.set(isMoving ? 1.4 : 0.08, 0, 0);
+            }
+            setBotAdamClip(bot, 'Idle_Loop', 0.85, 0.14);
           } else {
-            setBotAdamClip(bot, 'Idle_Loop', 1.0, 0.18);
+            if (bot.visualRoot) {
+              bot.visualRoot.position.set(0, 0, 0);
+              bot.visualRoot.rotation.set(0, 0, 0);
+            }
+            if (isCrouchingAction) {
+              setBotAdamClip(bot, 'Fixing_Kneeling', 1.1, 0.14);
+            } else if (isMoving) {
+              setBotAdamClip(
+                bot,
+                bot.aiState === 'combat' ? 'Jog_Fwd_Loop' : 'Sprint_Loop',
+                THREE.MathUtils.clamp(bot.moveSpeed / 5.4, 0.8, 1.2),
+                0.16,
+              );
+            } else if (bot.aiState === 'combat') {
+              setBotAdamClip(bot, bot.fireCooldown > 0.18 ? 'Pistol_Shoot' : 'Pistol_Aim_Neutral', 1.0, 0.12);
+            } else {
+              setBotAdamClip(bot, 'Idle_Loop', 1.0, 0.18);
+            }
           }
           if (bot.isAlly || animatedBotCount < maxFullAnimBots) {
             bot.mixer.update(dt);
@@ -5613,8 +6744,19 @@ export class BattleRoyaleEngine {
               bot.animAccum = 0;
             }
           }
+          if (bot.aiState === 'combat' && !isCrouchingAction && !botInWater && bot.upperAimBones) {
+            const aimQuats = getAdamData()?.aimPoseQuats;
+            if (aimQuats) {
+              for (let b = 0; b < bot.upperAimBones.length; b++) {
+                const entry = bot.upperAimBones[b];
+                const q = aimQuats[entry.name];
+                if (q) entry.bone.quaternion.slerp(q, 0.9);
+              }
+            }
+          }
         }
       } else if (animateLimbs) {
+        if (bot.gunMesh) bot.gunMesh.visible = !isCrouchingAction;
         if (isCrouchingAction) {
           if (bot.gunMesh) bot.gunMesh.visible = false;
           if (bot.torsoGroup) {
@@ -5710,15 +6852,15 @@ export class BattleRoyaleEngine {
   }
 
   private spawnAirDrop(): void {
-    const safeR = Math.min(Math.max(30, this.zoneCurrentRadius * 0.72), 340);
+    const safeR = Math.min(Math.max(30, this.zoneCurrentRadius * 0.72), 620);
     let ax = this.zoneCurrentX;
     let az = this.zoneCurrentZ;
     let groundY = Math.max(0.8, this.world.groundHeightAt(ax, az));
     for (let attempt = 0; attempt < 16; attempt++) {
       const ang = Math.random() * Math.PI * 2;
       const dist = Math.sqrt(Math.random()) * safeR;
-      const cx = THREE.MathUtils.clamp(this.zoneCurrentX + Math.cos(ang) * dist, -440, 440);
-      const cz = THREE.MathUtils.clamp(this.zoneCurrentZ + Math.sin(ang) * dist, -440, 440);
+      const cx = THREE.MathUtils.clamp(this.zoneCurrentX + Math.cos(ang) * dist, -820, 820);
+      const cz = THREE.MathUtils.clamp(this.zoneCurrentZ + Math.sin(ang) * dist, -820, 820);
       const gy = this.world.groundHeightAt(cx, cz);
       if (gy >= 1.2) {
         ax = cx;
@@ -5734,8 +6876,9 @@ export class BattleRoyaleEngine {
 
     const crateMesh = new THREE.Mesh(this.airDropCrateGeo, this.airDropCrateMat);
     crateMesh.position.y = 0.675;
-    crateMesh.castShadow = !this.isSoftwareGl;
-    crateMesh.receiveShadow = !this.isSoftwareGl;
+    const dropShadow = !this.isSoftwareGl && this.settings.quality === 'high';
+    crateMesh.castShadow = dropShadow;
+    crateMesh.receiveShadow = dropShadow;
 
     const stripeMesh = new THREE.Mesh(this.airDropStripeGeo, this.airDropStripeMat);
     stripeMesh.position.y = 0.92;
@@ -6042,6 +7185,35 @@ export class BattleRoyaleEngine {
     } else if (entry.kind === 'weapon' && entry.weaponId) {
       const wid = entry.weaponId;
       const def = WEAPONS[wid];
+      if (def.category === 'HG') {
+        if (this.weapons[3] && this.weapons[3]!.weaponId === wid) {
+          this.weapons[3]!.reserveAmmo += 30;
+        } else {
+          if (this.weapons[3]) {
+            const oldW = this.weapons[3]!;
+            this.spawnItemInFront({
+              kind: 'weapon',
+              weaponId: oldW.weaponId,
+              label: WEAPONS[oldW.weaponId].name,
+            });
+          }
+          this.weapons[3] = {
+            weaponId: wid,
+            ammoInMag: def.magSize,
+            reserveAmmo: 45,
+            scope: 'none',
+            attachments: emptyAttachments(),
+          };
+          this.activeSlot = 3;
+          this.isAiming = false;
+          this.input.setTouchAim(false);
+          this.isReloading = false;
+          this.reloadTimer = 0;
+          this.syncPlayerWeaponAndBackVisuals();
+          soundEngine.playWeaponSwitch();
+        }
+        return;
+      }
       let targetSlot: 1 | 2 = 1;
       if (!this.weapons[1]) targetSlot = 1;
       else if (!this.weapons[2]) targetSlot = 2;
@@ -6218,18 +7390,30 @@ export class BattleRoyaleEngine {
     if (ld.kind === 'weapon' && ld.weaponId) {
       const wid: WeaponId = ld.weaponId;
       const def = WEAPONS[wid];
-      if (wid === 'g18') {
-        if (this.weapons[3]) {
+      if (def.category === 'HG') {
+        if (this.weapons[3] && this.weapons[3]!.weaponId === wid) {
           this.weapons[3]!.reserveAmmo += 30;
         } else {
+          if (this.weapons[3]) {
+            const oldW = this.weapons[3]!;
+            this.spawnItemInFront({
+              kind: 'weapon',
+              weaponId: oldW.weaponId,
+              label: WEAPONS[oldW.weaponId].name,
+            });
+          }
           this.weapons[3] = {
-            weaponId: 'g18',
+            weaponId: wid,
             ammoInMag: def.magSize,
             reserveAmmo: 45,
             scope: 'none',
             attachments: emptyAttachments(),
           };
           this.activeSlot = 3;
+          this.isAiming = false;
+          this.input.setTouchAim(false);
+          this.isReloading = false;
+          this.reloadTimer = 0;
           this.syncPlayerWeaponAndBackVisuals();
           soundEngine.playWeaponSwitch();
         }
@@ -6460,26 +7644,50 @@ export class BattleRoyaleEngine {
     } else if (offer.weaponId) {
       const wid = offer.weaponId;
       const def = WEAPONS[wid];
-      const slot: 1 | 2 = !this.weapons[1] ? 1 : !this.weapons[2] ? 2 : this.activeSlot === 2 ? 2 : 1;
-      if (this.weapons[1] && this.weapons[2] && this.weapons[slot]) {
-        const oldW = this.weapons[slot]!;
-        this.spawnItemInFront({
-          kind: 'weapon',
-          weaponId: oldW.weaponId,
-          label: WEAPONS[oldW.weaponId].name,
-        });
+      if (def.category === 'HG') {
+        if (this.weapons[3] && this.weapons[3]!.weaponId !== wid) {
+          const oldW = this.weapons[3]!;
+          this.spawnItemInFront({
+            kind: 'weapon',
+            weaponId: oldW.weaponId,
+            label: WEAPONS[oldW.weaponId].name,
+          });
+        }
+        this.weapons[3] = {
+          weaponId: wid,
+          ammoInMag: def.magSize,
+          reserveAmmo: 45,
+          scope: 'none',
+          attachments: emptyAttachments(),
+        };
+        this.activeSlot = 3;
+        this.isAiming = false;
+        this.input.setTouchAim(false);
+        this.isReloading = false;
+        this.reloadTimer = 0;
+        this.syncPlayerWeaponAndBackVisuals();
+      } else {
+        const slot: 1 | 2 = !this.weapons[1] ? 1 : !this.weapons[2] ? 2 : this.activeSlot === 2 ? 2 : 1;
+        if (this.weapons[1] && this.weapons[2] && this.weapons[slot]) {
+          const oldW = this.weapons[slot]!;
+          this.spawnItemInFront({
+            kind: 'weapon',
+            weaponId: oldW.weaponId,
+            label: WEAPONS[oldW.weaponId].name,
+          });
+        }
+        this.weapons[slot] = {
+          weaponId: wid,
+          ammoInMag: def.magSize,
+          reserveAmmo: wid === 'awm' ? 25 : def.magSize * 4,
+          scope: wid === 'awm' ? 'sniper' : def.defaultScope,
+          attachments: emptyAttachments(),
+        };
+        this.activeSlot = slot;
+        this.isReloading = false;
+        this.reloadTimer = 0;
+        this.syncPlayerWeaponAndBackVisuals();
       }
-      this.weapons[slot] = {
-        weaponId: wid,
-        ammoInMag: def.magSize,
-        reserveAmmo: wid === 'awm' ? 25 : def.magSize * 4,
-        scope: wid === 'awm' ? 'sniper' : def.defaultScope,
-        attachments: emptyAttachments(),
-      };
-      this.activeSlot = slot;
-      this.isReloading = false;
-      this.reloadTimer = 0;
-      this.syncPlayerWeaponAndBackVisuals();
     }
     return true;
   }
@@ -6508,15 +7716,21 @@ export class BattleRoyaleEngine {
     if (v.destroyed || this.isDead || this.isPlayerDowned) return;
     this.activeVehicleId = v.id;
     v.driverIsPlayer = true;
-    this.usingMedkit = false;
+    this.inWater = false;
+    this.isSwimming = false;
+    this.isOnSurfboard = false;
+    this.playerRig.setSurfboardVisible(false);
     this.isReloading = false;
     this.isAiming = false;
     this.isPlacingGloo = false;
     this.isHoldingGrenade = false;
     this.revivingBotId = null;
     this.stance = 'stand';
+    this.yaw = v.yaw + Math.PI;
+    this.pitch = -0.18;
+    this.vehicleLookOverrideTimer = 0;
+    this.hudDirty = true;
     soundEngine.stopRunAudio();
-    soundEngine.stopMedkitAudio();
     soundEngine.playVehicleEnter();
   }
 
@@ -6544,9 +7758,10 @@ export class BattleRoyaleEngine {
       v.driverIsPlayer = false;
       const sideX = Math.cos(v.yaw);
       const sideZ = -Math.sin(v.yaw);
-      this.pos.x = THREE.MathUtils.clamp(v.x - sideX * 2.1, -508, 508);
-      this.pos.z = THREE.MathUtils.clamp(v.z + sideZ * 2.1, -508, 508);
-      this.pos.y = Math.max(-0.2, this.resolveFloorHeight(this.pos.x, this.pos.z, v.y + 1.5));
+      this.pos.x = THREE.MathUtils.clamp(v.x - sideX * 2.1, -885, 885);
+      this.pos.z = THREE.MathUtils.clamp(v.z + sideZ * 2.1, -885, 885);
+      const exitFloor = this.resolveFloorHeight(this.pos.x, this.pos.z, v.y + 1.5);
+      this.pos.y = exitFloor < -0.78 ? Math.max(exitFloor, -1.28) : Math.max(-0.85, exitFloor);
       this.vel.set(0, 0, 0);
       this.ejectPassengersFromVehicle(v);
     }
@@ -6557,9 +7772,9 @@ export class BattleRoyaleEngine {
       const bot = this.targetById.get(v.passengerIds[i]);
       if (!bot) continue;
       const sideSign = i % 2 === 0 ? 1 : -1;
-      const px = THREE.MathUtils.clamp(v.x + Math.cos(v.yaw) * 2.3 * sideSign, -495, 495);
-      const pz = THREE.MathUtils.clamp(v.z - Math.sin(v.yaw) * 2.3 * sideSign, -495, 495);
-      bot.group.position.set(px, Math.max(0.5, this.world.groundHeightAt(px, pz)), pz);
+      const px = THREE.MathUtils.clamp(v.x + Math.cos(v.yaw) * 2.3 * sideSign, -875, 875);
+      const pz = THREE.MathUtils.clamp(v.z - Math.sin(v.yaw) * 2.3 * sideSign, -875, 875);
+      bot.group.position.set(px, Math.max(-1.25, botSurfaceHeightAt(px, pz).y), pz);
       bot.group.visible = !bot.eliminated;
     }
     v.passengerIds = [];
@@ -6601,9 +7816,10 @@ export class BattleRoyaleEngine {
       }
       if (!v.driverIsPlayer && Math.abs(v.speed) > 0.08 && !v.destroyed) {
         v.speed = THREE.MathUtils.damp(v.speed, 0, 2.2, dt);
-        v.x = THREE.MathUtils.clamp(v.x + Math.sin(v.yaw) * v.speed * dt, -502, 502);
-        v.z = THREE.MathUtils.clamp(v.z + Math.cos(v.yaw) * v.speed * dt, -502, 502);
-        v.y = Math.max(0.2, this.world.groundHeightAt(v.x, v.z));
+        v.x = THREE.MathUtils.clamp(v.x + Math.sin(v.yaw) * v.speed * dt, -880, 880);
+        v.z = THREE.MathUtils.clamp(v.z + Math.cos(v.yaw) * v.speed * dt, -880, 880);
+        const surf = botSurfaceHeightAt(v.x, v.z);
+        v.y = surf.onBridge ? surf.y : Math.max(-0.82, surf.y);
         v.group.position.set(v.x, v.y, v.z);
         v.collider.cx = v.x;
         v.collider.cz = v.z;
@@ -6628,21 +7844,32 @@ export class BattleRoyaleEngine {
     this.input.sample();
     const edges = this.input.consumeLookAndEdges();
     if (edges.backpack) this.onBackpackRequest?.();
+    if (edges.medkit) this.useMedkit();
+    this.updateMedkitChannel(dt, false);
     if (edges.interact) {
       this.exitVehicle();
       return;
     }
 
-    // Orbit camera around vehicle
+    // Orbit camera around vehicle with automatic front-facing follow behind car
     const sens = 0.0028 * this.settings.sensitivity;
     const invert = this.settings.invertY ? -1 : 1;
-    this.yaw -= edges.dx * sens;
-    this.pitch = THREE.MathUtils.clamp(this.pitch - edges.dy * sens * invert, -0.85, 0.45);
+    const manualLook = Math.abs(edges.dx) > 0.45 || Math.abs(edges.dy) > 0.45;
+    if (manualLook) {
+      this.vehicleLookOverrideTimer = 1.45;
+      this.yaw -= edges.dx * sens;
+      this.pitch = THREE.MathUtils.clamp(this.pitch - edges.dy * sens * invert, -0.85, 0.45);
+    } else {
+      this.vehicleLookOverrideTimer = Math.max(0, this.vehicleLookOverrideTimer - dt);
+    }
 
     const isSports = v.kind === 'sport';
-    const maxFwd = isSports ? 31 : 24;
-    const maxRev = -10.5;
-    const accelRate = isSports ? 23 : 17.5;
+    const curVehSurf = botSurfaceHeightAt(v.x, v.z);
+    const drivingInWater = !curVehSurf.onBridge && curVehSurf.y < -0.35;
+    const waterDrag = drivingInWater ? 0.78 : 1.0;
+    const maxFwd = (isSports ? 31 : 24) * waterDrag;
+    const maxRev = -10.5 * waterDrag;
+    const accelRate = (isSports ? 23 : 17.5) * (drivingInWater ? 0.85 : 1.0);
     const throttle = this.input.moveZ;
     const steer = this.input.moveX;
 
@@ -6652,7 +7879,10 @@ export class BattleRoyaleEngine {
       const decel = v.speed > 0.5 ? accelRate * 1.9 : accelRate * 0.9;
       v.speed = Math.max(maxRev, v.speed + throttle * decel * dt);
     } else {
-      v.speed = THREE.MathUtils.damp(v.speed, 0, 1.85, dt);
+      v.speed = THREE.MathUtils.damp(v.speed, 0, drivingInWater ? 2.6 : 1.85, dt);
+    }
+    if (v.speed > maxFwd) {
+      v.speed = THREE.MathUtils.damp(v.speed, maxFwd, 4.5, dt);
     }
 
     const speedRatio = Math.min(1, Math.abs(v.speed) / 7.0);
@@ -6662,15 +7892,21 @@ export class BattleRoyaleEngine {
       v.yaw += -steer * dirSign * steerRate * speedRatio * dt;
     }
 
-    v.x = THREE.MathUtils.clamp(v.x + Math.sin(v.yaw) * v.speed * dt, -504, 504);
-    v.z = THREE.MathUtils.clamp(v.z + Math.cos(v.yaw) * v.speed * dt, -504, 504);
-    const groundY = this.world.groundHeightAt(v.x, v.z);
-    if (groundY < 0.35) {
-      v.speed *= -0.4;
-      v.x = THREE.MathUtils.clamp(v.x - Math.sin(v.yaw) * 0.9, -504, 504);
-      v.z = THREE.MathUtils.clamp(v.z - Math.cos(v.yaw) * 0.9, -504, 504);
+    // Automatically align chase camera behind the vehicle's forward heading
+    if (this.vehicleLookOverrideTimer <= 0) {
+      const targetCamYaw = v.yaw + Math.PI;
+      let diffYaw = targetCamYaw - this.yaw;
+      while (diffYaw > Math.PI) diffYaw -= Math.PI * 2;
+      while (diffYaw < -Math.PI) diffYaw += Math.PI * 2;
+      const followRate = Math.abs(v.speed) > 1.2 ? 6.8 : 3.2;
+      this.yaw += diffYaw * (1 - Math.exp(-followRate * dt));
+      this.pitch = THREE.MathUtils.damp(this.pitch, -0.18, 2.6, dt);
     }
-    v.y = Math.max(0.25, this.world.groundHeightAt(v.x, v.z));
+
+    v.x = THREE.MathUtils.clamp(v.x + Math.sin(v.yaw) * v.speed * dt, -882, 882);
+    v.z = THREE.MathUtils.clamp(v.z + Math.cos(v.yaw) * v.speed * dt, -882, 882);
+    const surf = botSurfaceHeightAt(v.x, v.z);
+    v.y = surf.onBridge ? surf.y : Math.max(-0.82, surf.y);
 
     // World building/prop collision bounce
     const cols = this.world.colliders;
@@ -6722,8 +7958,8 @@ export class BattleRoyaleEngine {
           const bDist = Math.sqrt(distSq) || 0.1;
           const pushX = (bdx / bDist) * 2.65;
           const pushZ = (bdz / bDist) * 2.65;
-          bot.group.position.x = THREE.MathUtils.clamp(v.x + pushX, -490, 490);
-          bot.group.position.z = THREE.MathUtils.clamp(v.z + pushZ, -490, 490);
+          bot.group.position.x = THREE.MathUtils.clamp(v.x + pushX, -870, 870);
+          bot.group.position.z = THREE.MathUtils.clamp(v.z + pushZ, -870, 870);
           this.applyBotHitDamage(bot, dmg, true, this.playerNick, 'CARRO', false, v.x, v.z);
           this.damageDealt += dmg;
           this.hitmarkerTimer = 0.22;
@@ -6736,12 +7972,12 @@ export class BattleRoyaleEngine {
     }
 
     // Update vehicle visual orientation & wheel animation + terrain slope tilt
-    const fH = this.world.groundHeightAt(v.x + Math.sin(v.yaw) * 1.4, v.z + Math.cos(v.yaw) * 1.4);
-    const bH = this.world.groundHeightAt(v.x - Math.sin(v.yaw) * 1.4, v.z - Math.cos(v.yaw) * 1.4);
-    const rH = this.world.groundHeightAt(v.x + Math.cos(v.yaw) * 0.9, v.z - Math.sin(v.yaw) * 0.9);
-    const lH = this.world.groundHeightAt(v.x - Math.cos(v.yaw) * 0.9, v.z + Math.sin(v.yaw) * 0.9);
-    const targetPitchTilt = Math.atan2(bH - fH, 2.8);
-    const targetRollTilt = Math.atan2(lH - rH, 1.8) + steer * speedRatio * 0.05;
+    const fH = Math.max(-0.85, this.world.groundHeightAt(v.x + Math.sin(v.yaw) * 1.4, v.z + Math.cos(v.yaw) * 1.4));
+    const bH = Math.max(-0.85, this.world.groundHeightAt(v.x - Math.sin(v.yaw) * 1.4, v.z - Math.cos(v.yaw) * 1.4));
+    const rH = Math.max(-0.85, this.world.groundHeightAt(v.x + Math.cos(v.yaw) * 0.9, v.z - Math.sin(v.yaw) * 0.9));
+    const lH = Math.max(-0.85, this.world.groundHeightAt(v.x - Math.cos(v.yaw) * 0.9, v.z + Math.sin(v.yaw) * 0.9));
+    const targetPitchTilt = surf.onBridge ? 0 : Math.atan2(bH - fH, 2.8);
+    const targetRollTilt = (surf.onBridge ? 0 : Math.atan2(lH - rH, 1.8)) + steer * speedRatio * 0.05;
 
     v.group.position.set(v.x, v.y, v.z);
     v.group.rotation.y = v.yaw;
@@ -6766,8 +8002,17 @@ export class BattleRoyaleEngine {
     // Update engine audio
     soundEngine.updateVehicleEngineAudio(true, Math.abs(v.speed) / maxFwd);
 
-    // Sync player rig inside vehicle cabin
+    // Sync player rig & heal ring inside vehicle cabin
     this.pos.set(v.x, v.y + 0.3, v.z);
+    if (this.usingMedkit) {
+      const pulse = 1 + Math.sin(this.elapsed * 8.5) * 0.14;
+      this.healRingMesh.position.set(v.x, v.y + 0.18, v.z);
+      this.healRingMesh.scale.set(pulse * 1.45, pulse * 1.45, 1);
+      this.healRingMesh.rotation.z += dt * 2.2;
+      this.healRingMesh.visible = true;
+    } else {
+      this.healRingMesh.visible = false;
+    }
     this.characterYaw = v.yaw + Math.PI;
     this.playerRig.root.visible = true;
     this.playerRig.weaponMount.visible = false;
@@ -6781,6 +8026,7 @@ export class BattleRoyaleEngine {
       isSprinting: false,
       isAiming: false,
       isFiring: false,
+      isHealing: this.usingMedkit,
       isDriving: true,
       isLobby: false,
       isSkydiving: false,
@@ -6826,7 +8072,23 @@ export class BattleRoyaleEngine {
     isOpticalLens = false,
     snapInstant = false,
   ): void {
-    const rightShoulderOffset = isOpticalLens ? 0 : 0.42;
+    const rightX = Math.cos(this.yaw);
+    const rightZ = -Math.sin(this.yaw);
+    let rightShoulderOffset = isOpticalLens || Boolean(this.activeVehicleId) ? 0 : 0.42;
+
+    // Prevent shoulder pivot from clipping outside side walls in small rooms
+    if (!isOpticalLens && rightShoulderOffset > 0.01) {
+      _rayOrigin.set(this.pos.x, this.pos.y + targetHeight, this.pos.z);
+      _rayDir.set(rightX, 0, rightZ);
+      this.raycaster.set(_rayOrigin, _rayDir);
+      this.raycaster.far = rightShoulderOffset + 0.25;
+      const sideHits = this.raycaster.intersectObjects(this.solidObstaclesActive, false);
+      for (let h = 0; h < sideHits.length; h++) {
+        if (sideHits[h].object.userData.vehicleId === this.activeVehicleId) continue;
+        rightShoulderOffset = Math.max(0.08, sideHits[h].distance - 0.22);
+        break;
+      }
+    }
 
     if (snapInstant) {
       this.camShoulderCurrent = rightShoulderOffset;
@@ -6835,14 +8097,11 @@ export class BattleRoyaleEngine {
       this.camShoulderCurrent = THREE.MathUtils.damp(
         this.camShoulderCurrent,
         rightShoulderOffset,
-        22,
+        24,
         dt,
       );
       this.camDistCurrent = THREE.MathUtils.damp(this.camDistCurrent, distance, 20, dt);
     }
-
-    const rightX = Math.cos(this.yaw);
-    const rightZ = -Math.sin(this.yaw);
 
     _camTarget.set(
       this.pos.x + rightX * this.camShoulderCurrent,
@@ -6853,25 +8112,53 @@ export class BattleRoyaleEngine {
     if (snapInstant) {
       this.camLookCurrent.copy(_camTarget);
     } else {
-      const xzAlpha = 1 - Math.exp(-28 * dt);
-      const yAlpha = 1 - Math.exp(-20 * dt);
+      const xzAlpha = 1 - Math.exp(-30 * dt);
+      const yAlpha = 1 - Math.exp(-22 * dt);
       this.camLookCurrent.x = THREE.MathUtils.lerp(this.camLookCurrent.x, _camTarget.x, xzAlpha);
       this.camLookCurrent.z = THREE.MathUtils.lerp(this.camLookCurrent.z, _camTarget.z, xzAlpha);
       this.camLookCurrent.y = THREE.MathUtils.lerp(this.camLookCurrent.y, _camTarget.y, yAlpha);
     }
 
-    // Rigidly place camera along (-forward(yaw, pitch)) from camLookCurrent so rotation & crosshair
-    // NEVER lag or skew laterally when opening scope or snapping aim!
+    // Rigidly place camera along (-forward(yaw, pitch)) from camLookCurrent, pulling inward cleanly
+    // whenever house walls, ceilings, obstacles, or terrain sit between player and camera
     const cp = Math.cos(this.pitch);
     const fwdX = -Math.sin(this.yaw) * cp;
     const fwdY = Math.sin(this.pitch);
     const fwdZ = -Math.cos(this.yaw) * cp;
 
-    let effectiveDist = this.camDistCurrent;
-    const desiredY = this.camLookCurrent.y - fwdY * effectiveDist;
+    let maxSafeDist = this.camDistCurrent;
+    if (!isOpticalLens && this.camDistCurrent > 0.4) {
+      _rayDir.set(-fwdX, -fwdY, -fwdZ);
+      this.raycaster.set(this.camLookCurrent, _rayDir);
+      this.raycaster.far = this.camDistCurrent + 0.35;
+      const wallHits = this.raycaster.intersectObjects(this.solidObstaclesActive, false);
+      for (let h = 0; h < wallHits.length; h++) {
+        if (wallHits[h].object.userData.vehicleId === this.activeVehicleId) continue;
+        maxSafeDist = Math.min(maxSafeDist, Math.max(0.45, wallHits[h].distance - 0.24));
+        break;
+      }
+      const terrainBackDist = this.raycastTerrainDist(
+        this.camLookCurrent,
+        _rayDir,
+        this.camDistCurrent + 0.3,
+      );
+      if (terrainBackDist < this.camDistCurrent + 0.25) {
+        maxSafeDist = Math.min(maxSafeDist, Math.max(0.45, terrainBackDist - 0.24));
+      }
+    }
+
+    if (snapInstant) {
+      this.camSafeDist = maxSafeDist;
+    } else {
+      const distRate = maxSafeDist < this.camSafeDist ? 55 : 11;
+      this.camSafeDist = THREE.MathUtils.damp(this.camSafeDist, maxSafeDist, distRate, dt);
+    }
+
+    let effectiveDist = Math.min(this.camDistCurrent, this.camSafeDist);
     const desiredX = this.camLookCurrent.x - fwdX * effectiveDist;
+    const desiredY = this.camLookCurrent.y - fwdY * effectiveDist;
     const desiredZ = this.camLookCurrent.z - fwdZ * effectiveDist;
-    const camGround = this.world.groundHeightAt(desiredX, desiredZ) + 0.42;
+    const camGround = this.world.groundHeightAt(desiredX, desiredZ) + 0.38;
     if (desiredY < camGround && fwdY > 0.05) {
       effectiveDist = Math.max(
         0.2,
@@ -6899,7 +8186,8 @@ export class BattleRoyaleEngine {
           ? 68
           : 62;
     if (Math.abs(this.world.camera.fov - targetFov) > 0.1) {
-      this.world.camera.fov = THREE.MathUtils.damp(this.world.camera.fov, targetFov, 15, dt);
+      const fovRate = this.isAiming || isOpticalLens ? 34 : 18;
+      this.world.camera.fov = THREE.MathUtils.damp(this.world.camera.fov, targetFov, fovRate, dt);
       this.world.camera.updateProjectionMatrix();
     }
 
@@ -7012,6 +8300,9 @@ export class BattleRoyaleEngine {
       isSprinting: this.isSprinting,
       isAiming: this.isAiming,
       isGrounded: this.isGrounded,
+      inWater: this.inWater,
+      isSwimming: this.isSwimming,
+      isOnSurfboard: this.isOnSurfboard,
       isReloading: this.isReloading,
       reloadProgress: this.isReloading ? 1 - this.reloadTimer / reloadTotal : 0,
       isDead: this.isDead,

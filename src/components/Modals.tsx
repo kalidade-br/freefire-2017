@@ -634,7 +634,10 @@ export const ArsenalModal: React.FC<{ onClose: () => void }> = ({ onClose }) => 
                         PENTE {w.magSize}
                       </span>
                       <span className="px-1.5 py-0.5 bg-black/60 border border-white/15 text-neutral-300">
-                        RECARGA {w.reloadTimeSec.toFixed(2)}s
+                        RECARGA{' '}
+                        {w.reloadTimeSec < 0.75
+                          ? `${Math.round(w.reloadTimeSec * 1000)}ms`
+                          : `${w.reloadTimeSec.toFixed(2)}s`}
                       </span>
                     </div>
                   </div>

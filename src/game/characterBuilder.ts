@@ -1,6 +1,13 @@
 import * as THREE from 'three';
-import { cloneAdamScene, getAdamData, getAdamOutfitTexture, isAdamAssetsLoaded } from './adamAssets';
+import {
+  cloneAdamScene,
+  getAdamData,
+  getAdamOutfitTexture,
+  isAdamAssetsLoaded,
+  UPPER_AIM_BONE_NAMES,
+} from './adamAssets';
 import { CharacterConfig, WeaponId } from './types';
+import { buildHybridWeaponModel } from './weapon25d';
 
 export interface CharacterRig {
   isAdam?: boolean;
@@ -13,6 +20,13 @@ export interface CharacterRig {
   adamSpineBone?: THREE.Object3D | null;
   adamHeadBone?: THREE.Object3D | null;
   adamHandRBone?: THREE.Object3D | null;
+  adamThighLBone?: THREE.Object3D | null;
+  adamThighRBone?: THREE.Object3D | null;
+  adamUpperArmLBone?: THREE.Object3D | null;
+  adamUpperArmRBone?: THREE.Object3D | null;
+  adamLowerArmLBone?: THREE.Object3D | null;
+  adamLowerArmRBone?: THREE.Object3D | null;
+  adamUpperBones?: Array<{ name: string; bone: THREE.Object3D }>;
 
   pelvis: THREE.Group;
   torso: THREE.Group;
@@ -30,206 +44,21 @@ export interface CharacterRig {
   backMount2: THREE.Group;
   muzzleFlash: THREE.Mesh;
   parachuteGroup: THREE.Group;
+  surfboardGroup: THREE.Group;
   contactShadow: THREE.Mesh;
   weaponMeshes: Record<WeaponId, THREE.Group>;
   bodyMeshes: THREE.Mesh[];
   setWeapon: (weaponId: WeaponId | null) => void;
   setBackWeapons: (left: WeaponId | null, right: WeaponId | null) => void;
   setParachuteVisible: (visible: boolean) => void;
+  setSurfboardVisible: (visible: boolean) => void;
   setHitFlash: (amount: number) => void;
   applyConfig: (config: CharacterConfig) => void;
   dispose: () => void;
 }
 
-const WEAPON_GUN_METAL_MAT = new THREE.MeshStandardMaterial({
-  color: 0x26292e,
-  roughness: 0.35,
-  metalness: 0.85,
-});
-const WEAPON_POLYMER_MAT = new THREE.MeshStandardMaterial({
-  color: 0x191a1d,
-  roughness: 0.78,
-  metalness: 0.1,
-});
-const WEAPON_WOOD_MAT = new THREE.MeshStandardMaterial({
-  color: 0x5c3c24,
-  roughness: 0.72,
-  metalness: 0.05,
-});
-const WEAPON_SNIPER_GREEN_MAT = new THREE.MeshStandardMaterial({
-  color: 0x3b4d32,
-  roughness: 0.72,
-  metalness: 0.12,
-});
-const WEAPON_LENS_MAT = new THREE.MeshStandardMaterial({
-  color: 0x38bdf8,
-  roughness: 0.15,
-  metalness: 0.9,
-});
-
 export function createWeaponModel(weaponId: WeaponId): THREE.Group {
-  const group = new THREE.Group();
-  const gunMetal = WEAPON_GUN_METAL_MAT;
-  const polymer = WEAPON_POLYMER_MAT;
-  const woodAccent = WEAPON_WOOD_MAT;
-
-  if (weaponId === 'g18') {
-    const slide = new THREE.Mesh(
-      new THREE.BoxGeometry(0.04, 0.045, 0.21),
-      gunMetal,
-    );
-    slide.position.set(0, 0.03, 0.06);
-    const frame = new THREE.Mesh(
-      new THREE.BoxGeometry(0.036, 0.03, 0.18),
-      polymer,
-    );
-    frame.position.set(0, 0.0, 0.05);
-    const grip = new THREE.Mesh(
-      new THREE.BoxGeometry(0.035, 0.12, 0.048),
-      polymer,
-    );
-    grip.position.set(0, -0.06, -0.02);
-    grip.rotation.x = 0.18;
-    group.add(slide, frame, grip);
-  } else if (weaponId === 'm4a1') {
-    const receiver = new THREE.Mesh(
-      new THREE.BoxGeometry(0.06, 0.09, 0.32),
-      gunMetal,
-    );
-    const barrel = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.013, 0.013, 0.32, 6),
-      gunMetal,
-    );
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, 0.015, 0.28);
-
-    const handguard = new THREE.Mesh(
-      new THREE.BoxGeometry(0.05, 0.055, 0.22),
-      polymer,
-    );
-    handguard.position.set(0, 0.01, 0.22);
-
-    const stock = new THREE.Mesh(
-      new THREE.BoxGeometry(0.045, 0.1, 0.2),
-      polymer,
-    );
-    stock.position.set(0, -0.01, -0.22);
-
-    const mag = new THREE.Mesh(
-      new THREE.BoxGeometry(0.036, 0.14, 0.06),
-      gunMetal,
-    );
-    mag.position.set(0, -0.09, 0.07);
-    mag.rotation.x = 0.18;
-
-    const sight = new THREE.Mesh(
-      new THREE.BoxGeometry(0.035, 0.045, 0.12),
-      polymer,
-    );
-    sight.position.set(0, 0.065, 0.01);
-
-    group.add(receiver, barrel, handguard, stock, mag, sight);
-  } else if (weaponId === 'ump45') {
-    const receiver = new THREE.Mesh(
-      new THREE.BoxGeometry(0.055, 0.085, 0.28),
-      polymer,
-    );
-    const barrel = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.014, 0.014, 0.16, 6),
-      gunMetal,
-    );
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, 0.01, 0.2);
-
-    const stock = new THREE.Mesh(
-      new THREE.BoxGeometry(0.035, 0.075, 0.18),
-      polymer,
-    );
-    stock.position.set(0, 0.0, -0.2);
-
-    const mag = new THREE.Mesh(
-      new THREE.BoxGeometry(0.03, 0.16, 0.045),
-      gunMetal,
-    );
-    mag.position.set(0, -0.1, 0.05);
-    mag.rotation.x = 0.08;
-
-    group.add(receiver, barrel, stock, mag);
-  } else if (weaponId === 'm1014') {
-    const receiver = new THREE.Mesh(
-      new THREE.BoxGeometry(0.058, 0.08, 0.34),
-      gunMetal,
-    );
-    const barrel = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.016, 0.016, 0.42, 6),
-      gunMetal,
-    );
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, 0.02, 0.32);
-
-    const tube = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.013, 0.013, 0.35, 6),
-      polymer,
-    );
-    tube.rotation.x = Math.PI / 2;
-    tube.position.set(0, -0.01, 0.28);
-
-    const stock = new THREE.Mesh(
-      new THREE.BoxGeometry(0.045, 0.095, 0.22),
-      woodAccent,
-    );
-    stock.position.set(0, -0.02, -0.23);
-
-    group.add(receiver, barrel, tube, stock);
-  } else {
-    const sniperGreen = WEAPON_SNIPER_GREEN_MAT;
-    const lensMat = WEAPON_LENS_MAT;
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(0.058, 0.088, 0.46),
-      sniperGreen,
-    );
-    const stock = new THREE.Mesh(
-      new THREE.BoxGeometry(0.046, 0.1, 0.24),
-      sniperGreen,
-    );
-    stock.position.set(0, -0.015, -0.28);
-    const barrel = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.013, 0.015, 0.56, 8),
-      gunMetal,
-    );
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, 0.022, 0.44);
-    const muzzleBrake = new THREE.Mesh(
-      new THREE.BoxGeometry(0.036, 0.036, 0.07),
-      gunMetal,
-    );
-    muzzleBrake.position.set(0, 0.022, 0.73);
-    const mag = new THREE.Mesh(
-      new THREE.BoxGeometry(0.034, 0.11, 0.07),
-      gunMetal,
-    );
-    mag.position.set(0, -0.085, 0.05);
-    const scopeTube = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.022, 0.02, 0.26, 8),
-      gunMetal,
-    );
-    scopeTube.rotation.x = Math.PI / 2;
-    scopeTube.position.set(0, 0.085, 0.04);
-    const scopeFront = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.028, 0.024, 0.05, 8),
-      lensMat,
-    );
-    scopeFront.rotation.x = Math.PI / 2;
-    scopeFront.position.set(0, 0.085, 0.18);
-    group.add(body, stock, barrel, muzzleBrake, mag, scopeTube, scopeFront);
-  }
-
-  group.traverse((obj) => {
-    if ((obj as THREE.Mesh).isMesh) {
-      obj.castShadow = true;
-    }
-  });
-  return group;
+  return buildHybridWeaponModel(weaponId);
 }
 
 export function createParachuteCanopyGroup(camoTexture: THREE.Texture): THREE.Group {
@@ -364,6 +193,109 @@ export function createHeadgearSet(hairMat: THREE.Material, darkMat: THREE.Materi
   return { hairBuzz, hairSpiky, capGroup, helmetGroup, helmetMat };
 }
 
+function createSurfboardGroup(): {
+  group: THREE.Group;
+  dispose: () => void;
+} {
+  const group = new THREE.Group();
+  group.visible = false;
+
+  const hullShape = new THREE.Shape();
+  hullShape.moveTo(0, 1.12);
+  hullShape.bezierCurveTo(0.22, 0.78, 0.31, 0.25, 0.28, -0.35);
+  hullShape.bezierCurveTo(0.26, -0.74, 0.19, -0.94, 0.12, -1.04);
+  hullShape.lineTo(0, -0.92);
+  hullShape.lineTo(-0.12, -1.04);
+  hullShape.bezierCurveTo(-0.19, -0.94, -0.26, -0.74, -0.28, -0.35);
+  hullShape.bezierCurveTo(-0.31, 0.25, -0.22, 0.78, 0, 1.12);
+
+  const hullGeo = new THREE.ExtrudeGeometry(hullShape, {
+    depth: 0.052,
+    bevelEnabled: true,
+    bevelThickness: 0.015,
+    bevelSize: 0.014,
+    bevelSegments: 2,
+    curveSegments: 10,
+  });
+  hullGeo.rotateX(Math.PI / 2);
+
+  const hullMat = new THREE.MeshStandardMaterial({
+    color: 0x0ea5e9,
+    roughness: 0.24,
+    metalness: 0.18,
+  });
+  const stripeMat = new THREE.MeshStandardMaterial({
+    color: 0xf59e0b,
+    roughness: 0.34,
+    metalness: 0.55,
+  });
+  const padMat = new THREE.MeshStandardMaterial({
+    color: 0x111827,
+    roughness: 0.9,
+    metalness: 0.04,
+  });
+  const finMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.32,
+    metalness: 0.65,
+  });
+  const jetMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdf8,
+    emissive: 0x0284c7,
+    emissiveIntensity: 0.85,
+    roughness: 0.2,
+    metalness: 0.35,
+  });
+
+  const hullMesh = new THREE.Mesh(hullGeo, hullMat);
+  hullMesh.position.y = 0.07;
+  group.add(hullMesh);
+
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.014, 1.62), stripeMat);
+  stripe.position.set(0, 0.082, 0.08);
+  group.add(stripe);
+
+  const frontPad = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.014, 0.44), padMat);
+  frontPad.position.set(0, 0.083, 0.22);
+  const rearPad = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.014, 0.42), padMat);
+  rearPad.position.set(0, 0.083, -0.44);
+  group.add(frontPad, rearPad);
+
+  const finL = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.14, 0.22), finMat);
+  finL.position.set(-0.12, -0.05, -0.68);
+  finL.rotation.x = -0.22;
+  const finR = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.14, 0.22), finMat);
+  finR.position.set(0.12, -0.05, -0.68);
+  finR.rotation.x = -0.22;
+  group.add(finL, finR);
+
+  const thruster = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.036, 0.044, 0.14, 10),
+    jetMat,
+  );
+  thruster.rotation.x = Math.PI / 2;
+  thruster.position.set(0, 0.042, -0.94);
+  group.add(thruster);
+
+  return {
+    group,
+    dispose: () => {
+      hullGeo.dispose();
+      stripe.geometry.dispose();
+      frontPad.geometry.dispose();
+      rearPad.geometry.dispose();
+      finL.geometry.dispose();
+      finR.geometry.dispose();
+      thruster.geometry.dispose();
+      hullMat.dispose();
+      stripeMat.dispose();
+      padMat.dispose();
+      finMat.dispose();
+      jetMat.dispose();
+    },
+  };
+}
+
 function createAdamCharacterRig(
   initialConfig: CharacterConfig,
   camoTexture: THREE.Texture,
@@ -458,6 +390,18 @@ function createAdamCharacterRig(
   const adamSpineBone = clonedScene.getObjectByName('spine_02') ?? adamPelvisBone;
   const adamHeadBone = clonedScene.getObjectByName('Head') ?? adamSpineBone;
   const adamHandRBone = clonedScene.getObjectByName('hand_r') ?? adamSpineBone;
+  const adamThighLBone = clonedScene.getObjectByName('thigh_l') ?? null;
+  const adamThighRBone = clonedScene.getObjectByName('thigh_r') ?? null;
+  const adamUpperArmLBone = clonedScene.getObjectByName('upperarm_l') ?? null;
+  const adamUpperArmRBone = clonedScene.getObjectByName('upperarm_r') ?? null;
+  const adamLowerArmLBone = clonedScene.getObjectByName('lowerarm_l') ?? null;
+  const adamLowerArmRBone = clonedScene.getObjectByName('lowerarm_r') ?? null;
+  const adamUpperBones: Array<{ name: string; bone: THREE.Object3D }> = [];
+  for (let b = 0; b < UPPER_AIM_BONE_NAMES.length; b++) {
+    const name = UPPER_AIM_BONE_NAMES[b];
+    const bone = clonedScene.getObjectByName(name);
+    if (bone) adamUpperBones.push({ name, bone });
+  }
 
   // Attach vest, backpack & back weapons onto spine_02
   const vestGroup = createVestGeometryGroup(vestMat);
@@ -480,14 +424,22 @@ function createAdamCharacterRig(
 
   const backMeshes1: Record<WeaponId, THREE.Group> = {
     g18: createWeaponModel('g18'),
+    deagle: createWeaponModel('deagle'),
     m4a1: createWeaponModel('m4a1'),
+    xm8: createWeaponModel('xm8'),
+    scar: createWeaponModel('scar'),
+    ak47: createWeaponModel('ak47'),
     ump45: createWeaponModel('ump45'),
     m1014: createWeaponModel('m1014'),
     awm: createWeaponModel('awm'),
   };
   const backMeshes2: Record<WeaponId, THREE.Group> = {
     g18: createWeaponModel('g18'),
+    deagle: createWeaponModel('deagle'),
     m4a1: createWeaponModel('m4a1'),
+    xm8: createWeaponModel('xm8'),
+    scar: createWeaponModel('scar'),
+    ak47: createWeaponModel('ak47'),
     ump45: createWeaponModel('ump45'),
     m1014: createWeaponModel('m1014'),
     awm: createWeaponModel('awm'),
@@ -520,7 +472,11 @@ function createAdamCharacterRig(
 
   const weaponMeshes: Record<WeaponId, THREE.Group> = {
     g18: createWeaponModel('g18'),
+    deagle: createWeaponModel('deagle'),
     m4a1: createWeaponModel('m4a1'),
+    xm8: createWeaponModel('xm8'),
+    scar: createWeaponModel('scar'),
+    ak47: createWeaponModel('ak47'),
     ump45: createWeaponModel('ump45'),
     m1014: createWeaponModel('m1014'),
     awm: createWeaponModel('awm'),
@@ -549,6 +505,11 @@ function createAdamCharacterRig(
   const parachuteGroup = createParachuteCanopyGroup(camoTexture);
   parachuteGroup.position.set(0, 1.85, 0);
   adamVisualRoot.add(parachuteGroup);
+
+  // Tactical water surfboard attached at base of character root
+  const surfboard = createSurfboardGroup();
+  surfboard.group.position.set(0, 0.02, 0);
+  root.add(surfboard.group);
 
   // Wire AnimationMixer + clips
   const mixer = new THREE.AnimationMixer(clonedScene);
@@ -617,6 +578,10 @@ function createAdamCharacterRig(
     parachuteGroup.visible = visible;
   };
 
+  const setSurfboardVisible = (visible: boolean) => {
+    surfboard.group.visible = visible;
+  };
+
   const setHitFlash = (amount: number) => {
     const r = Math.max(0, Math.min(1, amount));
     if (bodyMat) bodyMat.emissive.setRGB(r * 0.85, 0, 0);
@@ -626,6 +591,7 @@ function createAdamCharacterRig(
   const dispose = () => {
     mixer.stopAllAction();
     mixer.uncacheRoot(clonedScene);
+    surfboard.dispose();
     vestMat.dispose();
     packMat.dispose();
     hairMat.dispose();
@@ -646,6 +612,13 @@ function createAdamCharacterRig(
     adamSpineBone,
     adamHeadBone,
     adamHandRBone,
+    adamThighLBone,
+    adamThighRBone,
+    adamUpperArmLBone,
+    adamUpperArmRBone,
+    adamLowerArmLBone,
+    adamLowerArmRBone,
+    adamUpperBones,
     pelvis,
     torso,
     headGroup,
@@ -662,12 +635,14 @@ function createAdamCharacterRig(
     backMount2,
     muzzleFlash,
     parachuteGroup,
+    surfboardGroup: surfboard.group,
     contactShadow,
     weaponMeshes,
     bodyMeshes,
     setWeapon,
     setBackWeapons,
     setParachuteVisible,
+    setSurfboardVisible,
     setHitFlash,
     applyConfig,
     dispose,
@@ -880,7 +855,11 @@ function createProceduralCharacterRig(
 
   const weaponMeshes: Record<WeaponId, THREE.Group> = {
     g18: createWeaponModel('g18'),
+    deagle: createWeaponModel('deagle'),
     m4a1: createWeaponModel('m4a1'),
+    xm8: createWeaponModel('xm8'),
+    scar: createWeaponModel('scar'),
+    ak47: createWeaponModel('ak47'),
     ump45: createWeaponModel('ump45'),
     m1014: createWeaponModel('m1014'),
     awm: createWeaponModel('awm'),
@@ -904,14 +883,22 @@ function createProceduralCharacterRig(
 
   const backMeshes1: Record<WeaponId, THREE.Group> = {
     g18: createWeaponModel('g18'),
+    deagle: createWeaponModel('deagle'),
     m4a1: createWeaponModel('m4a1'),
+    xm8: createWeaponModel('xm8'),
+    scar: createWeaponModel('scar'),
+    ak47: createWeaponModel('ak47'),
     ump45: createWeaponModel('ump45'),
     m1014: createWeaponModel('m1014'),
     awm: createWeaponModel('awm'),
   };
   const backMeshes2: Record<WeaponId, THREE.Group> = {
     g18: createWeaponModel('g18'),
+    deagle: createWeaponModel('deagle'),
     m4a1: createWeaponModel('m4a1'),
+    xm8: createWeaponModel('xm8'),
+    scar: createWeaponModel('scar'),
+    ak47: createWeaponModel('ak47'),
     ump45: createWeaponModel('ump45'),
     m1014: createWeaponModel('m1014'),
     awm: createWeaponModel('awm'),
@@ -974,6 +961,10 @@ function createProceduralCharacterRig(
   parachuteGroup.position.set(0, 1.45, 0);
   torso.add(parachuteGroup);
 
+  const surfboard = createSurfboardGroup();
+  surfboard.group.position.set(0, 0.02, 0);
+  root.add(surfboard.group);
+
   const applyConfig = (cfg: CharacterConfig) => {
     skinMat.color.set(cfg.skinColor);
     shirtMat.color.set(cfg.shirtColor);
@@ -1022,6 +1013,10 @@ function createProceduralCharacterRig(
     parachuteGroup.visible = visible;
   };
 
+  const setSurfboardVisible = (visible: boolean) => {
+    surfboard.group.visible = visible;
+  };
+
   const setHitFlash = (amount: number) => {
     const r = Math.max(0, Math.min(1, amount));
     shirtMat.emissive.setRGB(r * 0.85, 0, 0);
@@ -1030,8 +1025,9 @@ function createProceduralCharacterRig(
   };
 
   const dispose = () => {
+    surfboard.dispose();
     root.traverse((obj) => {
-      if ((obj as THREE.Mesh).isMesh) {
+      if ((obj as THREE.Mesh).isMesh && !obj.userData?.sharedWeaponAsset) {
         (obj as THREE.Mesh).geometry.dispose();
       }
     });
@@ -1065,12 +1061,14 @@ function createProceduralCharacterRig(
     backMount2,
     muzzleFlash,
     parachuteGroup,
+    surfboardGroup: surfboard.group,
     contactShadow,
     weaponMeshes,
     bodyMeshes,
     setWeapon,
     setBackWeapons,
     setParachuteVisible,
+    setSurfboardVisible,
     setHitFlash,
     applyConfig,
     dispose,

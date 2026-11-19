@@ -43,6 +43,7 @@ interface BackpackModalProps {
     toSlot: 1 | 2 | 3,
   ) => void;
   onDropWeaponSlot: (slot: 1 | 2 | 3) => void;
+  onSwapWeaponSlots: (slotA: 1 | 2 | 3, slotB: 1 | 2 | 3) => void;
   onSelectSlot: (slot: WeaponSlotId) => void;
 }
 
@@ -103,6 +104,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
   onTransferScope,
   onTransferAttachment,
   onDropWeaponSlot,
+  onSwapWeaponSlots,
   onSelectSlot,
 }) => {
   const defaultTargetSlot: 1 | 2 | 3 =
@@ -122,10 +124,17 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
   } | null>(null);
   const [hoverZone, setHoverZone] = useState<DropZoneId>(null);
 
+  const slot1Ref = useRef<HTMLDivElement | null>(null);
+  const slot2Ref = useRef<HTMLDivElement | null>(null);
+  const slot3Ref = useRef<HTMLDivElement | null>(null);
+  const discardRef = useRef<HTMLDivElement | null>(null);
+
   const dragSessionRef = useRef<{
     payload: DragPayload;
     startX: number;
     startY: number;
+    lastX: number;
+    lastY: number;
     dragging: boolean;
   } | null>(null);
   const suppressClickUntilRef = useRef(0);
@@ -141,6 +150,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
     onTransferScope,
     onTransferAttachment,
     onDropWeaponSlot,
+    onSwapWeaponSlots,
   });
   handlersRef.current = {
     onDropMedkit,
@@ -154,20 +164,38 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
     onTransferScope,
     onTransferAttachment,
     onDropWeaponSlot,
+    onSwapWeaponSlots,
+  };
+
+  const resolveDropZone = (x: number, y: number): DropZoneId => {
+    const inside = (el: HTMLElement | null) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    };
+    if (inside(slot1Ref.current)) return 'slot-1';
+    if (inside(slot2Ref.current)) return 'slot-2';
+    if (inside(slot3Ref.current)) return 'slot-3';
+    if (inside(discardRef.current)) return 'discard';
+    return findDropZoneAt(x, y);
   };
 
   useEffect(() => {
     const onPointerMove = (e: PointerEvent) => {
       const sess = dragSessionRef.current;
       if (!sess) return;
+      if (e.clientX !== 0 || e.clientY !== 0) {
+        sess.lastX = e.clientX;
+        sess.lastY = e.clientY;
+      }
       if (!sess.dragging) {
-        if (Math.hypot(e.clientX - sess.startX, e.clientY - sess.startY) < 7) {
+        if (Math.hypot(sess.lastX - sess.startX, sess.lastY - sess.startY) < 4) {
           return;
         }
         sess.dragging = true;
       }
-      setActiveDrag({ payload: sess.payload, x: e.clientX, y: e.clientY });
-      setHoverZone(findDropZoneAt(e.clientX, e.clientY));
+      setActiveDrag({ payload: sess.payload, x: sess.lastX, y: sess.lastY });
+      setHoverZone(resolveDropZone(sess.lastX, sess.lastY));
     };
 
     const finishDrag = (e: PointerEvent) => {
@@ -175,9 +203,12 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
       dragSessionRef.current = null;
       if (!sess) return;
 
+      const endX = e.clientX !== 0 || e.clientY !== 0 ? e.clientX : sess.lastX;
+      const endY = e.clientX !== 0 || e.clientY !== 0 ? e.clientY : sess.lastY;
+
       if (sess.dragging) {
-        suppressClickUntilRef.current = performance.now() + 180;
-        const zone = findDropZoneAt(e.clientX, e.clientY);
+        suppressClickUntilRef.current = performance.now() + 200;
+        const zone = resolveDropZone(endX, endY);
         const h = handlersRef.current;
         const p = sess.payload;
 
@@ -197,7 +228,11 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
           zone === 'slot-3'
         ) {
           const targetSlot = Number(zone.slice(-1)) as 1 | 2 | 3;
-          if (p.kind === 'backpack-item') {
+          if (p.kind === 'weapon') {
+            if (targetSlot !== 3 && p.slot !== 3 && p.slot !== targetSlot) {
+              h.onSwapWeaponSlots(p.slot, targetSlot);
+            }
+          } else if (p.kind === 'backpack-item') {
             h.onEquipItem(p.itemId, targetSlot);
           } else if (p.kind === 'equipped-scope') {
             h.onTransferScope(p.slot, targetSlot);
@@ -224,10 +259,13 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
   const beginDrag = (e: React.PointerEvent, payload: DragPayload) => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     e.stopPropagation();
+    e.preventDefault();
     dragSessionRef.current = {
       payload,
       startX: e.clientX,
       startY: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
       dragging: false,
     };
   };
@@ -236,7 +274,8 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
 
   const isDraggingForSlot =
     activeDrag &&
-    (activeDrag.payload.kind === 'backpack-item' ||
+    (activeDrag.payload.kind === 'weapon' ||
+      activeDrag.payload.kind === 'backpack-item' ||
       activeDrag.payload.kind === 'equipped-scope' ||
       activeDrag.payload.kind === 'equipped-attachment');
 
@@ -341,7 +380,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                   hud.glooCount > 0 &&
                   beginDrag(e, { kind: 'gloo', label: 'Parede de Gelo' })
                 }
-                className={`flex flex-col items-center justify-center bg-black/45 border p-1 ${
+                className={`touch-none select-none flex flex-col items-center justify-center bg-black/45 border p-1 ${
                   hud.glooCount > 0
                     ? 'border-cyan-400/50 cursor-grab active:cursor-grabbing hover:bg-cyan-950/35'
                     : 'border-white/15 opacity-45'
@@ -358,7 +397,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                   hud.grenadeCount > 0 &&
                   beginDrag(e, { kind: 'grenade', label: 'Granada' })
                 }
-                className={`flex flex-col items-center justify-center bg-black/45 border p-1 ${
+                className={`touch-none select-none flex flex-col items-center justify-center bg-black/45 border p-1 ${
                   hud.grenadeCount > 0
                     ? 'border-red-400/50 cursor-grab active:cursor-grabbing hover:bg-red-950/35'
                     : 'border-white/15 opacity-45'
@@ -388,11 +427,13 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
               const isSelected = selectedWeaponSlot === slot;
               const isDropHighlight =
                 isDraggingForSlot && hoverZone === `slot-${slot}`;
+              const slotRef = slot === 1 ? slot1Ref : slot2Ref;
 
               if (!w || !def) {
                 return (
                   <div
                     key={slot}
+                    ref={slotRef}
                     data-drop-zone={`slot-${slot}`}
                     onClick={() => canClickNow() && setSelectedWeaponSlot(slot)}
                     className={`flex-1 min-h-[104px] border flex flex-col items-center justify-center p-2 text-center cursor-pointer transition-colors ${
@@ -418,9 +459,13 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
               return (
                 <div
                   key={slot}
+                  ref={slotRef}
                   data-drop-zone={`slot-${slot}`}
+                  onPointerDown={(e) =>
+                    beginDrag(e, { kind: 'weapon', slot, label: def.name })
+                  }
                   onClick={() => canClickNow() && setSelectedWeaponSlot(slot)}
-                  className={`flex-1 flex flex-col justify-between p-1.5 sm:p-2 border transition-colors ${
+                  className={`touch-none select-none flex-1 flex flex-col justify-between p-1.5 sm:p-2 border transition-colors cursor-grab active:cursor-grabbing ${
                     isDropHighlight
                       ? 'border-emerald-400 bg-emerald-500/20 ring-1 ring-emerald-300'
                       : isSelected
@@ -459,7 +504,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                         }
                       }}
                       disabled={!def.allowsCustomScope || w.scope === 'none'}
-                      className={`w-10 h-8 border flex flex-col items-center justify-center leading-none transition-colors ${
+                      className={`touch-none select-none w-10 h-8 border flex flex-col items-center justify-center leading-none transition-colors ${
                         w.scope !== 'none'
                           ? 'bg-emerald-950/75 border-emerald-400/80 text-emerald-200 cursor-grab active:cursor-grabbing hover:bg-emerald-900/75'
                           : 'bg-black/45 border-white/25 text-white/35 cursor-default'
@@ -479,11 +524,8 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
 
                   {/* Center Draggable Weapon Silhouette */}
                   <div
-                    onPointerDown={(e) =>
-                      beginDrag(e, { kind: 'weapon', slot, label: def.name })
-                    }
-                    className="my-1 flex items-center justify-center cursor-grab active:cursor-grabbing py-0.5 hover:scale-[1.02] transition-transform"
-                    title="Arraste para o lado direito para dropar arma"
+                    className="my-1 flex items-center justify-center py-0.5 hover:scale-[1.02] transition-transform"
+                    title="Arraste para outro slot para trocar ou para a direita para dropar"
                   >
                     <WeaponIcon
                       weaponId={w.weaponId}
@@ -518,7 +560,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                               onUnequipAttachment(slot, key);
                             }
                           }}
-                          className={`h-8 border flex flex-col items-center justify-center px-0.5 leading-none transition-colors ${
+                          className={`touch-none select-none h-8 border flex flex-col items-center justify-center px-0.5 leading-none transition-colors ${
                             !allowed
                               ? 'bg-black/25 border-white/10 text-white/20 cursor-default'
                               : att
@@ -547,6 +589,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
             <div className="grid grid-cols-2 gap-1.5 pt-1 border-t border-white/15">
               {/* Sidearm */}
               <div
+                ref={slot3Ref}
                 data-drop-zone="slot-3"
                 onClick={() => {
                   if (!canClickNow()) return;
@@ -562,7 +605,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                     });
                   }
                 }}
-                className={`h-16 border flex flex-col items-center justify-between p-1.5 transition-colors ${
+                className={`touch-none select-none h-16 border flex flex-col items-center justify-between p-1.5 transition-colors ${
                   slot3
                     ? 'cursor-grab active:cursor-grabbing'
                     : 'cursor-default opacity-45'
@@ -573,7 +616,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                 }`}
                 title={
                   slot3
-                    ? 'Pistola G18 (Arraste para a direita para dropar)'
+                    ? `${WEAPONS[slot3.weaponId].name} (Arraste para a direita para dropar)`
                     : 'Sem Pistola'
                 }
               >
@@ -584,8 +627,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                     </span>
                     <WeaponIcon
                       weaponId={slot3.weaponId}
-                      silhouette
-                      className="w-12 h-6"
+                      className="w-14 h-7"
                     />
                   </>
                 ) : (
@@ -650,7 +692,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                       onClose();
                     }
                   }}
-                  className="bg-black/45 hover:bg-white/10 border border-white/25 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
+                  className="touch-none select-none bg-black/45 hover:bg-white/10 border border-white/25 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
                   title="Clique para usar ou arraste até a direita para dropar"
                 >
                   <div className="text-[9px] font-medium text-white/90 leading-tight line-clamp-2">
@@ -671,7 +713,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                   onPointerDown={(e) =>
                     beginDrag(e, { kind: 'gloo', label: 'Parede de Gelo' })
                   }
-                  className="bg-black/45 hover:bg-white/10 border border-white/25 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
+                  className="touch-none select-none bg-black/45 hover:bg-white/10 border border-white/25 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
                   title="Arraste até a direita para dropar"
                 >
                   <div className="text-[9px] font-medium text-white/90 leading-tight">
@@ -692,7 +734,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                   onPointerDown={(e) =>
                     beginDrag(e, { kind: 'grenade', label: 'Granada' })
                   }
-                  className="bg-black/45 hover:bg-white/10 border border-white/25 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
+                  className="touch-none select-none bg-black/45 hover:bg-white/10 border border-white/25 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
                   title="Arraste até a direita para dropar"
                 >
                   <div className="text-[9px] font-medium text-white/90 leading-tight">
@@ -719,7 +761,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                       label: ae.label,
                     })
                   }
-                  className="bg-black/45 hover:bg-white/10 border border-white/25 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
+                  className="touch-none select-none bg-black/45 hover:bg-white/10 border border-white/25 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
                   title={`Arraste até a direita para dropar ${ae.dropChunk} balas`}
                 >
                   <div className="text-[9px] font-medium text-white/90 leading-tight">
@@ -763,7 +805,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                         onEquipItem(item.id, selectedWeaponSlot);
                       }
                     }}
-                    className="bg-black/45 hover:bg-amber-500/15 border border-amber-400/40 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
+                    className="touch-none select-none bg-black/45 hover:bg-amber-500/15 border border-amber-400/40 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
                     title="Arraste para uma Arma (equipar) ou para a Direita (descartar). Clique para equipar rápido."
                   >
                     <div className="text-[9px] font-medium text-amber-200 leading-tight line-clamp-2">
@@ -789,6 +831,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
 
       {/* RIGHT ~30%: OPEN 3D VIEW + DISCARD DROP ZONE + ORANGE X CLOSE BUTTON (MATCHES 2SS.JPG) */}
       <div
+        ref={discardRef}
         data-drop-zone="discard"
         onClick={(e) => {
           if (e.target === e.currentTarget && canClickNow() && !activeDrag) {

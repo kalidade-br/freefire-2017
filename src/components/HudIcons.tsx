@@ -350,3 +350,29 @@ export const IconDiscardDragSvg: React.FC<IconProps> = ({ className = 'w-9 h-9' 
   </svg>
 );
 
+export const IconSurfboardSvg: React.FC<IconProps> = ({ className = 'w-6 h-6' }) => (
+  <svg viewBox="0 0 32 32" fill="none" className={className} aria-hidden="true">
+    <path
+      d="M25.5 6.5C22.2 6.8 16.5 9.2 12.2 13.5C8 17.7 5.8 22.8 6.5 25.5C9.2 26.2 14.3 24 18.5 19.8C22.8 15.5 25.2 9.8 25.5 6.5Z"
+      fill="currentColor"
+      fillOpacity="0.92"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M8.4 23.6L23.6 8.4"
+      stroke="#0f172a"
+      strokeWidth="2.1"
+      strokeLinecap="round"
+    />
+    <path
+      d="M5 27.5C8.5 26 11.5 28.5 15.5 27.2C19.5 26 22.5 28.5 27 27"
+      stroke="#38bdf8"
+      strokeWidth="2"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
+

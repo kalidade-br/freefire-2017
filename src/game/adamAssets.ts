@@ -3,9 +3,26 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { CharacterConfig } from './types';
 
+export const UPPER_AIM_BONE_NAMES = [
+  'spine_01',
+  'spine_02',
+  'spine_03',
+  'neck_01',
+  'Head',
+  'clavicle_l',
+  'upperarm_l',
+  'lowerarm_l',
+  'hand_l',
+  'clavicle_r',
+  'upperarm_r',
+  'lowerarm_r',
+  'hand_r',
+] as const;
+
 export interface AdamLoadedData {
   baseScene: THREE.Group;
   animations: THREE.AnimationClip[];
+  aimPoseQuats: Record<string, THREE.Quaternion>;
   hairBuzzedGeo: THREE.BufferGeometry | null;
   hairPartedGeo: THREE.BufferGeometry | null;
   baseSkinTex: THREE.Texture | null;
@@ -138,9 +155,30 @@ export function preloadAdamAssets(onStep?: (pct: number, label: string) => void)
         }
       }
 
+      const aimPoseQuats: Record<string, THREE.Quaternion> = {};
+      const aimClip =
+        adamGltf.animations.find((a) => a.name === 'Pistol_Aim_Neutral') ??
+        adamGltf.animations.find((a) => a.name === 'Pistol_Shoot');
+      if (aimClip) {
+        const sampleClone = SkeletonUtils.clone(adamGltf.scene) as THREE.Group;
+        const sampleMixer = new THREE.AnimationMixer(sampleClone);
+        const act = sampleMixer.clipAction(aimClip);
+        act.play();
+        sampleMixer.update(0.05);
+        for (let b = 0; b < UPPER_AIM_BONE_NAMES.length; b++) {
+          const bName = UPPER_AIM_BONE_NAMES[b];
+          const bone = sampleClone.getObjectByName(bName);
+          if (bone) {
+            aimPoseQuats[bName] = bone.quaternion.clone();
+          }
+        }
+        sampleMixer.stopAllAction();
+      }
+
       loadedData = {
         baseScene: adamGltf.scene,
         animations: adamGltf.animations,
+        aimPoseQuats,
         hairBuzzedGeo: buzzedGltf ? extractFirstGeometry(buzzedGltf.scene) : null,
         hairPartedGeo: partedGltf ? extractFirstGeometry(partedGltf.scene) : null,
         baseSkinTex: bodyMat?.map ?? null,

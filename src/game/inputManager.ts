@@ -20,6 +20,8 @@ export class InputManager {
   public grenadePressed = false;
   public fireTapPressed = false;
   public revivePressed = false;
+  public surfboardPressed = false;
+  public quickSwapPressed = false;
   public switchSlot: 1 | 2 | 3 | 4 | null = null;
   public cycleSlotDir: -1 | 0 | 1 = 0;
   public pointerLocked = false;
@@ -107,6 +109,9 @@ export class InputManager {
   }
 
   public setTouchFire(active: boolean): void {
+    if (active && !this.touchFire) {
+      this.fireTapPressed = true;
+    }
     this.touchFire = active;
   }
 
@@ -180,6 +185,14 @@ export class InputManager {
     this.revivePressed = true;
   }
 
+  public triggerSurfboard(): void {
+    this.surfboardPressed = true;
+  }
+
+  public triggerQuickSwap(): void {
+    this.quickSwapPressed = true;
+  }
+
   public triggerSlot(slot: 1 | 2 | 3 | 4): void {
     this.switchSlot = slot;
   }
@@ -233,6 +246,8 @@ export class InputManager {
     grenade: boolean;
     fireTap: boolean;
     revive: boolean;
+    surfboard: boolean;
+    quickSwap: boolean;
     slot: 1 | 2 | 3 | 4 | null;
     cycleSlotDir: -1 | 0 | 1;
   } {
@@ -251,6 +266,8 @@ export class InputManager {
       grenade: this.grenadePressed,
       fireTap: this.fireTapPressed,
       revive: this.revivePressed,
+      surfboard: this.surfboardPressed,
+      quickSwap: this.quickSwapPressed,
       slot: this.switchSlot,
       cycleSlotDir: this.cycleSlotDir,
     };
@@ -268,6 +285,8 @@ export class InputManager {
     this.grenadePressed = false;
     this.fireTapPressed = false;
     this.revivePressed = false;
+    this.surfboardPressed = false;
+    this.quickSwapPressed = false;
     this.switchSlot = null;
     this.cycleSlotDir = 0;
     return out;
@@ -295,12 +314,14 @@ export class InputManager {
     if (e.code === 'KeyZ' || e.code === 'ControlLeft') this.triggerProne();
     if (e.code === 'KeyR') this.reloadPressed = true;
     if (e.code === 'KeyE' || e.code === 'KeyF') this.interactPressed = true;
-    if (e.code === 'KeyQ') this.cycleScopePressed = true;
+    if (e.code === 'KeyY') this.cycleScopePressed = true;
+    if (e.code === 'KeyQ') this.quickSwapPressed = true;
     if (e.code === 'Tab' || e.code === 'KeyB') this.backpackPressed = true;
     if (e.code === 'KeyH') this.medkitPressed = true;
     if (e.code === 'KeyG' || e.code === 'Digit5') this.glooPressed = true;
     if (e.code === 'KeyX' || e.code === 'Digit6') this.grenadePressed = true;
     if (e.code === 'KeyV') this.revivePressed = true;
+    if (e.code === 'KeyT') this.surfboardPressed = true;
     if (e.code === 'Digit1') this.switchSlot = 1;
     if (e.code === 'Digit2') this.switchSlot = 2;
     if (e.code === 'Digit3') this.switchSlot = 3;
@@ -336,6 +357,7 @@ export class InputManager {
         this.requestLock();
       }
       this.isFiring = true;
+      this.fireTapPressed = true;
       this.isDraggingMouse = true;
       this.lastMouseX = e.clientX;
       this.lastMouseY = e.clientY;

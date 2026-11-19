@@ -63,6 +63,9 @@ const INITIAL_HUD: HudSnapshot = {
   isSprinting: false,
   isAiming: false,
   isGrounded: true,
+  inWater: false,
+  isSwimming: false,
+  isOnSurfboard: false,
   isReloading: false,
   reloadProgress: 0,
   isDead: false,
@@ -100,10 +103,10 @@ const INITIAL_HUD: HudSnapshot = {
     timerSec: 90,
     currentX: 0,
     currentZ: 0,
-    currentRadius: 510,
+    currentRadius: 890,
     nextX: 0,
     nextZ: 0,
-    nextRadius: 320,
+    nextRadius: 560,
     damagePerSec: 2,
     playerOutside: false,
   },
@@ -536,6 +539,7 @@ export default function App() {
             engineRef.current?.transferAttachmentBetweenSlots(from, key, to)
           }
           onDropWeaponSlot={(slot) => engineRef.current?.dropWeaponSlot(slot)}
+          onSwapWeaponSlots={(slotA, slotB) => engineRef.current?.swapWeaponSlots(slotA, slotB)}
           onSelectSlot={(slot) => engineRef.current?.selectWeaponSlot(slot)}
         />
       )}
