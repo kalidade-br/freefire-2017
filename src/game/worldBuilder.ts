@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
-  cloneAdamScene,
-  getAdamData,
-  getAdamOutfitTexture,
+  cloneCharacterScene,
+  FF_SCENE_SCALE,
+  FFModelId,
+  getModelAssetPack,
   isAdamAssetsLoaded,
   UPPER_AIM_BONE_NAMES,
 } from './adamAssets';
@@ -44,6 +45,7 @@ export interface TargetDummy {
   nick: string;
   isBot: boolean;
   isAdam?: boolean;
+  modelId?: FFModelId;
   group: THREE.Group;
   visualRoot?: THREE.Group;
   mixer?: THREE.AnimationMixer;
@@ -234,6 +236,8 @@ export interface WorldHandle {
   resetExplosiveBarrels: () => void;
   resetVehicles: () => void;
   groundHeightAt: (x: number, z: number) => number;
+  syncProximityLoot: (px: number, pz: number, radius?: number) => void;
+  resetMatchLoots: () => void;
   spawnDroppedLoot: (item: Omit<LootItem, 'id' | 'collected'>) => void;
   clearDroppedLoots: () => void;
   applyQuality: (quality: GraphicsQuality, isSoftwareGl: boolean) => void;
@@ -1081,10 +1085,10 @@ function createBotEntity(
   const vestMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.2, 0.5, 10), vestMat);
   vestMesh.scale.set(1.08, 1, 0.74);
   vestMesh.position.y = 0.43;
-  vestMesh.visible = vestLevel > 0;
+  vestMesh.visible = false;
   torsoGroup.add(vestMesh);
 
-  // Helmet (always created so bot can visibly equip helmet when looting!)
+  // Helmet (hidden visuals — clean character + backpack only)
   const helmMat = new THREE.MeshStandardMaterial({
     color: helmetLevel === 3 ? 0x181a1f : helmetLevel === 2 ? 0x2c343d : 0x566444,
     roughness: 0.45,
@@ -1095,7 +1099,7 @@ function createBotEntity(
     helmMat,
   );
   helmetMesh.position.y = 0.93;
-  helmetMesh.visible = helmetLevel > 0;
+  helmetMesh.visible = false;
   torsoGroup.add(helmetMesh);
 
   const armLPivot = new THREE.Group();
@@ -1122,9 +1126,9 @@ function createBotEntity(
     new THREE.BoxGeometry(0.065, 0.085, 0.66),
     new THREE.MeshStandardMaterial({ color: 0x1e2228, roughness: 0.42, metalness: 0.72 }),
   );
-  backGunMesh.position.set(0.14, 0.42, -0.17);
-  backGunMesh.rotation.set(-Math.PI * 0.42, 0.1, -0.24);
-  backGunMesh.visible = weaponId !== 'g18' && weaponId !== 'deagle';
+  backGunMesh.position.set(0.095, 0.41, -0.125);
+  backGunMesh.rotation.set(-Math.PI * 0.44, 0.06, -0.18);
+  backGunMesh.visible = true;
   torsoGroup.add(backGunMesh);
 
   // Bot Camo Parachute Canopy (visible during parachute descent across the map)
@@ -1251,7 +1255,13 @@ const BOT_CHEST_PROXY_GEO = new THREE.BoxGeometry(0.42, 0.56, 0.3);
 const BOT_HEAD_PROXY_GEO = new THREE.BoxGeometry(0.26, 0.28, 0.26);
 const BOT_VEST_GEO = new THREE.CylinderGeometry(0.175, 0.155, 0.31, 10);
 const BOT_HELMET_GEO = new THREE.SphereGeometry(0.122, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.58);
-const BOT_GUN_GEO = new THREE.BoxGeometry(0.06, 0.08, 0.52);
+const BOT_PACK_GEO = new THREE.BoxGeometry(0.24, 0.32, 0.14);
+const BOT_PACK_MAT = new THREE.MeshStandardMaterial({
+  color: 0x353b30,
+  roughness: 0.78,
+  metalness: 0.1,
+});
+const BOT_GUN_GEO = new THREE.BoxGeometry(0.048, 0.064, 0.38);
 const BOT_GUN_MAT = new THREE.MeshStandardMaterial({
   color: 0x22262b,
   roughness: 0.4,
@@ -1286,21 +1296,7 @@ export function upgradeBotsToAdam(
   camoTexture: THREE.Texture,
 ): void {
   if (!isAdamAssetsLoaded()) return;
-  const data = getAdamData();
-  if (!data) return;
 
-  const skinColors = ['#d7a27e', '#c98e6b', '#e2b291', '#9b684b'];
-  const hairColors = ['#18181b', '#2b1f18', '#3f2e21', '#111827'];
-  const shoeColors = ['#1f242d', '#332924', '#18181b', '#e5e7eb'];
-
-  const hairMats = hairColors.map(
-    (col) =>
-      new THREE.MeshStandardMaterial({
-        color: col,
-        roughness: 0.85,
-        side: THREE.DoubleSide,
-      }),
-  );
   const vestMats: Record<1 | 2 | 3, THREE.MeshStandardMaterial> = {
     1: new THREE.MeshStandardMaterial({ color: 0x4d5d3d, roughness: 0.55, metalness: 0.15 }),
     2: new THREE.MeshStandardMaterial({ color: 0x2f3842, roughness: 0.55, metalness: 0.15 }),
@@ -1322,32 +1318,24 @@ export function upgradeBotsToAdam(
     const bot = targets[i];
     if (bot.isAdam) continue;
 
-    // Clean up initial procedural children
+    // Clean up initial procedural children & geometries
+    bot.group.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh && !obj.userData?.sharedWeaponAsset) {
+        (obj as THREE.Mesh).geometry?.dispose();
+      }
+    });
     while (bot.group.children.length > 0) {
-      const child = bot.group.children[0];
-      bot.group.remove(child);
+      bot.group.remove(bot.group.children[0]);
     }
 
-    const cloned = cloneAdamScene();
-    if (!cloned) continue;
+    const modelId: FFModelId = i % 2 === 0 ? 'adam' : 'eva';
+    const pack = getModelAssetPack(modelId);
+    const cloned = cloneCharacterScene(modelId);
+    if (!cloned || !pack) continue;
 
     const visualRoot = new THREE.Group();
     visualRoot.add(cloned);
     bot.group.add(visualRoot);
-
-    const shirtHex = `#${new THREE.Color(BOT_SHIRT_PALETTE[i % BOT_SHIRT_PALETTE.length]).getHexString()}`;
-    const pantsHex = `#${new THREE.Color(BOT_PANTS_PALETTE[i % BOT_PANTS_PALETTE.length]).getHexString()}`;
-    const skinHex = skinColors[i % skinColors.length];
-    const shoeHex = shoeColors[i % shoeColors.length];
-    const shirtStyle = i % 4 === 0 ? 'hoodie' : i % 6 === 0 ? 'tank' : 'tee';
-
-    const outfitTex = getAdamOutfitTexture({
-      skinColor: shirtStyle === 'tank' ? '#d7a27e' : skinHex,
-      shirtStyle,
-      shirtColor: shirtStyle === 'tank' ? '#f1f0ea' : shirtHex,
-      pantsColor: shirtStyle === 'tank' ? '#c9b396' : pantsHex,
-      shoesColor: shoeHex,
-    });
 
     let bodyMat: THREE.MeshStandardMaterial | undefined;
     cloned.traverse((obj) => {
@@ -1356,28 +1344,19 @@ export function upgradeBotsToAdam(
       mesh.castShadow = bot.isAlly;
       mesh.receiveShadow = bot.isAlly;
       mesh.frustumCulled = false;
-      const n = mesh.name.toLowerCase();
-      if ((mesh as THREE.SkinnedMesh).isSkinnedMesh && !n.includes('eye')) {
-        const clonedMat = (
-          (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as THREE.MeshStandardMaterial
-        ).clone();
-        if (outfitTex) {
-          clonedMat.map = outfitTex;
-        }
-        clonedMat.normalMap = null;
-        clonedMat.roughnessMap = null;
-        clonedMat.color.setHex(0xffffff);
-        clonedMat.roughness = 0.78;
-        clonedMat.metalness = 0.02;
-        clonedMat.needsUpdate = true;
+      const origMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      if (origMat && (origMat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+        const clonedMat = (origMat as THREE.MeshStandardMaterial).clone();
+        clonedMat.roughness = Math.max(0.62, clonedMat.roughness ?? 0.78);
+        clonedMat.metalness = Math.min(0.12, clonedMat.metalness ?? 0.04);
         mesh.material = clonedMat;
-        bodyMat = clonedMat;
+        if (!bodyMat) bodyMat = clonedMat;
       }
     });
 
-    const spineBone = cloned.getObjectByName('spine_02') ?? cloned;
-    const headBone = cloned.getObjectByName('Head') ?? spineBone;
-    const handRBone = cloned.getObjectByName('hand_r') ?? spineBone;
+    const spineBone = cloned.getObjectByName('mixamorigSpine2') ?? cloned;
+    const headBone = cloned.getObjectByName('mixamorigHead') ?? spineBone;
+    const handRBone = cloned.getObjectByName('mixamorigRightHand') ?? spineBone;
     const upperAimBones: Array<{ name: string; bone: THREE.Object3D }> = [];
     for (let b = 0; b < UPPER_AIM_BONE_NAMES.length; b++) {
       const bName = UPPER_AIM_BONE_NAMES[b];
@@ -1385,58 +1364,66 @@ export function upgradeBotsToAdam(
       if (bone) upperAimBones.push({ name: bName, bone });
     }
 
+    const invScale = 1 / FF_SCENE_SCALE;
+    const spineMount = new THREE.Group();
+    spineMount.quaternion.copy(pack.spineMountQuat);
+    spineMount.scale.setScalar(invScale);
+    spineBone.add(spineMount);
+
+    const headMount = new THREE.Group();
+    headMount.quaternion.copy(pack.headMountQuat);
+    headMount.scale.setScalar(invScale);
+    headBone.add(headMount);
+
     // Invisible fast bone-attached hit proxies (zero SkinnedMesh raycasting overhead)
     const chestHit = new THREE.Mesh(BOT_CHEST_PROXY_GEO, BOT_HIT_PROXY_MAT);
-    chestHit.position.set(0, 0.08, 0);
+    chestHit.position.set(0, -0.02, 0);
     chestHit.userData.targetId = bot.id;
-    spineBone.add(chestHit);
+    spineMount.add(chestHit);
 
     const headHit = new THREE.Mesh(BOT_HEAD_PROXY_GEO, BOT_HIT_PROXY_MAT);
-    headHit.position.set(0, 0.11, 0.01);
+    headHit.position.set(0, pack.helmetOffsetY - 0.01, 0.01);
     headHit.userData.targetId = bot.id;
     headHit.userData.isHeadshot = true;
-    headBone.add(headHit);
+    headMount.add(headHit);
 
-    // Hair attached to Head
-    const hairGeo = i % 2 === 0 ? data.hairBuzzedGeo : data.hairPartedGeo;
-    if (hairGeo) {
-      const hairMesh = new THREE.Mesh(hairGeo, hairMats[i % hairMats.length]);
-      headBone.add(hairMesh);
-    }
-
-    // Vest & Helmet attached to real bones
+    // Vest & Helmet kept hidden so only base model + backpack render
     const vestMesh = new THREE.Mesh(
       BOT_VEST_GEO,
       vestMats[(bot.vestLevel || 1) as 1 | 2 | 3],
     );
     vestMesh.scale.set(1.06, 1, 0.68);
-    vestMesh.position.set(0, 0.08, 0.008);
-    vestMesh.visible = bot.vestLevel > 0;
-    spineBone.add(vestMesh);
+    vestMesh.position.set(0, -0.02, 0.015);
+    vestMesh.visible = false;
+    spineMount.add(vestMesh);
 
     const helmetMesh = new THREE.Mesh(
       BOT_HELMET_GEO,
       helmMats[(bot.helmetLevel || 1) as 1 | 2 | 3],
     );
     helmetMesh.scale.set(0.98, 1.02, 1.08);
-    helmetMesh.position.set(0, 0.115, 0.005);
-    helmetMesh.visible = bot.helmetLevel > 0;
-    headBone.add(helmetMesh);
+    helmetMesh.position.set(0, pack.helmetOffsetY, 0.005);
+    helmetMesh.visible = false;
+    headMount.add(helmetMesh);
 
-    // Gun held in hand_r + slung back gun on spine_02
+    const backpackMesh = new THREE.Mesh(BOT_PACK_GEO, BOT_PACK_MAT);
+    backpackMesh.position.set(0, -0.01, -0.105);
+    spineMount.add(backpackMesh);
+
+    // Gun held in mixamorigRightHand via calibrated metric weaponMount + slung back gun
     const gunPivot = new THREE.Group();
-    gunPivot.position.set(0, 0.055, 0.025);
-    gunPivot.rotation.set(-Math.PI / 2, 0, Math.PI);
+    gunPivot.quaternion.copy(pack.weaponMountQuat);
+    gunPivot.scale.setScalar(invScale);
     const gunBox = new THREE.Mesh(BOT_GUN_GEO, BOT_GUN_MAT);
-    gunBox.position.set(0, 0.02, 0.16);
+    gunBox.position.set(0, -0.02, 0.12);
     gunPivot.add(gunBox);
     handRBone.add(gunPivot);
 
     const backGunMesh = new THREE.Mesh(BOT_GUN_GEO, BOT_GUN_MAT);
-    backGunMesh.position.set(-0.15, 0.15, -0.17);
-    backGunMesh.rotation.set(-Math.PI * 0.42, 0.1, -0.24);
-    backGunMesh.visible = bot.weaponId !== 'g18' && bot.weaponId !== 'deagle';
-    spineBone.add(backGunMesh);
+    backGunMesh.position.set(-0.095, 0.05, -0.105);
+    backGunMesh.rotation.set(-Math.PI * 0.44, 0.06, -0.18);
+    backGunMesh.visible = true;
+    spineMount.add(backGunMesh);
 
     const parachuteMesh = new THREE.Mesh(sharedParachuteGeo, sharedParachuteMat);
     parachuteMesh.rotation.z = Math.PI / 2;
@@ -1448,8 +1435,8 @@ export function upgradeBotsToAdam(
 
     const mixer = new THREE.AnimationMixer(cloned);
     const actions: Record<string, THREE.AnimationAction> = {};
-    for (let c = 0; c < data.animations.length; c++) {
-      const clip = data.animations[c];
+    for (let c = 0; c < pack.animations.length; c++) {
+      const clip = pack.animations[c];
       const act = mixer.clipAction(clip);
       if (clip.name === 'Death01') {
         act.setLoop(THREE.LoopOnce, 1);
@@ -1468,6 +1455,7 @@ export function upgradeBotsToAdam(
     }
 
     bot.isAdam = true;
+    bot.modelId = modelId;
     bot.visualRoot = visualRoot;
     bot.mixer = mixer;
     bot.actions = actions;
@@ -2892,170 +2880,7 @@ export function createIslandWorld(
     obstacleMeshes.push(poleInst);
   }
 
-  // 12d. Smooth Rounded Rocks & Boulders (trimmed for high mobile FPS)
-  const rockGeo = new THREE.IcosahedronGeometry(1.25, 1);
-  const rockPos = rockGeo.attributes.position;
-  for (let v = 0; v < rockPos.count; v++) {
-    const vx = rockPos.getX(v);
-    const vy = rockPos.getY(v);
-    const vz = rockPos.getZ(v);
-    const waveMod = 1 + Math.sin(vx * 2.1 + vy * 2.7) * 0.1 + Math.cos(vz * 2.5) * 0.08;
-    rockPos.setXYZ(v, vx * waveMod, vy * waveMod * 0.84, vz * waveMod);
-  }
-  rockGeo.computeVertexNormals();
-  const rockMat = new THREE.MeshStandardMaterial({
-    map: textures.rock,
-    color: 0xffffff,
-    roughness: 0.88,
-    flatShading: false,
-  });
-  applyDistanceTextureLod(rockMat, [0.56, 0.55, 0.52]);
-  const rockList: Array<[number, number, number, number]> = [];
-  for (let i = 0; i < 240 && rockList.length < 95; i++) {
-    const a = i * 1.77 + 0.5;
-    const r = 45 + ((i * 67) % 480);
-    const rx = Math.cos(a) * r;
-    const rz = Math.sin(a) * r;
-    const ry = sampleGroundHeight(rx, rz);
-    if (ry < 0.75) continue;
-    if (!isClearOfPoiAndRoads(rx, rz, 10)) continue;
-    const sc = 0.8 + (i % 5) * 0.32;
-    rockList.push([rx, ry, rz, sc]);
-  }
-  const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, rockList.length);
-  rockInst.castShadow = false;
-  rockInst.receiveShadow = true;
-  rockList.forEach(([rx, ry, rz, sc], idx) => {
-    dummy.position.set(rx, ry + sc * 0.42, rz);
-    dummy.rotation.set(idx * 0.4, idx * 0.9, idx * 0.2);
-    dummy.scale.set(sc * 1.22, sc * 0.82, sc);
-    dummy.updateMatrix();
-    rockInst.setMatrixAt(idx, dummy.matrix);
-    const shade = 0.76 + (idx % 4) * 0.07;
-    rockInst.setColorAt(idx, tmpColor.setRGB(shade, shade * 0.98, shade * 0.95));
-    colliders.push({
-      cx: rx,
-      cz: rz,
-      halfW: sc * 1.05,
-      halfD: sc * 0.9,
-      rotY: idx * 0.9,
-      minY: ry - 0.5,
-      maxY: ry + sc * 1.3,
-      tag: 'rock',
-    });
-  });
-  rockInst.computeBoundingSphere();
-  if (rockInst.instanceColor) rockInst.instanceColor.needsUpdate = true;
-  scene.add(rockInst);
-  obstacleMeshes.push(rockInst);
-
-  // 12e. Optimized Bermudian Trees (75 trees across compacted island)
-  const foliageMat = new THREE.MeshStandardMaterial({
-    map: textures.foliage,
-    color: 0xffffff,
-    roughness: 0.85,
-  });
-  applyDistanceTextureLod(foliageMat, [0.46, 0.64, 0.32]);
-  const barkMat = new THREE.MeshStandardMaterial({
-    map: textures.bark,
-    color: 0x9c7b5c,
-    roughness: 0.9,
-  });
-  applyDistanceTextureLod(barkMat, [0.48, 0.36, 0.25]);
-
-  const treeTrunkGeo = new THREE.CylinderGeometry(0.24, 0.38, 4.4, 5);
-  treeTrunkGeo.translate(0, 2.2, 0);
-  const crownLow = new THREE.IcosahedronGeometry(2.15, 0);
-  crownLow.scale(1.15, 0.85, 1.15);
-  crownLow.translate(0, 4.9, 0);
-  const crownTop = new THREE.IcosahedronGeometry(1.55, 0);
-  crownTop.scale(1.05, 0.92, 1.05);
-  crownTop.translate(0.18, 6.2, -0.1);
-  const treeCanopyGeo = mergeGeometries([crownLow, crownTop], false);
-  crownLow.dispose();
-  crownTop.dispose();
-
-  const treeCoords: Array<[number, number, number, number]> = [];
-  for (let i = 0; i < 240 && treeCoords.length < 75; i++) {
-    const a = i * 2.39996 + 0.2;
-    const rad = 40 + ((i * 73) % 470);
-    const tx = Math.cos(a) * rad;
-    const tz = Math.sin(a) * rad;
-    const ty = sampleGroundHeight(tx, tz);
-    if (ty < 1.35) continue;
-    const nearPoi = POIS.some((p) => Math.hypot(tx - p.x, tz - p.z) < p.radius * 0.85);
-    if (nearPoi) continue;
-    if (Math.abs(tz - riverCenterZ(tx)) < 24) continue;
-    if (distToRoadSq(tx, tz) < 13 * 13) continue;
-    const sc = 0.85 + (i % 4) * 0.16;
-    treeCoords.push([tx, ty, tz, sc]);
-  }
-  const treeTrunkInst = new THREE.InstancedMesh(treeTrunkGeo, barkMat, Math.max(1, treeCoords.length));
-  treeTrunkInst.castShadow = false;
-  treeTrunkInst.receiveShadow = true;
-  const treeCanopyInst = new THREE.InstancedMesh(
-    treeCanopyGeo ?? new THREE.IcosahedronGeometry(2.0, 0),
-    foliageMat,
-    Math.max(1, treeCoords.length),
-  );
-  treeCanopyInst.castShadow = false;
-  treeCanopyInst.receiveShadow = false;
-  const treePalette = [0x4f8a36, 0x5d993e, 0x6ba649, 0x487d32];
-  treeCoords.forEach(([tx, ty, tz, sc], idx) => {
-    dummy.position.set(tx, ty - 0.1, tz);
-    dummy.rotation.set(0, idx * 1.1, 0);
-    dummy.scale.set(sc, sc, sc);
-    dummy.updateMatrix();
-    treeTrunkInst.setMatrixAt(idx, dummy.matrix);
-    treeCanopyInst.setMatrixAt(idx, dummy.matrix);
-    treeCanopyInst.setColorAt(idx, tmpColor.setHex(treePalette[idx % treePalette.length]));
-    colliders.push({
-      cx: tx,
-      cz: tz,
-      halfW: 0.42 * sc,
-      halfD: 0.42 * sc,
-      rotY: 0,
-      minY: ty - 0.3,
-      maxY: ty + 4.4 * sc,
-      tag: 'tree-trunk',
-    });
-  });
-  treeTrunkInst.count = treeCoords.length;
-  treeCanopyInst.count = treeCoords.length;
-  treeTrunkInst.computeBoundingSphere();
-  treeCanopyInst.computeBoundingSphere();
-  if (treeCanopyInst.instanceColor) treeCanopyInst.instanceColor.needsUpdate = true;
-  if (treeCoords.length > 0) {
-    scene.add(treeTrunkInst, treeCanopyInst);
-    obstacleMeshes.push(treeTrunkInst);
-  }
-
-  // Lightweight Tactical Low Bushes (60, hidden on Suave)
-  const bushGeo = new THREE.SphereGeometry(0.9, 6, 4);
-  bushGeo.scale(1.2, 0.72, 1.0);
-  bushGeo.translate(0, 0.42, 0);
-  const bushInst = new THREE.InstancedMesh(bushGeo, foliageMat, 60);
-  let placedBushes = 0;
-  for (let i = 0; i < 160 && placedBushes < 60; i++) {
-    const a = i * 2.71;
-    const r = 40 + ((i * 59) % 465);
-    const bx = Math.cos(a) * r;
-    const bz = Math.sin(a) * r;
-    const by = sampleGroundHeight(bx, bz);
-    if (by < 1.1 || !isClearOfPoiAndRoads(bx, bz, 11)) continue;
-    dummy.position.set(bx, by, bz);
-    dummy.rotation.set(0, i * 0.8, 0);
-    const bs = 0.88 + (i % 4) * 0.2;
-    dummy.scale.set(bs, bs, bs);
-    dummy.updateMatrix();
-    bushInst.setMatrixAt(placedBushes, dummy.matrix);
-    bushInst.setColorAt(placedBushes, tmpColor.setHex(i % 2 === 0 ? 0x649440 : 0x76a64c));
-    placedBushes++;
-  }
-  bushInst.count = placedBushes;
-  bushInst.computeBoundingSphere();
-  if (bushInst.instanceColor) bushInst.instanceColor.needsUpdate = true;
-  scene.add(bushInst);
+  // Trees, rocks & bushes intentionally removed for ultra-high mobile FPS (Redmi Note 11)
 
   // Capture staticColliderCount BEFORE dynamic vehicles & runtime gloo walls!
   const staticColliderCount = colliders.length;
@@ -3907,9 +3732,40 @@ export function createIslandWorld(
     };
   };
 
-  const loots: LootVisual[] = lootDefs.map((ld, idx) =>
-    buildLootVisual({ ...ld, id: `loot_${idx}` }, false),
-  );
+  const loots: LootVisual[] = [];
+  const pendingLootDefs = lootDefs.map((ld, idx) => ({
+    ...ld,
+    id: `loot_${idx}`,
+    spawned: false,
+  }));
+
+  const syncProximityLoot = (px: number, pz: number, radius = 56) => {
+    const rSq = radius * radius;
+    let spawnedThisTick = 0;
+    for (let i = 0; i < pendingLootDefs.length; i++) {
+      const entry = pendingLootDefs[i];
+      if (entry.spawned) continue;
+      const dx = entry.x - px;
+      const dz = entry.z - pz;
+      if (Math.abs(dx) > radius || Math.abs(dz) > radius) continue;
+      if (dx * dx + dz * dz <= rSq) {
+        entry.spawned = true;
+        loots.push(buildLootVisual(entry, false));
+        spawnedThisTick++;
+        if (spawnedThisTick >= 24) break;
+      }
+    }
+  };
+
+  const resetMatchLoots = () => {
+    for (let i = loots.length - 1; i >= 0; i--) {
+      scene.remove(loots[i].mesh);
+    }
+    loots.length = 0;
+    for (let i = 0; i < pendingLootDefs.length; i++) {
+      pendingLootDefs[i].spawned = false;
+    }
+  };
 
   let dynamicLootCounter = 1;
   const spawnDroppedLoot = (item: Omit<LootItem, 'id' | 'collected'>) => {
@@ -3983,7 +3839,6 @@ export function createIslandWorld(
       fog.near = 135;
       fog.far = 365;
       structureCullDist = 175;
-      bushInst.visible = false;
       sunLight.castShadow = false;
       sunLight.intensity = 1.95;
       hemi.intensity = 1.65;
@@ -3997,7 +3852,6 @@ export function createIslandWorld(
       fog.near = 220;
       fog.far = 540;
       structureCullDist = 260;
-      bushInst.visible = true;
       sunLight.castShadow = false;
       sunLight.intensity = 1.9;
       hemi.intensity = 1.38;
@@ -4011,7 +3865,6 @@ export function createIslandWorld(
       fog.near = 350;
       fog.far = 820;
       structureCullDist = 400;
-      bushInst.visible = true;
       sunLight.castShadow = true;
       sunLight.shadow.mapSize.set(1024, 1024);
       sunLight.intensity = 2.05;
@@ -4200,6 +4053,8 @@ export function createIslandWorld(
     resetExplosiveBarrels,
     resetVehicles,
     groundHeightAt: sampleGroundHeight,
+    syncProximityLoot,
+    resetMatchLoots,
     spawnDroppedLoot,
     clearDroppedLoots,
     applyQuality,

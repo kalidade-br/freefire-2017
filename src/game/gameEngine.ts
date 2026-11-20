@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { getAdamData } from './adamAssets';
+import { getAimPoseQuats, preloadAdamAssets } from './adamAssets';
 import { soundEngine } from './audio';
 import { CharacterAnimator } from './characterAnimator';
 import { CharacterRig, createCharacterRig } from './characterBuilder';
@@ -40,7 +40,6 @@ import {
   WeaponSlotState,
   WorldObbCollider,
 } from './types';
-import { preloadAdamAssets } from './adamAssets';
 import { isMobileHardware } from './storage';
 import {
   BERMUDA_HALF,
@@ -61,11 +60,11 @@ import {
 } from './worldBuilder';
 
 const SAFE_ZONE_PHASES = [
-  { waitSec: 85, shrinkSec: 55, targetRadius: 420, damagePerSec: 2 },
-  { waitSec: 70, shrinkSec: 50, targetRadius: 260, damagePerSec: 5 },
-  { waitSec: 55, shrinkSec: 45, targetRadius: 145, damagePerSec: 10 },
-  { waitSec: 45, shrinkSec: 35, targetRadius: 68, damagePerSec: 16 },
-  { waitSec: 30, shrinkSec: 30, targetRadius: 18, damagePerSec: 25 },
+  { waitSec: 36, shrinkSec: 28, targetRadius: 420, damagePerSec: 2 },
+  { waitSec: 28, shrinkSec: 24, targetRadius: 260, damagePerSec: 5 },
+  { waitSec: 22, shrinkSec: 20, targetRadius: 145, damagePerSec: 10 },
+  { waitSec: 16, shrinkSec: 16, targetRadius: 68, damagePerSec: 16 },
+  { waitSec: 12, shrinkSec: 14, targetRadius: 18, damagePerSec: 25 },
 ];
 
 const BACKPACK_CAPACITIES: Record<1 | 2 | 3, number> = {
@@ -293,6 +292,7 @@ export class BattleRoyaleEngine {
   private lastGunfightZ = 0;
   private lastGunfightTimer = 0;
   private launchPadFlightTimer = 0;
+  private autoLootTimer = 0;
 
   private frameId = 0;
   private disposed = false;
@@ -405,6 +405,10 @@ export class BattleRoyaleEngine {
   private zoneNextZ = 0;
   private zoneNextRadius = 420;
   private zoneDmgAccum = 0;
+  private zoneDmgTickTimer = 0;
+  private zoneGasExposureSec = 0;
+  private lootSyncAccum = 0;
+  private distantSkirmishTimer = 5.0;
 
   private airplaneProgress = 0; // 0..1 across island
   private planeStart = new THREE.Vector3(-630, 128, -420);
@@ -718,9 +722,15 @@ export class BattleRoyaleEngine {
   }
 
   public updateCharacterConfig(config: CharacterConfig): void {
-    this.currentCharConfig = { ...config };
-    this.lobbyRig.applyConfig(config);
-    this.playerRig.applyConfig(config);
+    const prevModelId = this.currentCharConfig.modelId ?? 'adam';
+    const nextModelId = config.modelId ?? 'adam';
+    this.currentCharConfig = { ...config, modelId: nextModelId };
+    if (prevModelId !== nextModelId) {
+      this.rebuildPlayerAndLobbyRigs();
+    } else {
+      this.lobbyRig.applyConfig(this.currentCharConfig);
+      this.playerRig.applyConfig(this.currentCharConfig);
+    }
   }
 
   private rebuildPlayerAndLobbyRigs(): void {
@@ -1116,16 +1126,19 @@ export class BattleRoyaleEngine {
     const activeW = this.getActiveWeaponState();
     this.playerRig.setWeapon(activeW ? activeW.weaponId : null);
 
-    // Put carried non-active firearms on character's back (Slot 1/2 rifles first)
+    // Put carried non-active primary firearms on upper back & non-active pistol on lower-back holster
     const holstered: WeaponId[] = [];
-    const order: readonly (1 | 2 | 3)[] = [1, 2, 3];
-    for (let i = 0; i < order.length; i++) {
-      const s = order[i];
+    const primaryOrder: readonly (1 | 2)[] = [1, 2];
+    for (let i = 0; i < primaryOrder.length; i++) {
+      const s = primaryOrder[i];
       if (s !== this.activeSlot && this.weapons[s]) {
         holstered.push(this.weapons[s]!.weaponId);
       }
     }
     this.playerRig.setBackWeapons(holstered[1] ?? null, holstered[0] ?? null);
+    const holsteredPistol =
+      this.activeSlot !== 3 && this.weapons[3] ? this.weapons[3]!.weaponId : null;
+    this.playerRig.setPistolBackWeapon?.(holsteredPistol);
   }
 
   private performSlotSwitch(slot: WeaponSlotId): boolean {
@@ -1627,6 +1640,8 @@ export class BattleRoyaleEngine {
     this.zoneStartZ = 0;
     this.zoneStartRadius = 650;
     this.zoneDmgAccum = 0;
+    this.zoneDmgTickTimer = 0;
+    this.zoneGasExposureSec = 0;
     this.pickNextZoneCenter(0, 0, 650, SAFE_ZONE_PHASES[0].targetRadius);
     this.world.safeZoneMesh.position.set(0, 75, 0);
     this.world.safeZoneMesh.scale.set(650, 1, 650);
@@ -1766,7 +1781,10 @@ export class BattleRoyaleEngine {
       this.explosionVfx[i].mesh.visible = false;
     }
 
-    this.world.clearDroppedLoots();
+    this.world.resetMatchLoots();
+    this.world.syncProximityLoot(startX, startZ, 56);
+    this.lootSyncAccum = 0;
+    this.distantSkirmishTimer = 5.0;
     this.world.resetExplosiveBarrels();
     this.world.resetVehicles();
     soundEngine.stopVehicleAudio();
@@ -2136,8 +2154,15 @@ export class BattleRoyaleEngine {
       return;
     }
 
-    // World dynamic props, deployed Gloos, thrown grenades, explosion VFX & tracers
+    // World dynamic props, proximity loot streaming, deployed Gloos, thrown grenades, explosion VFX & tracers
     const inMatchView = state === GameState.PLAYING || state === GameState.WAITING;
+    if (inMatchView) {
+      this.lootSyncAccum += dt;
+      if (this.lootSyncAccum >= 0.35) {
+        this.lootSyncAccum = 0;
+        this.world.syncProximityLoot(this.pos.x, this.pos.z, 54);
+      }
+    }
     this.world.updateDynamicProps(
       dt,
       this.elapsed,
@@ -2447,18 +2472,21 @@ export class BattleRoyaleEngine {
     const visR = Math.max(4, this.zoneCurrentRadius);
     this.world.safeZoneMesh.scale.set(visR, 1, visR);
 
-    // Apply real Safe Zone damage outside the blue barrier (can eliminate player!)
+    // Apply discrete 1s Safe Zone damage ticks escalating every 2 minutes inside the gas
     const playerDist = Math.hypot(
       this.pos.x - this.zoneCurrentX,
       this.pos.z - this.zoneCurrentZ,
     );
     if (!this.isDead && playerDist > this.zoneCurrentRadius) {
-      this.zoneDmgAccum += phaseDef.damagePerSec * dt;
-      if (this.zoneDmgAccum >= 1) {
-        const tickDmg = Math.floor(this.zoneDmgAccum);
-        this.zoneDmgAccum -= tickDmg;
+      this.zoneGasExposureSec += dt;
+      this.zoneDmgTickTimer += dt;
+      if (this.zoneDmgTickTimer >= 1.0) {
+        this.zoneDmgTickTimer -= 1.0;
+        if (this.zoneDmgTickTimer > 1.0) this.zoneDmgTickTimer = 0;
+        const gasMult = 1 + Math.floor(this.zoneGasExposureSec / 120);
+        const tickDmg = Math.max(1, Math.round(phaseDef.damagePerSec * gasMult));
         this.damageFlashTimer = 0.14;
-        soundEngine.playSafeZoneDamage(this.zonePhase >= 3);
+        soundEngine.playSafeZoneDamage(this.zonePhase >= 3 || gasMult >= 2);
         if (this.isPlayerDowned) {
           this.playerBleedHp = Math.max(0, this.playerBleedHp - tickDmg);
           if (this.playerBleedHp <= 0) {
@@ -2472,7 +2500,8 @@ export class BattleRoyaleEngine {
         }
       }
     } else {
-      this.zoneDmgAccum = 0;
+      this.zoneDmgTickTimer = 0;
+      this.zoneGasExposureSec = 0;
     }
   }
 
@@ -3446,6 +3475,8 @@ export class BattleRoyaleEngine {
         soundEngine.playUiClick(700);
       }
     }
+
+    this.updateAutoLoot(dt);
 
     // Revive channel update (3.0s; cancels if sprinting, firing, or walking > 4.2m away)
     if (this.revivingBotId) {
@@ -5146,7 +5177,7 @@ export class BattleRoyaleEngine {
     avoidWater: boolean,
   ): boolean {
     const lookDist = 3.0;
-    const probeR = 0.33;
+    const probeR = 0.4;
     const ignoreSill = bot.vaultTimer > 0;
     this.world.queryStaticCollidersNear(
       bx + wantDirX * 1.4,
@@ -5359,6 +5390,37 @@ export class BattleRoyaleEngine {
       (a, b) => this.botDistSqScratch[a] - this.botDistSqScratch[b],
     );
 
+    // Resolve random offscreen skirmishes between distant enemies so lobbies thin naturally without CPU simulation cost
+    if (isPlaying && combatEnabled && this.aliveCount > 6) {
+      this.distantSkirmishTimer -= dt;
+      if (this.distantSkirmishTimer <= 0) {
+        this.distantSkirmishTimer = 4.2 + Math.random() * 2.8;
+        let distantVictim: TargetDummy | null = null;
+        let distantKiller: TargetDummy | null = null;
+        for (let idx = bots.length - 1; idx >= 0; idx--) {
+          const b = bots[idx];
+          if (b.eliminated || b.isAlly || b.isDowned || b.downTimer > 0) continue;
+          if (this.botDistSqScratch[idx] <= effectiveRenderDistSq) continue;
+          if (!distantVictim) {
+            distantVictim = b;
+          } else if (b.teamId !== distantVictim.teamId) {
+            distantKiller = b;
+            break;
+          }
+        }
+        if (distantVictim && distantKiller) {
+          const wName = WEAPONS[distantKiller.weaponId]?.name ?? 'M4A1';
+          this.finalizeBotElimination(
+            distantVictim,
+            false,
+            distantKiller.nick,
+            wName,
+            Math.random() < 0.25,
+          );
+        }
+      }
+    }
+
     for (let ord = 0; ord < this.botOrderScratch.length; ord++) {
       const i = this.botOrderScratch[ord];
       const bot = bots[i];
@@ -5518,8 +5580,8 @@ export class BattleRoyaleEngine {
             bot.bleedHp = 100;
             bot.vestHp = bot.vestMaxHp;
             bot.helmetHp = bot.helmetMaxHp;
-            if (bot.vestMesh) bot.vestMesh.visible = bot.vestLevel > 0;
-            if (bot.helmetMesh) bot.helmetMesh.visible = bot.helmetLevel > 0;
+            if (bot.vestMesh) bot.vestMesh.visible = false;
+            if (bot.helmetMesh) bot.helmetMesh.visible = false;
             bot.group.rotation.x = 0;
             if (bot.visualRoot) {
               bot.visualRoot.position.set(0, 0, 0);
@@ -5678,6 +5740,31 @@ export class BattleRoyaleEngine {
       const inRenderRange = wantRender && (bot.isAlly || visibleBotCount < maxVisibleBots);
       bot.group.visible = inRenderRange;
       if (inRenderRange) visibleBotCount++;
+
+      // Lightweight offscreen bot simulation: skip OBB raycasts, collision passes, AI loot & animations far from camera
+      if (isPlaying && !bot.isAlly && !bot.isDowned && !inRenderRange) {
+        const distZoneSq =
+          (bx - this.zoneCurrentX) * (bx - this.zoneCurrentX) +
+          (bz - this.zoneCurrentZ) * (bz - this.zoneCurrentZ);
+        if (distZoneSq > this.zoneCurrentRadius * this.zoneCurrentRadius) {
+          const pDef = SAFE_ZONE_PHASES[Math.min(SAFE_ZONE_PHASES.length - 1, this.zonePhase - 1)];
+          this.applyBotHitDamage(bot, pDef.damagePerSec * 0.75 * dt, false, 'ZONA SEGURA', 'SAFE', false);
+          if (bot.isDowned || bot.downTimer > 0 || bot.eliminated) continue;
+        }
+        const dxZ = this.zoneCurrentX - bx;
+        const dzZ = this.zoneCurrentZ - bz;
+        const distZ = Math.hypot(dxZ, dzZ);
+        if (distZ > Math.max(18, this.zoneCurrentRadius * 0.55)) {
+          const stepD = Math.min(distZ, 2.6 * dt);
+          const nx = THREE.MathUtils.clamp(bx + (dxZ / distZ) * stepD, -BERMUDA_HALF + 25, BERMUDA_HALF - 25);
+          const nz = THREE.MathUtils.clamp(bz + (dzZ / distZ) * stepD, -BERMUDA_HALF + 25, BERMUDA_HALF - 25);
+          const surf = botSurfaceHeightAt(nx, nz);
+          bot.group.position.set(nx, Math.max(-0.85, surf.y), nz);
+          bot.navCheckX = nx;
+          bot.navCheckZ = nz;
+        }
+        continue;
+      }
 
       // Downed crawling state ("posição de 4") in Duo / Squad
       if (bot.isDowned) {
@@ -6005,8 +6092,20 @@ export class BattleRoyaleEngine {
               bot.goalX = playerBldg.doors[0].outX;
               bot.goalZ = playerBldg.doors[0].outZ;
             } else {
-              bot.goalX = THREE.MathUtils.clamp(this.pos.x + Math.sin(formAng) * 7.5, -maxB, maxB);
-              bot.goalZ = THREE.MathUtils.clamp(this.pos.z + Math.cos(formAng) * 7.5, -maxB, maxB);
+              let pickedX = THREE.MathUtils.clamp(this.pos.x + Math.sin(formAng) * 7.5, -maxB, maxB);
+              let pickedZ = THREE.MathUtils.clamp(this.pos.z + Math.cos(formAng) * 7.5, -maxB, maxB);
+              for (let tryIdx = 0; tryIdx < 6; tryIdx++) {
+                const ta = formAng + tryIdx * 1.047;
+                const cx = THREE.MathUtils.clamp(this.pos.x + Math.sin(ta) * 7.5, -maxB, maxB);
+                const cz = THREE.MathUtils.clamp(this.pos.z + Math.cos(ta) * 7.5, -maxB, maxB);
+                if (!botSurfaceHeightAt(cx, cz).inWater && !this.isPointBlockedForBot(cx, this.pos.y, cz, 0.55)) {
+                  pickedX = cx;
+                  pickedZ = cz;
+                  break;
+                }
+              }
+              bot.goalX = pickedX;
+              bot.goalZ = pickedZ;
             }
           } else {
             let foundAllyLoot = false;
@@ -6570,7 +6669,7 @@ export class BattleRoyaleEngine {
                   bot.ammoInMag = WEAPONS[newWid].magSize;
                   bot.reloadTimer = 0;
                   if (bot.backGunMesh) {
-                    bot.backGunMesh.visible = bot.weaponId !== 'g18' && bot.weaponId !== 'deagle';
+                    bot.backGunMesh.visible = true;
                   }
                 }
               } else if (loot.data.kind === 'vest') {
@@ -6579,7 +6678,7 @@ export class BattleRoyaleEngine {
                   bot.vestLevel = lvl;
                   bot.vestMaxHp = lvl === 1 ? 100 : lvl === 2 ? 160 : 220;
                   bot.vestHp = bot.vestMaxHp;
-                  if (bot.vestMesh) bot.vestMesh.visible = true;
+                  if (bot.vestMesh) bot.vestMesh.visible = false;
                 }
               } else if (loot.data.kind === 'helmet') {
                 const lvl = loot.data.level ?? 1;
@@ -6587,7 +6686,7 @@ export class BattleRoyaleEngine {
                   bot.helmetLevel = lvl;
                   bot.helmetMaxHp = lvl === 1 ? 75 : lvl === 2 ? 120 : 180;
                   bot.helmetHp = bot.helmetMaxHp;
-                  if (bot.helmetMesh) bot.helmetMesh.visible = true;
+                  if (bot.helmetMesh) bot.helmetMesh.visible = false;
                 }
               }
               break;
@@ -6714,19 +6813,19 @@ export class BattleRoyaleEngine {
           bot.vy = 0;
         }
 
-        // Real progress monitor + 3-stage smart unstuck escalation across ALL states
+        // Rolling progress monitor + fast unstuck recovery ("cola" fix across bots and allies)
         const actualMoved = Math.hypot(bot.group.position.x - bx, bot.group.position.z - bz);
         bot.navCheckTimer += dt;
-        let stalledThisTick = push1 + push2 > 0.025 || actualMoved < stepDist * 0.32;
-        if (bot.navCheckTimer >= 0.45) {
+        let stalledThisTick = push1 + push2 > 0.025 || actualMoved < stepDist * 0.35;
+        if (bot.navCheckTimer >= 0.85) {
           const netMoved = Math.hypot(
             bot.group.position.x - bot.navCheckX,
             bot.group.position.z - bot.navCheckZ,
           );
-          if (netMoved < 0.52) {
+          if (netMoved < 0.85) {
             stalledThisTick = true;
-            bot.stuckTimer += 0.35;
-          } else if (netMoved > 1.1 && push1 + push2 < 0.01) {
+            bot.stuckTimer += 0.65;
+          } else if (netMoved >= 1.1 && push1 + push2 < 0.01) {
             bot.stuckTimer = Math.max(0, bot.stuckTimer - 0.35);
           }
           bot.navCheckX = bot.group.position.x;
@@ -6755,7 +6854,7 @@ export class BattleRoyaleEngine {
             }
           }
           // Stage 2: smart window vault OR force building doorway escape!
-          if (bot.stuckTimer > 0.72) {
+          if (bot.stuckTimer > 0.65) {
             const stuckBldg = this.world.findBuildingNavZoneAt(
               bot.group.position.x,
               bot.group.position.z,
@@ -6779,8 +6878,9 @@ export class BattleRoyaleEngine {
               bot.escapeTimer = 2.6;
             }
           }
-          // Stage 3: smart doorway/staircase exit if inside a building, else clear 360-degree escape vector
-          if (bot.stuckTimer > 1.35) {
+          // Stage 3 (faster for allies at 0.95s, bots at 1.25s): clear exit from building or "cola" spot
+          const stage3Limit = bot.isAlly ? 0.95 : 1.25;
+          if (bot.stuckTimer > stage3Limit) {
             const stuckB = this.world.findBuildingNavZoneAt(
               bot.group.position.x,
               bot.group.position.z,
@@ -6811,7 +6911,7 @@ export class BattleRoyaleEngine {
                     bestD = d;
                   }
                 }
-                if (bot.escapeTimer > 0) {
+                if (bot.isAlly || bot.escapeTimer > 0) {
                   bot.group.position.set(
                     bestD.outX,
                     Math.max(0.4, this.resolveFloorHeight(bestD.outX, bestD.outZ, stuckB.baseY + 0.4)),
@@ -6831,31 +6931,49 @@ export class BattleRoyaleEngine {
               }
               this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, false);
             } else {
-              const esc = this.findClearestEscapeVector(
-                bot.group.position.x,
-                bot.group.position.y,
-                bot.group.position.z,
-              );
-              bot.group.position.x = THREE.MathUtils.clamp(
-                bot.group.position.x + esc.x * 1.15,
-                -bound,
-                bound,
-              );
-              bot.group.position.z = THREE.MathUtils.clamp(
-                bot.group.position.z + esc.z * 1.15,
-                -bound,
-                bound,
-              );
-              this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, false);
-              bot.goalX = THREE.MathUtils.clamp(bot.group.position.x + esc.x * 12, -(BERMUDA_HALF - 20), BERMUDA_HALF - 20);
-              bot.goalZ = THREE.MathUtils.clamp(bot.group.position.z + esc.z * 12, -(BERMUDA_HALF - 20), BERMUDA_HALF - 20);
+              let relocated = false;
+              if (bot.isAlly && isPlaying) {
+                for (let aTry = 0; aTry < 8; aTry++) {
+                  const ang = (aTry * Math.PI) / 4 + this.yaw;
+                  const rx = THREE.MathUtils.clamp(this.pos.x + Math.sin(ang) * 5.2, -bound, bound);
+                  const rz = THREE.MathUtils.clamp(this.pos.z + Math.cos(ang) * 5.2, -bound, bound);
+                  if (!botSurfaceHeightAt(rx, rz).inWater && !this.isPointBlockedForBot(rx, this.pos.y, rz, 0.55)) {
+                    bot.group.position.set(rx, Math.max(0.4, this.resolveFloorHeight(rx, rz, this.pos.y + 0.5)), rz);
+                    bot.goalX = rx;
+                    bot.goalZ = rz;
+                    relocated = true;
+                    break;
+                  }
+                }
+              }
+              if (!relocated) {
+                const esc = this.findClearestEscapeVector(
+                  bot.group.position.x,
+                  bot.group.position.y,
+                  bot.group.position.z,
+                );
+                bot.group.position.x = THREE.MathUtils.clamp(
+                  bot.group.position.x + esc.x * 1.45,
+                  -bound,
+                  bound,
+                );
+                bot.group.position.z = THREE.MathUtils.clamp(
+                  bot.group.position.z + esc.z * 1.45,
+                  -bound,
+                  bound,
+                );
+                this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, false);
+                bot.goalX = THREE.MathUtils.clamp(bot.group.position.x + esc.x * 12, -(BERMUDA_HALF - 20), BERMUDA_HALF - 20);
+                bot.goalZ = THREE.MathUtils.clamp(bot.group.position.z + esc.z * 12, -(BERMUDA_HALF - 20), BERMUDA_HALF - 20);
+              }
             }
+            bot.navCheckX = bot.group.position.x;
+            bot.navCheckZ = bot.group.position.z;
+            bot.navCheckTimer = 0;
             bot.stuckTimer = 0;
             bot.huntTimer = 0;
             bot.aiTimer = 0;
           }
-        } else {
-          bot.stuckTimer = Math.max(0, bot.stuckTimer - dt * 2.2);
         }
       } else {
         const idleSurf = botSurfaceHeightAt(bot.group.position.x, bot.group.position.z);
@@ -6915,7 +7033,7 @@ export class BattleRoyaleEngine {
             }
           }
           if (bot.aiState === 'combat' && !isCrouchingAction && !botInWater && bot.upperAimBones) {
-            const aimQuats = getAdamData()?.aimPoseQuats;
+            const aimQuats = getAimPoseQuats(bot.modelId ?? 'adam');
             if (aimQuats) {
               for (let b = 0; b < bot.upperAimBones.length; b++) {
                 const entry = bot.upperAimBones[b];
@@ -7286,6 +7404,108 @@ export class BattleRoyaleEngine {
         this.collectLootById(`${nearby.data.id}::${nearby.data.deathEntries[0].id}`);
       } else {
         this.applyLootVisualPickup(nearby);
+      }
+    }
+  }
+
+  private shouldAutoCollectLootItem(item: {
+    kind: string;
+    weaponId?: WeaponId;
+    level?: 1 | 2 | 3;
+    scopeType?: ScopeType;
+    attachmentKind?: AttachmentKind;
+  }): boolean {
+    switch (item.kind) {
+      case 'coin':
+        return true;
+      case 'medkit':
+        return this.getBackpackUsedWeight() + 12 <= this.getBackpackCapacity();
+      case 'gloo':
+        return this.glooCount < 8;
+      case 'grenade':
+        return this.grenadeCount < 6;
+      case 'ammo':
+        return !!(this.getActiveWeaponState() ?? this.weapons[1] ?? this.weapons[2] ?? this.weapons[3]);
+      case 'vest': {
+        const lvl = item.level ?? 1;
+        const maxV = lvl === 1 ? 100 : lvl === 2 ? 160 : 220;
+        return lvl > this.vestLevel || (lvl === this.vestLevel && this.vestHp < maxV);
+      }
+      case 'helmet': {
+        const lvl = item.level ?? 1;
+        const maxH = lvl === 1 ? 75 : lvl === 2 ? 120 : 180;
+        return lvl > this.helmetLevel || (lvl === this.helmetLevel && this.helmetHp < maxH);
+      }
+      case 'backpack':
+        return (item.level ?? 1) > this.backpackLevel;
+      case 'weapon': {
+        if (!item.weaponId) return false;
+        const def = WEAPONS[item.weaponId];
+        if (def.category === 'HG') return !this.weapons[3];
+        return !this.weapons[1] || !this.weapons[2];
+      }
+      case 'scope': {
+        if (!item.scopeType) return false;
+        const w = this.getActiveWeaponState() ?? this.weapons[1] ?? this.weapons[2];
+        if (w && WEAPONS[w.weaponId].allowsCustomScope && w.scope === 'none') return true;
+        return !this.ownedScopes.includes(item.scopeType);
+      }
+      case 'attachment': {
+        if (!item.attachmentKind) return false;
+        const slotKey = ATTACHMENT_LABELS[item.attachmentKind].slot;
+        const w = this.getActiveWeaponState() ?? this.weapons[1] ?? this.weapons[2];
+        return !!(w && WEAPONS[w.weaponId].allowsAttachments && !w.attachments[slotKey]);
+      }
+      default:
+        return false;
+    }
+  }
+
+  private updateAutoLoot(dt: number): void {
+    if (
+      !this.settings.autoLoot ||
+      this.isDead ||
+      this.isPlayerDowned ||
+      this.activeVehicleId ||
+      this.revivingBotId ||
+      this.usingMedkit
+    ) {
+      return;
+    }
+
+    this.autoLootTimer -= dt;
+    if (this.autoLootTimer > 0) return;
+
+    const interval =
+      this.settings.autoLootSpeed === 'ultra'
+        ? 0.06
+        : this.settings.autoLootSpeed === 'fast'
+          ? 0.20
+          : 0.45;
+    this.autoLootTimer = interval;
+
+    for (let i = 0; i < this.world.loots.length; i++) {
+      const l = this.world.loots[i];
+      if (l.data.collected) continue;
+      const dx = l.data.x - this.pos.x;
+      const dz = l.data.z - this.pos.z;
+      if (Math.abs(dx) > 2.6 || Math.abs(dz) > 2.6) continue;
+      if (Math.hypot(dx, dz) > 2.6 || Math.abs(l.data.y - this.pos.y) >= 2.4) continue;
+
+      if (l.data.kind === 'deathbox' && l.data.deathEntries && l.data.deathEntries.length > 0) {
+        for (let e = 0; e < l.data.deathEntries.length; e++) {
+          const entry = l.data.deathEntries[e];
+          if (this.shouldAutoCollectLootItem(entry)) {
+            this.collectLootById(`${l.data.id}::${entry.id}`);
+            return;
+          }
+        }
+        continue;
+      }
+
+      if (this.shouldAutoCollectLootItem(l.data)) {
+        this.applyLootVisualPickup(l);
+        return;
       }
     }
   }
@@ -8513,7 +8733,9 @@ export class BattleRoyaleEngine {
         nextX: this.zoneNextX,
         nextZ: this.zoneNextZ,
         nextRadius: this.zoneNextRadius,
-        damagePerSec: activePhaseDef.damagePerSec,
+        damagePerSec: Math.round(
+          activePhaseDef.damagePerSec * (1 + Math.floor(this.zoneGasExposureSec / 120)),
+        ),
         playerOutside: state === GameState.PLAYING && playerDistZone > this.zoneCurrentRadius,
       },
       waitingTimerSec: Math.ceil(this.waitingTimer),

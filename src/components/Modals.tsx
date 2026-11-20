@@ -1,7 +1,6 @@
 import React from 'react';
 import { X, Check, RotateCcw } from 'lucide-react';
 import {
-  CHARACTER_PRESETS,
   CharacterConfig,
   ControlMode,
   GameSettings,
@@ -22,16 +21,14 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({
   onChange,
   onClose,
 }) => {
-  const shirtColors = ['#f1f0ea', '#1f2421', '#384635', '#8d2b24', '#2a4566'];
-  const pantsColors = ['#c9b396', '#9c8a72', '#2c333f', '#424b36'];
-  const skinColors = ['#e2b291', '#d7a27e', '#b97e59', '#8d5b3e'];
+  const activeModel = config.modelId === 'eva' ? 'eva' : 'adam';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
       <div className="w-full max-w-lg bg-[#14181e] border-2 border-amber-500 text-white shadow-2xl">
         <div className="flex items-center justify-between px-4 py-3 bg-[#1d232c] border-b border-neutral-700">
           <h2 className="font-black text-sm tracking-widest uppercase text-amber-400">
-            CUSTOMIZAÇÃO DE PERSONAGEM
+            SELEÇÃO DE PERSONAGEM
           </h2>
           <button
             type="button"
@@ -43,163 +40,63 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({
         </div>
 
         <div className="p-4 space-y-4 max-h-[76vh] overflow-y-auto text-xs">
-          {/* Presets */}
+          {/* Core Character Selection: Adam vs Eva */}
           <div>
             <div className="font-bold uppercase tracking-wider text-neutral-300 mb-2">
-              MODELOS CLÁSSICOS (2017)
+              PERSONAGEM ORIGINAL (FREE FIRE)
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              {CHARACTER_PRESETS.map((preset) => {
-                const active = config.id === preset.id;
+            <div className="grid grid-cols-2 gap-2.5">
+              {(
+                [
+                  { id: 'adam', title: 'ADAM', sub: 'Personagem Masculino Clássico' },
+                  { id: 'eva', title: 'EVA', sub: 'Personagem Feminina Clássica' },
+                ] as const
+              ).map((ch) => {
+                const selected = activeModel === ch.id;
                 return (
                   <button
-                    key={preset.id}
+                    key={ch.id}
                     type="button"
-                    onClick={() => onChange({ ...preset })}
-                    className={`px-3 py-2 text-left border cursor-pointer flex items-center justify-between ${
-                      active
-                        ? 'bg-amber-500/20 border-amber-400 text-amber-300 font-bold'
-                        : 'bg-[#1a2028] border-neutral-700 hover:border-neutral-500'
+                    onClick={() =>
+                      onChange({
+                        ...config,
+                        id: ch.id === 'adam' ? 'ff_adam_classic' : 'ff_eva_classic',
+                        name: ch.title,
+                        modelId: ch.id,
+                        vestEnabled: false,
+                        hairStyle: ch.id === 'eva' ? 'spiky' : 'buzz',
+                      })
+                    }
+                    className={`p-3 text-left border-2 cursor-pointer transition-colors flex flex-col gap-1 ${
+                      selected
+                        ? 'bg-amber-500/20 border-amber-400 text-amber-300'
+                        : 'bg-[#1a2028] border-neutral-700 hover:border-neutral-500 text-neutral-200'
                     }`}
                   >
-                    <span className="truncate">{preset.name}</span>
-                    {active && <Check className="w-3.5 h-3.5 shrink-0" />}
+                    <div className="flex items-center justify-between">
+                      <span className="font-black text-sm tracking-wider">{ch.title}</span>
+                      {selected && <Check className="w-4 h-4 text-amber-400" />}
+                    </div>
+                    <span className="text-[10px] text-neutral-400">{ch.sub}</span>
                   </button>
                 );
               })}
             </div>
           </div>
 
-          {/* Headgear & Shirt Style */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <div className="font-bold uppercase text-neutral-300 mb-1.5">CABEÇA / CAPACETE</div>
-              <div className="grid grid-cols-2 gap-1.5">
-                {(['buzz', 'spiky', 'cap', 'helmet'] as const).map((hs) => (
-                  <button
-                    key={hs}
-                    type="button"
-                    onClick={() => onChange({ ...config, hairStyle: hs })}
-                    className={`py-1.5 border uppercase font-semibold cursor-pointer ${
-                      config.hairStyle === hs
-                        ? 'bg-amber-500 text-black border-amber-400'
-                        : 'bg-[#1a2028] border-neutral-700'
-                    }`}
-                  >
-                    {hs === 'buzz'
-                      ? 'Raspado'
-                      : hs === 'spiky'
-                        ? 'Repicado'
-                        : hs === 'cap'
-                          ? 'Boné'
-                          : 'Capacete'}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <div className="font-bold uppercase text-neutral-300 mb-1.5">CAMISA / ESTILO</div>
-              <div className="grid grid-cols-3 gap-1.5">
-                {(['tank', 'tee', 'hoodie'] as const).map((ss) => (
-                  <button
-                    key={ss}
-                    type="button"
-                    onClick={() => onChange({ ...config, shirtStyle: ss })}
-                    className={`py-1.5 border uppercase font-semibold cursor-pointer ${
-                      config.shirtStyle === ss
-                        ? 'bg-amber-500 text-black border-amber-400'
-                        : 'bg-[#1a2028] border-neutral-700'
-                    }`}
-                  >
-                    {ss === 'tank' ? 'Regata' : ss === 'tee' ? 'Camisa' : 'Casaco'}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Toggles */}
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => onChange({ ...config, vestEnabled: !config.vestEnabled })}
-              className={`py-2 px-3 border flex items-center justify-between cursor-pointer ${
-                config.vestEnabled
-                  ? 'bg-emerald-900/40 border-emerald-500 text-emerald-300'
-                  : 'bg-[#1a2028] border-neutral-700 text-neutral-400'
-              }`}
-            >
-              <span className="font-bold uppercase">Colete Tático</span>
-              <span>{config.vestEnabled ? 'ON' : 'OFF'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => onChange({ ...config, backpackEnabled: !config.backpackEnabled })}
-              className={`py-2 px-3 border flex items-center justify-between cursor-pointer ${
-                config.backpackEnabled
-                  ? 'bg-emerald-900/40 border-emerald-500 text-emerald-300'
-                  : 'bg-[#1a2028] border-neutral-700 text-neutral-400'
-              }`}
-            >
-              <span className="font-bold uppercase">Mochila</span>
-              <span>{config.backpackEnabled ? 'ON' : 'OFF'}</span>
-            </button>
-          </div>
-
-          {/* Color Swatches */}
-          <div className="space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="font-bold uppercase text-neutral-300">TOM DE PELE</span>
-              <div className="flex gap-2">
-                {skinColors.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => onChange({ ...config, skinColor: c })}
-                    style={{ backgroundColor: c }}
-                    className={`w-6 h-6 border-2 cursor-pointer ${
-                      config.skinColor === c ? 'border-amber-400 scale-110' : 'border-neutral-600'
-                    }`}
-                  />
-                ))}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="font-bold uppercase text-neutral-300">COR DA CAMISA</span>
-              <div className="flex gap-2">
-                {shirtColors.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => onChange({ ...config, shirtColor: c })}
-                    style={{ backgroundColor: c }}
-                    className={`w-6 h-6 border-2 cursor-pointer ${
-                      config.shirtColor === c ? 'border-amber-400 scale-110' : 'border-neutral-600'
-                    }`}
-                  />
-                ))}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="font-bold uppercase text-neutral-300">COR DA CALÇA</span>
-              <div className="flex gap-2">
-                {pantsColors.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => onChange({ ...config, pantsColor: c })}
-                    style={{ backgroundColor: c }}
-                    className={`w-6 h-6 border-2 cursor-pointer ${
-                      config.pantsColor === c ? 'border-amber-400 scale-110' : 'border-neutral-600'
-                    }`}
-                  />
-                ))}
-              </div>
-            </div>
-          </div>
+          {/* Only Backpack Toggle (no skins/vest/helmet) */}
+          <button
+            type="button"
+            onClick={() => onChange({ ...config, backpackEnabled: !config.backpackEnabled, vestEnabled: false })}
+            className={`w-full py-2.5 px-3 border flex items-center justify-between cursor-pointer ${
+              config.backpackEnabled
+                ? 'bg-emerald-900/40 border-emerald-500 text-emerald-300'
+                : 'bg-[#1a2028] border-neutral-700 text-neutral-400'
+            }`}
+          >
+            <span className="font-bold uppercase">Mochila</span>
+            <span>{config.backpackEnabled ? 'ON' : 'OFF'}</span>
+          </button>
         </div>
 
         <div className="px-4 py-3 bg-[#1d232c] border-t border-neutral-700 flex justify-end">
@@ -409,6 +306,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <span className="font-bold uppercase">INVERTER EIXO Y DA CÂMERA</span>
                 <span>{settings.invertY ? 'SIM' : 'NÃO'}</span>
               </button>
+
+              <div className="border-t border-neutral-700 pt-3 space-y-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChangeSettings({ ...settings, autoLoot: !settings.autoLoot })
+                  }
+                  className={`w-full py-2.5 px-3 border flex items-center justify-between cursor-pointer ${
+                    settings.autoLoot
+                      ? 'bg-emerald-900/40 border-emerald-500 text-emerald-300'
+                      : 'bg-[#1a2028] border-neutral-700 text-neutral-400'
+                  }`}
+                >
+                  <span className="font-bold uppercase">COLETA AUTOMÁTICA DE LOOT</span>
+                  <span>{settings.autoLoot ? 'LIGADA' : 'DESLIGADA'}</span>
+                </button>
+
+                {settings.autoLoot && (
+                  <div>
+                    <div className="font-bold uppercase text-neutral-300 mb-1.5">
+                      VELOCIDADE DA COLETA AUTOMÁTICA
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(
+                        [
+                          { id: 'normal', label: 'Normal' },
+                          { id: 'fast', label: 'Rápida' },
+                          { id: 'ultra', label: 'Muito Rápida' },
+                        ] as const
+                      ).map((spd) => (
+                        <button
+                          key={spd.id}
+                          type="button"
+                          onClick={() =>
+                            onChangeSettings({ ...settings, autoLootSpeed: spd.id })
+                          }
+                          className={`py-2 px-1.5 border cursor-pointer text-center font-black uppercase text-xs ${
+                            settings.autoLootSpeed === spd.id
+                              ? 'bg-amber-500 text-black border-amber-400'
+                              : 'bg-[#1a2028] border-neutral-700 text-neutral-300 hover:border-neutral-500'
+                          }`}
+                        >
+                          {spd.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
 
               <div className="border-t border-neutral-700 pt-3">
                 <div className="font-bold uppercase text-neutral-300 mb-2">

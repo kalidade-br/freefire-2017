@@ -1,7 +1,32 @@
 import * as THREE from 'three';
-import { getAdamData } from './adamAssets';
+import { getAimPoseQuats } from './adamAssets';
 import { CharacterRig } from './characterBuilder';
 import { PlayerStance } from './types';
+
+const _vAxis = new THREE.Vector3();
+const _qDeltaW = new THREE.Quaternion();
+const _qVisW = new THREE.Quaternion();
+const _qParentW = new THREE.Quaternion();
+const _qInvParentW = new THREE.Quaternion();
+const _qLocalDelta = new THREE.Quaternion();
+
+function rotateBoneCharAxis(
+  visW: THREE.Quaternion,
+  bone: THREE.Object3D | null | undefined,
+  ax: number,
+  ay: number,
+  az: number,
+  angle: number,
+): void {
+  if (!bone || !bone.parent || Math.abs(angle) < 1e-4) return;
+  _vAxis.set(ax, ay, az).normalize().applyQuaternion(visW);
+  _qDeltaW.setFromAxisAngle(_vAxis, angle);
+  bone.parent.getWorldQuaternion(_qParentW);
+  _qInvParentW.copy(_qParentW).invert();
+  _qLocalDelta.copy(_qInvParentW).multiply(_qDeltaW).multiply(_qParentW);
+  bone.quaternion.premultiply(_qLocalDelta).normalize();
+  bone.updateMatrixWorld(true);
+}
 
 export interface CharacterAnimInput {
   dt: number;
@@ -193,35 +218,29 @@ export class CharacterAnimator {
         vis.rotation.set(0.08, 0, Math.sin(this.idleTime * 2.4) * 0.04);
       }
       mixer.update(dt);
+      vis.updateMatrixWorld(true);
+      vis.getWorldQuaternion(_qVisW);
       if (isMoving) {
-        const kick = Math.sin(this.idleTime * 9.8) * 0.3;
+        const kick = Math.sin(this.idleTime * 9.8) * 0.34;
         const phaseL = this.idleTime * 6.4;
         const phaseR = phaseL + Math.PI;
-        if (rig.adamSpineBone) rig.adamSpineBone.rotateX(-0.28);
-        if (rig.adamHeadBone) rig.adamHeadBone.rotateX(-0.86);
-        if (rig.adamThighLBone) rig.adamThighLBone.rotateX(-0.2 + kick);
-        if (rig.adamThighRBone) rig.adamThighRBone.rotateX(-0.2 - kick);
-        if (rig.adamUpperArmLBone) {
-          rig.adamUpperArmLBone.rotateX(1.12 + Math.sin(phaseL) * 1.12);
-          rig.adamUpperArmLBone.rotateZ(0.32 + Math.max(0, Math.cos(phaseL)) * 0.45);
-        }
-        if (rig.adamUpperArmRBone) {
-          rig.adamUpperArmRBone.rotateX(1.12 + Math.sin(phaseR) * 1.12);
-          rig.adamUpperArmRBone.rotateZ(-0.32 - Math.max(0, Math.cos(phaseR)) * 0.45);
-        }
+        rotateBoneCharAxis(_qVisW, rig.adamSpineBone, 1, 0, 0, -0.28);
+        rotateBoneCharAxis(_qVisW, rig.adamHeadBone, 1, 0, 0, -0.82);
+        rotateBoneCharAxis(_qVisW, rig.adamThighLBone, 1, 0, 0, 0.22 + kick);
+        rotateBoneCharAxis(_qVisW, rig.adamThighRBone, 1, 0, 0, 0.22 - kick);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 1, 0, 0, -2.0 + Math.sin(phaseL) * 1.1);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 0, 0, 1, 0.28 + Math.max(0, Math.cos(phaseL)) * 0.42);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, -2.0 + Math.sin(phaseR) * 1.1);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, -0.28 - Math.max(0, Math.cos(phaseR)) * 0.42);
       } else {
         const scull = Math.sin(this.idleTime * 4.2);
-        if (rig.adamHeadBone) rig.adamHeadBone.rotateX(-0.08);
-        if (rig.adamThighLBone) rig.adamThighLBone.rotateX(-0.14 + scull * 0.22);
-        if (rig.adamThighRBone) rig.adamThighRBone.rotateX(-0.14 - scull * 0.22);
-        if (rig.adamUpperArmLBone) {
-          rig.adamUpperArmLBone.rotateZ(0.55 + scull * 0.2);
-          rig.adamUpperArmLBone.rotateX(0.45 + Math.cos(this.idleTime * 4.2) * 0.24);
-        }
-        if (rig.adamUpperArmRBone) {
-          rig.adamUpperArmRBone.rotateZ(-0.55 - scull * 0.2);
-          rig.adamUpperArmRBone.rotateX(0.45 - Math.cos(this.idleTime * 4.2) * 0.24);
-        }
+        rotateBoneCharAxis(_qVisW, rig.adamHeadBone, 1, 0, 0, -0.08);
+        rotateBoneCharAxis(_qVisW, rig.adamThighLBone, 1, 0, 0, 0.14 + scull * 0.22);
+        rotateBoneCharAxis(_qVisW, rig.adamThighRBone, 1, 0, 0, 0.14 - scull * 0.22);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 0, 0, 1, 0.52 + scull * 0.2);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 1, 0, 0, -0.45 + Math.cos(this.idleTime * 4.2) * 0.24);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, -0.52 - scull * 0.2);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, -0.45 - Math.cos(this.idleTime * 4.2) * 0.24);
       }
       return;
     }
@@ -237,9 +256,9 @@ export class CharacterAnimator {
         isMoving ? 0.95 : 0.8,
       );
       mixer.update(dt);
-      if (rig.adamHeadBone) {
-        rig.adamHeadBone.rotateX(-0.65);
-      }
+      vis.updateMatrixWorld(true);
+      vis.getWorldQuaternion(_qVisW);
+      rotateBoneCharAxis(_qVisW, rig.adamHeadBone, 1, 0, 0, -0.65);
       return;
     }
 
@@ -253,41 +272,37 @@ export class CharacterAnimator {
       vis.rotation.set(1.45, 0, crawl * 0.07);
       this.playAdamClip(rig, 'Idle_Loop', 0.14, 0.75);
       mixer.update(dt);
+      vis.updateMatrixWorld(true);
+      vis.getWorldQuaternion(_qVisW);
 
-      if (rig.adamThighLBone) rig.adamThighLBone.rotateX(-0.22 + crawl * 0.14);
-      if (rig.adamThighRBone) rig.adamThighRBone.rotateX(-0.22 - crawl * 0.14);
-      if (rig.adamSpineBone) rig.adamSpineBone.rotateX(-0.64);
-      if (rig.adamHeadBone) rig.adamHeadBone.rotateX(-0.52 + input.pitchRad * 0.28);
+      rotateBoneCharAxis(_qVisW, rig.adamThighLBone, 1, 0, 0, 0.12 + crawl * 0.14);
+      rotateBoneCharAxis(_qVisW, rig.adamThighRBone, 1, 0, 0, 0.12 - crawl * 0.14);
+      rotateBoneCharAxis(_qVisW, rig.adamSpineBone, 1, 0, 0, -0.58);
+      rotateBoneCharAxis(_qVisW, rig.adamHeadBone, 1, 0, 0, -0.52 + input.pitchRad * 0.28);
 
-      const adamData = getAdamData();
-      if (hasWeapon && rig.adamUpperBones && adamData?.aimPoseQuats) {
-        const aimQuats = adamData.aimPoseQuats;
+      const aimQuats = getAimPoseQuats(rig.modelId ?? 'adam');
+      if (hasWeapon && rig.adamUpperBones && aimQuats) {
         for (let i = 0; i < rig.adamUpperBones.length; i++) {
           const entry = rig.adamUpperBones[i];
           if (
-            entry.name.startsWith('clavicle_') ||
-            entry.name.startsWith('upperarm_') ||
-            entry.name.startsWith('lowerarm_') ||
-            entry.name.startsWith('hand_')
+            entry.name.endsWith('Shoulder') ||
+            entry.name.endsWith('Arm') ||
+            entry.name.endsWith('ForeArm') ||
+            entry.name.endsWith('Hand')
           ) {
             const targetQ = aimQuats[entry.name];
             if (targetQ) entry.bone.quaternion.copy(targetQ);
           }
         }
-        if (rig.adamSpineBone) {
-          rig.adamSpineBone.rotateX(-this.recoil * 0.08);
-        }
+        rig.adamSpineBone?.updateMatrixWorld(true);
+        rotateBoneCharAxis(_qVisW, rig.adamSpineBone, 1, 0, 0, -this.recoil * 0.08);
       } else {
-        if (rig.adamUpperArmLBone) {
-          rig.adamUpperArmLBone.rotateX(1.95 + crawl * 0.35);
-          rig.adamUpperArmLBone.rotateZ(0.28);
-        }
-        if (rig.adamUpperArmRBone) {
-          rig.adamUpperArmRBone.rotateX(1.95 - crawl * 0.35);
-          rig.adamUpperArmRBone.rotateZ(-0.28);
-        }
-        if (rig.adamLowerArmLBone) rig.adamLowerArmLBone.rotateX(0.65);
-        if (rig.adamLowerArmRBone) rig.adamLowerArmRBone.rotateX(0.65);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 1, 0, 0, -1.85 + crawl * 0.35);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 0, 0, 1, 0.28);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, -1.85 - crawl * 0.35);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, -0.28);
+        rotateBoneCharAxis(_qVisW, rig.adamLowerArmLBone, 1, 0, 0, -0.65);
+        rotateBoneCharAxis(_qVisW, rig.adamLowerArmRBone, 1, 0, 0, -0.65);
       }
       return;
     }
@@ -379,9 +394,8 @@ export class CharacterAnimator {
     mixer.update(dt);
 
     // Lock upper body & gun forward toward target while firing/aiming even during movement
-    const adamData = getAdamData();
-    if (this.combatUpperBlend > 0.01 && rig.adamUpperBones && adamData?.aimPoseQuats) {
-      const aimQuats = adamData.aimPoseQuats;
+    const aimQuats = getAimPoseQuats(rig.modelId ?? 'adam');
+    if (this.combatUpperBlend > 0.01 && rig.adamUpperBones && aimQuats) {
       for (let i = 0; i < rig.adamUpperBones.length; i++) {
         const entry = rig.adamUpperBones[i];
         const targetQ = aimQuats[entry.name];
@@ -392,11 +406,17 @@ export class CharacterAnimator {
     }
 
     // Subtle additive bone pitch & recoil kick on spine/head while standing/aiming
-    if (rig.adamSpineBone && (combatStance || this.combatUpperBlend > 0.05)) {
-      rig.adamSpineBone.rotateX(-input.pitchRad * 0.44 - this.recoil * 0.12);
-    }
-    if (rig.adamHeadBone) {
-      rig.adamHeadBone.rotateX(-input.pitchRad * 0.24);
+    const pitchTilt = (combatStance || this.combatUpperBlend > 0.05) ? -input.pitchRad * 0.44 - this.recoil * 0.12 : 0;
+    const headTilt = -input.pitchRad * 0.24;
+    if (Math.abs(pitchTilt) > 1e-4 || Math.abs(headTilt) > 1e-4) {
+      vis.updateMatrixWorld(true);
+      vis.getWorldQuaternion(_qVisW);
+      if (Math.abs(pitchTilt) > 1e-4) {
+        rotateBoneCharAxis(_qVisW, rig.adamSpineBone, 1, 0, 0, pitchTilt);
+      }
+      if (Math.abs(headTilt) > 1e-4) {
+        rotateBoneCharAxis(_qVisW, rig.adamHeadBone, 1, 0, 0, headTilt);
+      }
     }
   }
 

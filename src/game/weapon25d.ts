@@ -856,5 +856,6 @@ export function buildHybridWeaponModel(weaponId: WeaponId): THREE.Group {
     group.add(m);
   }
 
+  group.scale.setScalar(0.68);
   return group;
 }

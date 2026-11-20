@@ -38,6 +38,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
   showFps: true,
   controlMode: 'auto',
   invertY: false,
+  autoLoot: true,
+  autoLootSpeed: 'fast',
   hudLayout: structuredCloneLayout(DEFAULT_HUD_LAYOUT),
 };
 
@@ -133,7 +135,15 @@ export function loadCharacterConfig(): CharacterConfig {
     const raw = localStorage.getItem(CHARACTER_KEY);
     if (!raw) return { ...CHARACTER_PRESETS[0] };
     const parsed = JSON.parse(raw) as Partial<CharacterConfig>;
-    return { ...CHARACTER_PRESETS[0], ...parsed };
+    const modelId = parsed.modelId === 'eva' ? 'eva' : 'adam';
+    const base = modelId === 'eva' ? CHARACTER_PRESETS[1] : CHARACTER_PRESETS[0];
+    return {
+      ...base,
+      backpackEnabled: parsed.backpackEnabled ?? true,
+      vestEnabled: false,
+      hairStyle: modelId === 'eva' ? 'spiky' : 'buzz',
+      modelId,
+    };
   } catch {
     return { ...CHARACTER_PRESETS[0] };
   }

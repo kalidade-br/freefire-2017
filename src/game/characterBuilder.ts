@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import {
-  cloneAdamScene,
-  getAdamData,
-  getAdamOutfitTexture,
+  cloneCharacterScene,
+  FF_SCENE_SCALE,
+  FFModelId,
+  getModelAssetPack,
   isAdamAssetsLoaded,
   UPPER_AIM_BONE_NAMES,
 } from './adamAssets';
@@ -11,6 +12,7 @@ import { buildHybridWeaponModel } from './weapon25d';
 
 export interface CharacterRig {
   isAdam?: boolean;
+  modelId?: FFModelId;
   root: THREE.Group;
   adamVisualRoot?: THREE.Group;
   mixer?: THREE.AnimationMixer;
@@ -50,6 +52,7 @@ export interface CharacterRig {
   bodyMeshes: THREE.Mesh[];
   setWeapon: (weaponId: WeaponId | null) => void;
   setBackWeapons: (left: WeaponId | null, right: WeaponId | null) => void;
+  setPistolBackWeapon?: (weaponId: WeaponId | null) => void;
   setParachuteVisible: (visible: boolean) => void;
   setSurfboardVisible: (visible: boolean) => void;
   setHitFlash: (amount: number) => void;
@@ -123,13 +126,8 @@ export function createBackpackGeometryGroup(packMat: THREE.Material, darkMat: TH
 }
 
 export function createHeadgearSet(hairMat: THREE.Material, darkMat: THREE.Material, useRealHair: boolean) {
-  const data = getAdamData();
   const hairBuzz = new THREE.Group();
-  if (useRealHair && data?.hairBuzzedGeo) {
-    const m = new THREE.Mesh(data.hairBuzzedGeo, hairMat);
-    m.castShadow = true;
-    hairBuzz.add(m);
-  } else {
+  if (!useRealHair) {
     const fallbackBuzz = new THREE.Mesh(
       new THREE.SphereGeometry(0.112, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.54),
       hairMat,
@@ -139,11 +137,7 @@ export function createHeadgearSet(hairMat: THREE.Material, darkMat: THREE.Materi
   }
 
   const hairSpiky = new THREE.Group();
-  if (useRealHair && data?.hairPartedGeo) {
-    const m = new THREE.Mesh(data.hairPartedGeo, hairMat);
-    m.castShadow = true;
-    hairSpiky.add(m);
-  } else {
+  if (!useRealHair) {
     const fallbackSpike = new THREE.Mesh(
       new THREE.SphereGeometry(0.118, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.56),
       hairMat,
@@ -301,8 +295,9 @@ function createAdamCharacterRig(
   camoTexture: THREE.Texture,
   contactShadowTexture: THREE.Texture,
 ): CharacterRig {
-  const data = getAdamData()!;
-  const clonedScene = cloneAdamScene()!;
+  const modelId: FFModelId = initialConfig.modelId === 'eva' ? 'eva' : 'adam';
+  const pack = getModelAssetPack(modelId)!;
+  const clonedScene = cloneCharacterScene(modelId)!;
 
   const root = new THREE.Group();
   const adamVisualRoot = new THREE.Group();
@@ -323,8 +318,7 @@ function createAdamCharacterRig(
   const rightKnee = new THREE.Group();
 
   const bodyMeshes: THREE.Mesh[] = [];
-  let bodyMat: THREE.MeshStandardMaterial | null = null;
-  let eyebrowMat: THREE.MeshStandardMaterial | null = null;
+  const bodyMats: THREE.MeshStandardMaterial[] = [];
 
   clonedScene.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
@@ -334,18 +328,13 @@ function createAdamCharacterRig(
     mesh.frustumCulled = false;
     bodyMeshes.push(mesh);
 
-    const n = mesh.name.toLowerCase();
-    const clonedMat = ((Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as THREE.MeshStandardMaterial).clone();
-    mesh.material = clonedMat;
-
-    if (n.includes('superhero') || n.includes('sphere') || (!n.includes('eye') && (mesh as THREE.SkinnedMesh).isSkinnedMesh)) {
-      bodyMat = clonedMat;
-      clonedMat.normalMap = null;
-      clonedMat.roughnessMap = null;
-      clonedMat.roughness = 0.78;
-      clonedMat.metalness = 0.02;
-    } else if (n === 'eyebrows' || n === 'face') {
-      eyebrowMat = clonedMat;
+    const rawMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+    if (rawMat && (rawMat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+      const clonedMat = (rawMat as THREE.MeshStandardMaterial).clone();
+      clonedMat.roughness = Math.max(0.62, clonedMat.roughness ?? 0.78);
+      clonedMat.metalness = Math.min(0.12, clonedMat.metalness ?? 0.04);
+      mesh.material = clonedMat;
+      bodyMats.push(clonedMat);
     }
   });
 
@@ -385,17 +374,18 @@ function createAdamCharacterRig(
   contactShadow.position.y = 0.018;
   root.add(contactShadow);
 
-  // Locate real skeleton bones
-  const adamPelvisBone = clonedScene.getObjectByName('pelvis') ?? null;
-  const adamSpineBone = clonedScene.getObjectByName('spine_02') ?? adamPelvisBone;
-  const adamHeadBone = clonedScene.getObjectByName('Head') ?? adamSpineBone;
-  const adamHandRBone = clonedScene.getObjectByName('hand_r') ?? adamSpineBone;
-  const adamThighLBone = clonedScene.getObjectByName('thigh_l') ?? null;
-  const adamThighRBone = clonedScene.getObjectByName('thigh_r') ?? null;
-  const adamUpperArmLBone = clonedScene.getObjectByName('upperarm_l') ?? null;
-  const adamUpperArmRBone = clonedScene.getObjectByName('upperarm_r') ?? null;
-  const adamLowerArmLBone = clonedScene.getObjectByName('lowerarm_l') ?? null;
-  const adamLowerArmRBone = clonedScene.getObjectByName('lowerarm_r') ?? null;
+  // Locate real Free Fire Mixamo skeleton bones
+  const adamPelvisBone = clonedScene.getObjectByName('mixamorigHips') ?? null;
+  const adamSpineBone = clonedScene.getObjectByName('mixamorigSpine1') ?? adamPelvisBone;
+  const adamSpine2Bone = clonedScene.getObjectByName('mixamorigSpine2') ?? adamSpineBone;
+  const adamHeadBone = clonedScene.getObjectByName('mixamorigHead') ?? adamSpine2Bone;
+  const adamHandRBone = clonedScene.getObjectByName('mixamorigRightHand') ?? adamSpine2Bone;
+  const adamThighLBone = clonedScene.getObjectByName('mixamorigLeftUpLeg') ?? null;
+  const adamThighRBone = clonedScene.getObjectByName('mixamorigRightUpLeg') ?? null;
+  const adamUpperArmLBone = clonedScene.getObjectByName('mixamorigLeftArm') ?? null;
+  const adamUpperArmRBone = clonedScene.getObjectByName('mixamorigRightArm') ?? null;
+  const adamLowerArmLBone = clonedScene.getObjectByName('mixamorigLeftForeArm') ?? null;
+  const adamLowerArmRBone = clonedScene.getObjectByName('mixamorigRightForeArm') ?? null;
   const adamUpperBones: Array<{ name: string; bone: THREE.Object3D }> = [];
   for (let b = 0; b < UPPER_AIM_BONE_NAMES.length; b++) {
     const name = UPPER_AIM_BONE_NAMES[b];
@@ -403,24 +393,31 @@ function createAdamCharacterRig(
     if (bone) adamUpperBones.push({ name, bone });
   }
 
-  // Attach vest, backpack & back weapons onto spine_02
-  const vestGroup = createVestGeometryGroup(vestMat);
-  vestGroup.position.set(0, 0.08, 0.008);
-  const backpackGroup = createBackpackGeometryGroup(packMat, darkMat);
-  backpackGroup.position.set(0, 0.10, -0.148);
-  if (adamSpineBone) {
-    adamSpineBone.add(vestGroup, backpackGroup);
+  // Metric-scale world-aligned mounts compensating for inner FF_SCENE_SCALE (1.78) & Mixamo bone roll
+  const invScale = 1 / FF_SCENE_SCALE;
+  const spineMount = new THREE.Group();
+  spineMount.quaternion.copy(pack.spineMountQuat);
+  spineMount.scale.setScalar(invScale);
+  if (adamSpine2Bone) {
+    adamSpine2Bone.add(spineMount);
   }
 
+  const vestGroup = createVestGeometryGroup(vestMat);
+  vestGroup.position.set(0, -0.02, 0.015);
+  const backpackGroup = createBackpackGeometryGroup(packMat, darkMat);
+  backpackGroup.position.set(0, -0.01, -0.105);
+  spineMount.add(vestGroup, backpackGroup);
+
   const backMount1 = new THREE.Group();
-  backMount1.position.set(-0.155, 0.15, -0.17);
-  backMount1.rotation.set(-Math.PI * 0.44, 0.12, -0.22);
+  backMount1.position.set(-0.095, 0.05, -0.105);
+  backMount1.rotation.set(-Math.PI * 0.44, 0.06, -0.18);
   const backMount2 = new THREE.Group();
-  backMount2.position.set(0.155, 0.15, -0.17);
-  backMount2.rotation.set(-Math.PI * 0.44, -0.12, 0.22);
-  if (adamSpineBone) {
-    adamSpineBone.add(backMount1, backMount2);
-  }
+  backMount2.position.set(0.095, 0.05, -0.105);
+  backMount2.rotation.set(-Math.PI * 0.44, -0.06, 0.18);
+  const pistolBackMount = new THREE.Group();
+  pistolBackMount.position.set(0.095, -0.125, -0.105);
+  pistolBackMount.rotation.set(Math.PI * 0.44, 0.1, -0.14);
+  spineMount.add(backMount1, backMount2, pistolBackMount);
 
   const backMeshes1: Record<WeaponId, THREE.Group> = {
     g18: createWeaponModel('g18'),
@@ -444,6 +441,13 @@ function createAdamCharacterRig(
     m1014: createWeaponModel('m1014'),
     awm: createWeaponModel('awm'),
   };
+  const backPistolMeshes: Record<'g18' | 'deagle', THREE.Group> = {
+    g18: createWeaponModel('g18'),
+    deagle: createWeaponModel('deagle'),
+  };
+  backPistolMeshes.g18.visible = false;
+  backPistolMeshes.deagle.visible = false;
+  pistolBackMount.add(backPistolMeshes.g18, backPistolMeshes.deagle);
   (Object.keys(backMeshes1) as WeaponId[]).forEach((id) => {
     backMeshes1[id].visible = false;
     backMeshes2[id].visible = false;
@@ -451,21 +455,21 @@ function createAdamCharacterRig(
     backMount2.add(backMeshes2[id]);
   });
 
-  // Attach Hair & Headgear directly onto Head bone
-  const headgear = createHeadgearSet(hairMat, darkMat, true);
+  // Attach tactical helmet cleanly onto calibrated head mount (preserve FF native hair otherwise)
+  const headMount = new THREE.Group();
+  headMount.quaternion.copy(pack.headMountQuat);
+  headMount.scale.setScalar(invScale);
   if (adamHeadBone) {
-    adamHeadBone.add(
-      headgear.hairBuzz,
-      headgear.hairSpiky,
-      headgear.capGroup,
-      headgear.helmetGroup,
-    );
+    adamHeadBone.add(headMount);
   }
+  const headgear = createHeadgearSet(hairMat, darkMat, true);
+  headgear.helmetGroup.position.set(0, pack.helmetOffsetY - 0.115, 0);
+  headMount.add(headgear.helmetGroup);
 
-  // Weapon mount attached to hand_r (hand_r +Y = barrel forward, +Z = up)
+  // Calibrated weapon mount on mixamorigRightHand (+Z = barrel forward, +Y = sights up)
   const weaponMount = new THREE.Group();
-  weaponMount.position.set(0.0, 0.055, 0.025);
-  weaponMount.rotation.set(-Math.PI / 2, 0, Math.PI);
+  weaponMount.quaternion.copy(pack.weaponMountQuat);
+  weaponMount.scale.setScalar(invScale);
   if (adamHandRBone) {
     adamHandRBone.add(weaponMount);
   }
@@ -482,6 +486,7 @@ function createAdamCharacterRig(
     awm: createWeaponModel('awm'),
   };
   Object.values(weaponMeshes).forEach((wm) => {
+    wm.position.set(0, -0.02, 0.05);
     wm.visible = false;
     weaponMount.add(wm);
   });
@@ -496,7 +501,7 @@ function createAdamCharacterRig(
       opacity: 0.92,
     }),
   );
-  muzzleFlash.position.set(0, 0.025, 0.62);
+  muzzleFlash.position.set(0, 0.02, 0.41);
   muzzleFlash.rotation.x = Math.PI / 2;
   muzzleFlash.visible = false;
   weaponMount.add(muzzleFlash);
@@ -511,11 +516,11 @@ function createAdamCharacterRig(
   surfboard.group.position.set(0, 0.02, 0);
   root.add(surfboard.group);
 
-  // Wire AnimationMixer + clips
+  // Wire AnimationMixer + retargeted clips
   const mixer = new THREE.AnimationMixer(clonedScene);
   const actions: Record<string, THREE.AnimationAction> = {};
-  for (let i = 0; i < data.animations.length; i++) {
-    const clip = data.animations[i];
+  for (let i = 0; i < pack.animations.length; i++) {
+    const clip = pack.animations[i];
     const act = mixer.clipAction(clip);
     if (clip.name === 'Death01') {
       act.setLoop(THREE.LoopOnce, 1);
@@ -537,26 +542,11 @@ function createAdamCharacterRig(
   }
 
   const applyConfig = (cfg: CharacterConfig) => {
-    if (bodyMat) {
-      const tex = getAdamOutfitTexture(cfg);
-      if (tex && bodyMat.map !== tex) {
-        bodyMat.map = tex;
-        bodyMat.needsUpdate = true;
-      }
-      bodyMat.color.setHex(0xffffff);
-    }
     vestMat.color.set(cfg.vestColor);
     hairMat.color.set(cfg.hairColor);
-    if (eyebrowMat) {
-      eyebrowMat.color.set(cfg.hairColor);
-    }
-    vestGroup.visible = cfg.vestEnabled;
+    vestGroup.visible = false;
     backpackGroup.visible = cfg.backpackEnabled;
-
-    headgear.hairBuzz.visible = cfg.hairStyle === 'buzz';
-    headgear.hairSpiky.visible = cfg.hairStyle === 'spiky';
-    headgear.capGroup.visible = cfg.hairStyle === 'cap';
-    headgear.helmetGroup.visible = cfg.hairStyle === 'helmet';
+    headgear.helmetGroup.visible = false;
   };
 
   applyConfig(initialConfig);
@@ -574,6 +564,11 @@ function createAdamCharacterRig(
     });
   };
 
+  const setPistolBackWeapon = (weaponId: WeaponId | null) => {
+    backPistolMeshes.g18.visible = weaponId === 'g18';
+    backPistolMeshes.deagle.visible = weaponId === 'deagle';
+  };
+
   const setParachuteVisible = (visible: boolean) => {
     parachuteGroup.visible = visible;
   };
@@ -584,7 +579,9 @@ function createAdamCharacterRig(
 
   const setHitFlash = (amount: number) => {
     const r = Math.max(0, Math.min(1, amount));
-    if (bodyMat) bodyMat.emissive.setRGB(r * 0.85, 0, 0);
+    for (let m = 0; m < bodyMats.length; m++) {
+      bodyMats[m].emissive.setRGB(r * 0.85, 0, 0);
+    }
     vestMat.emissive.setRGB(r * 0.75, 0, 0);
   };
 
@@ -597,12 +594,35 @@ function createAdamCharacterRig(
     hairMat.dispose();
     darkMat.dispose();
     headgear.helmetMat.dispose();
-    bodyMat?.dispose();
-    eyebrowMat?.dispose();
+    for (let m = 0; m < bodyMats.length; m++) {
+      bodyMats[m].dispose();
+    }
+    contactShadow.geometry.dispose();
+    (contactShadow.material as THREE.Material).dispose();
+    muzzleFlash.geometry.dispose();
+    (muzzleFlash.material as THREE.Material).dispose();
+    vestGroup.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry.dispose();
+    });
+    backpackGroup.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry.dispose();
+    });
+    headgear.helmetGroup.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry.dispose();
+    });
+    parachuteGroup.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh || (o as THREE.LineSegments).isLineSegments) {
+        (o as THREE.Mesh).geometry.dispose();
+        const mat = (o as THREE.Mesh).material;
+        if (Array.isArray(mat)) mat.forEach((mt) => mt.dispose());
+        else mat?.dispose();
+      }
+    });
   };
 
   return {
     isAdam: true,
+    modelId,
     root,
     adamVisualRoot,
     mixer,
@@ -641,6 +661,7 @@ function createAdamCharacterRig(
     bodyMeshes,
     setWeapon,
     setBackWeapons,
+    setPistolBackWeapon,
     setParachuteVisible,
     setSurfboardVisible,
     setHitFlash,
@@ -781,7 +802,7 @@ function createProceduralCharacterRig(
   torso.add(vestGroup);
 
   const backpackGroup = createBackpackGeometryGroup(packMat, darkMat);
-  backpackGroup.position.set(0, 0.24, -0.175);
+  backpackGroup.position.set(0, 0.24, -0.13);
   torso.add(backpackGroup);
 
   const headGroup = new THREE.Group();
@@ -872,13 +893,13 @@ function createProceduralCharacterRig(
   weaponMeshes.m4a1.visible = true;
 
   const backMount1 = new THREE.Group();
-  backMount1.position.set(0.175, 0.31, -0.215);
-  backMount1.rotation.set(-Math.PI * 0.44, 0.12, -0.22);
+  backMount1.position.set(0.115, 0.30, -0.145);
+  backMount1.rotation.set(-Math.PI * 0.44, 0.06, -0.18);
   torso.add(backMount1);
 
   const backMount2 = new THREE.Group();
-  backMount2.position.set(-0.175, 0.31, -0.215);
-  backMount2.rotation.set(-Math.PI * 0.44, -0.12, 0.22);
+  backMount2.position.set(-0.115, 0.30, -0.145);
+  backMount2.rotation.set(-Math.PI * 0.44, -0.06, 0.18);
   torso.add(backMount2);
 
   const backMeshes1: Record<WeaponId, THREE.Group> = {
@@ -973,7 +994,7 @@ function createProceduralCharacterRig(
     hairMat.color.set(cfg.hairColor);
     shoeMat.color.set(cfg.shoesColor);
 
-    vestGroup.visible = cfg.vestEnabled;
+    vestGroup.visible = false;
     backpackGroup.visible = cfg.backpackEnabled;
 
     const hasSleeves = cfg.shirtStyle === 'tee' || cfg.shirtStyle === 'hoodie';
@@ -991,7 +1012,7 @@ function createProceduralCharacterRig(
     headgear.hairBuzz.visible = cfg.hairStyle === 'buzz';
     headgear.hairSpiky.visible = cfg.hairStyle === 'spiky';
     headgear.capGroup.visible = cfg.hairStyle === 'cap';
-    headgear.helmetGroup.visible = cfg.hairStyle === 'helmet';
+    headgear.helmetGroup.visible = false;
   };
 
   applyConfig(initialConfig);

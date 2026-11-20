@@ -1,43 +1,70 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
-import { CharacterConfig } from './types';
+
+export type FFModelId = 'adam' | 'eva';
+
+export const FF_SCENE_SCALE = 1.78;
 
 export const UPPER_AIM_BONE_NAMES = [
-  'spine_01',
-  'spine_02',
-  'spine_03',
-  'neck_01',
-  'Head',
-  'clavicle_l',
-  'upperarm_l',
-  'lowerarm_l',
-  'hand_l',
-  'clavicle_r',
-  'upperarm_r',
-  'lowerarm_r',
-  'hand_r',
+  'mixamorigSpine',
+  'mixamorigSpine1',
+  'mixamorigSpine2',
+  'mixamorigNeck',
+  'mixamorigHead',
+  'mixamorigLeftShoulder',
+  'mixamorigLeftArm',
+  'mixamorigLeftForeArm',
+  'mixamorigLeftHand',
+  'mixamorigRightShoulder',
+  'mixamorigRightArm',
+  'mixamorigRightForeArm',
+  'mixamorigRightHand',
 ] as const;
 
-export interface AdamLoadedData {
+const BONE_MAP: ReadonlyArray<readonly [src: string, dst: string]> = [
+  ['pelvis', 'mixamorigHips'],
+  ['spine_01', 'mixamorigSpine'],
+  ['spine_02', 'mixamorigSpine1'],
+  ['spine_03', 'mixamorigSpine2'],
+  ['neck_01', 'mixamorigNeck'],
+  ['Head', 'mixamorigHead'],
+  ['clavicle_l', 'mixamorigLeftShoulder'],
+  ['upperarm_l', 'mixamorigLeftArm'],
+  ['lowerarm_l', 'mixamorigLeftForeArm'],
+  ['hand_l', 'mixamorigLeftHand'],
+  ['clavicle_r', 'mixamorigRightShoulder'],
+  ['upperarm_r', 'mixamorigRightArm'],
+  ['lowerarm_r', 'mixamorigRightForeArm'],
+  ['hand_r', 'mixamorigRightHand'],
+  ['thigh_l', 'mixamorigLeftUpLeg'],
+  ['calf_l', 'mixamorigLeftLeg'],
+  ['foot_l', 'mixamorigLeftFoot'],
+  ['thigh_r', 'mixamorigRightUpLeg'],
+  ['calf_r', 'mixamorigRightLeg'],
+  ['foot_r', 'mixamorigRightFoot'],
+];
+
+export interface FFModelAssetPack {
+  modelId: FFModelId;
   baseScene: THREE.Group;
   animations: THREE.AnimationClip[];
   aimPoseQuats: Record<string, THREE.Quaternion>;
-  hairBuzzedGeo: THREE.BufferGeometry | null;
-  hairPartedGeo: THREE.BufferGeometry | null;
-  baseSkinTex: THREE.Texture | null;
-  normalTex: THREE.Texture | null;
-  roughnessTex: THREE.Texture | null;
-  eyeMaterial: THREE.Material | null;
-  eyebrowMaterial: THREE.Material | null;
-  positions: Float32Array;
-  uvs: Float32Array;
-  indices: ArrayLike<number> | null;
+  spineMountQuat: THREE.Quaternion;
+  headMountQuat: THREE.Quaternion;
+  weaponMountQuat: THREE.Quaternion;
+  helmetOffsetY: number;
+}
+
+export interface AdamLoadedData {
+  adam: FFModelAssetPack;
+  eva: FFModelAssetPack;
+  animations: THREE.AnimationClip[];
+  aimPoseQuats: Record<string, THREE.Quaternion>;
 }
 
 let loadedData: AdamLoadedData | null = null;
 let loadPromise: Promise<AdamLoadedData | null> | null = null;
-const outfitTextureCache = new Map<string, THREE.CanvasTexture>();
 
 export function isAdamAssetsLoaded(): boolean {
   return loadedData !== null;
@@ -47,12 +74,30 @@ export function getAdamData(): AdamLoadedData | null {
   return loadedData;
 }
 
-export function cloneAdamScene(): THREE.Group | null {
+export function getModelAssetPack(modelId: FFModelId = 'adam'): FFModelAssetPack | null {
   if (!loadedData) return null;
-  return SkeletonUtils.clone(loadedData.baseScene) as THREE.Group;
+  return modelId === 'eva' ? loadedData.eva : loadedData.adam;
 }
 
-function loadGlbAsync(loader: GLTFLoader, url: string): Promise<{ scene: THREE.Group; animations: THREE.AnimationClip[] }> {
+export function getAimPoseQuats(modelId: FFModelId = 'adam'): Record<string, THREE.Quaternion> | null {
+  const pack = getModelAssetPack(modelId);
+  return pack ? pack.aimPoseQuats : null;
+}
+
+export function cloneCharacterScene(modelId: FFModelId = 'adam'): THREE.Group | null {
+  const pack = getModelAssetPack(modelId);
+  if (!pack) return null;
+  return SkeletonUtils.clone(pack.baseScene) as THREE.Group;
+}
+
+export function cloneAdamScene(): THREE.Group | null {
+  return cloneCharacterScene('adam');
+}
+
+function loadGlbAsync(
+  loader: GLTFLoader,
+  url: string,
+): Promise<{ scene: THREE.Group; animations: THREE.AnimationClip[] }> {
   return new Promise((resolve, reject) => {
     loader.load(
       url,
@@ -63,133 +108,403 @@ function loadGlbAsync(loader: GLTFLoader, url: string): Promise<{ scene: THREE.G
   });
 }
 
-function extractFirstGeometry(root: THREE.Object3D): THREE.BufferGeometry | null {
-  let geo: THREE.BufferGeometry | null = null;
-  root.traverse((obj) => {
-    if (!geo && (obj as THREE.Mesh).isMesh) {
-      const m = obj as THREE.Mesh;
-      geo = m.geometry.clone();
-      // Align world-space Quaternius hair coords (origin at floor) onto Head bone (0, 1.600, -0.017)
-      geo.translate(0, -1.6, 0.017);
-      geo.computeVertexNormals();
-    }
-  });
-  return geo;
+function alignBoneToWorldDir(
+  parentRoot: THREE.Object3D,
+  boneName: string,
+  childName: string,
+  targetWorldDir: THREE.Vector3,
+): void {
+  const bone = parentRoot.getObjectByName(boneName);
+  const child = parentRoot.getObjectByName(childName);
+  if (!bone || !child || !bone.parent) return;
+
+  parentRoot.updateMatrixWorld(true);
+  const pBone = bone.getWorldPosition(new THREE.Vector3());
+  const pChild = child.getWorldPosition(new THREE.Vector3());
+  const curDir = pChild.sub(pBone);
+  if (curDir.lengthSq() < 1e-8) return;
+  curDir.normalize();
+
+  const tgt = targetWorldDir.clone().normalize();
+  const dot = THREE.MathUtils.clamp(curDir.dot(tgt), -1, 1);
+  if (dot > 0.9999) return;
+
+  const qDeltaW = new THREE.Quaternion();
+  if (dot < -0.9999) {
+    qDeltaW.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+  } else {
+    qDeltaW.setFromUnitVectors(curDir, tgt);
+  }
+
+  const parentW = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+  const invParentW = parentW.clone().invert();
+  const qLocalDelta = invParentW.multiply(qDeltaW).multiply(parentW);
+  bone.quaternion.premultiply(qLocalDelta).normalize();
+  parentRoot.updateMatrixWorld(true);
 }
 
-export function preloadAdamAssets(onStep?: (pct: number, label: string) => void): Promise<AdamLoadedData | null> {
+function getWorldLimbDir(root: THREE.Object3D, aName: string, bName: string, fallback: THREE.Vector3): THREE.Vector3 {
+  const a = root.getObjectByName(aName);
+  const b = root.getObjectByName(bName);
+  if (!a || !b) return fallback.clone().normalize();
+  const pa = a.getWorldPosition(new THREE.Vector3());
+  const pb = b.getWorldPosition(new THREE.Vector3());
+  const d = pb.sub(pa);
+  if (d.lengthSq() < 1e-8) return fallback.clone().normalize();
+  return d.normalize();
+}
+
+function buildFFPack(
+  modelId: FFModelId,
+  rawScene: THREE.Group,
+  srcScene: THREE.Group,
+  srcClips: THREE.AnimationClip[],
+): FFModelAssetPack {
+  // Normalize meshes: disable frustum culling & preserve clean PBR skin/outfit maps
+  rawScene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.frustumCulled = false;
+    const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+    if (mat && (mat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+      const stdMat = mat as THREE.MeshStandardMaterial;
+      stdMat.roughness = Math.max(0.62, stdMat.roughness ?? 0.78);
+      stdMat.metalness = Math.min(0.12, stdMat.metalness ?? 0.04);
+      if (stdMat.map) {
+        stdMat.map.colorSpace = THREE.SRGBColorSpace;
+        stdMat.map.needsUpdate = true;
+      }
+    }
+  });
+
+  // Wrap raw (+X facing, ~0.98m) scene inside +Z-facing upright wrapper (~1.74m)
+  rawScene.rotation.set(0, -Math.PI / 2, 0);
+  rawScene.scale.setScalar(FF_SCENE_SCALE);
+  rawScene.position.set(0, 0, 0);
+
+  const wrapper = new THREE.Group();
+  wrapper.name = `FF_${modelId}_Wrapper`;
+  wrapper.add(rawScene);
+  wrapper.updateMatrixWorld(true);
+
+  // Measure source skeleton bind-pose limb directions in upright +Z world space
+  srcScene.updateMatrixWorld(true);
+  const srcDirArmL = getWorldLimbDir(srcScene, 'upperarm_l', 'lowerarm_l', new THREE.Vector3(1, 0, 0));
+  const srcDirForeL = getWorldLimbDir(srcScene, 'lowerarm_l', 'hand_l', new THREE.Vector3(1, 0, 0));
+  const srcDirArmR = getWorldLimbDir(srcScene, 'upperarm_r', 'lowerarm_r', new THREE.Vector3(-1, 0, 0));
+  const srcDirForeR = getWorldLimbDir(srcScene, 'lowerarm_r', 'hand_r', new THREE.Vector3(-1, 0, 0));
+  const srcDirLegL = getWorldLimbDir(srcScene, 'thigh_l', 'calf_l', new THREE.Vector3(0, -1, 0));
+  const srcDirShinL = getWorldLimbDir(srcScene, 'calf_l', 'foot_l', new THREE.Vector3(0, -1, 0));
+  const srcDirLegR = getWorldLimbDir(srcScene, 'thigh_r', 'calf_r', new THREE.Vector3(0, -1, 0));
+  const srcDirShinR = getWorldLimbDir(srcScene, 'calf_r', 'foot_r', new THREE.Vector3(0, -1, 0));
+
+  // Align destination limbs to match source bind-pose directions before sampling bind quats
+  alignBoneToWorldDir(wrapper, 'mixamorigLeftArm', 'mixamorigLeftForeArm', srcDirArmL);
+  alignBoneToWorldDir(wrapper, 'mixamorigLeftForeArm', 'mixamorigLeftHand', srcDirForeL);
+  alignBoneToWorldDir(wrapper, 'mixamorigRightArm', 'mixamorigRightForeArm', srcDirArmR);
+  alignBoneToWorldDir(wrapper, 'mixamorigRightForeArm', 'mixamorigRightHand', srcDirForeR);
+  alignBoneToWorldDir(wrapper, 'mixamorigLeftUpLeg', 'mixamorigLeftLeg', srcDirLegL);
+  alignBoneToWorldDir(wrapper, 'mixamorigLeftLeg', 'mixamorigLeftFoot', srcDirShinL);
+  alignBoneToWorldDir(wrapper, 'mixamorigRightUpLeg', 'mixamorigRightLeg', srcDirLegR);
+  alignBoneToWorldDir(wrapper, 'mixamorigRightLeg', 'mixamorigRightFoot', srcDirShinR);
+  wrapper.updateMatrixWorld(true);
+
+  // Measure head height & crown offset in aligned standing pose
+  const bbox = new THREE.Box3().setFromObject(wrapper);
+  const headBoneBind = wrapper.getObjectByName('mixamorigHead');
+  const headWorldY = headBoneBind ? headBoneBind.getWorldPosition(new THREE.Vector3()).y : 1.51;
+  const crownAboveHead = Math.max(0.18, bbox.max.y - headWorldY);
+  const helmetOffsetY = THREE.MathUtils.clamp(crownAboveHead * 0.48, 0.085, 0.125);
+
+  // Capture aligned bind-pose world quaternions for source & destination
+  const srcClone = SkeletonUtils.clone(srcScene) as THREE.Group;
+  srcClone.updateMatrixWorld(true);
+
+  const srcBindWorldQ = new Map<string, THREE.Quaternion>();
+  const dstBindWorldQ = new Map<string, THREE.Quaternion>();
+  const srcNodes = new Map<string, THREE.Object3D>();
+  const dstNodes = new Map<string, THREE.Object3D>();
+
+  for (let b = 0; b < BONE_MAP.length; b++) {
+    const [srcName, dstName] = BONE_MAP[b];
+    const sb = srcClone.getObjectByName(srcName);
+    const db = wrapper.getObjectByName(dstName);
+    if (sb) {
+      srcNodes.set(srcName, sb);
+      srcBindWorldQ.set(srcName, sb.getWorldQuaternion(new THREE.Quaternion()));
+    }
+    if (db) {
+      dstNodes.set(dstName, db);
+      dstBindWorldQ.set(dstName, db.getWorldQuaternion(new THREE.Quaternion()));
+    }
+  }
+
+  const srcPelvis = srcNodes.get('pelvis');
+  const dstHips = dstNodes.get('mixamorigHips');
+  const srcHipsBindWorldY = srcPelvis ? srcPelvis.getWorldPosition(new THREE.Vector3()).y : 0.92;
+  const dstHipsBindWorldPos = dstHips ? dstHips.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3(0, 0.92, 0);
+
+  // Save initial aligned local transforms on wrapper so we can restore after sampling clips
+  const savedLocalQuats = new Map<string, THREE.Quaternion>();
+  for (const [dstName, db] of dstNodes.entries()) {
+    savedLocalQuats.set(dstName, db.quaternion.clone());
+  }
+  const savedHipsPos = dstHips ? dstHips.position.clone() : new THREE.Vector3();
+
+  // Retarget all source animation clips onto the destination Mixamo hierarchy
+  const srcMixer = new THREE.AnimationMixer(srcClone);
+  const fps = 24;
+  const retargetedClips: THREE.AnimationClip[] = [];
+
+  const qSrcCurW = new THREE.Quaternion();
+  const qInvSrcBindW = new THREE.Quaternion();
+  const qTargetW = new THREE.Quaternion();
+  const qParentW = new THREE.Quaternion();
+  const qLocal = new THREE.Quaternion();
+  const tmpSrcPos = new THREE.Vector3();
+  const tmpDstWorldTargetPos = new THREE.Vector3();
+
+  for (let c = 0; c < srcClips.length; c++) {
+    const srcClip = srcClips[c];
+    const duration = Math.max(0.05, srcClip.duration);
+    const frameCount = Math.max(2, Math.ceil(duration * fps) + 1);
+    const times = new Float32Array(frameCount);
+
+    const quatBuffers = new Map<string, Float32Array>();
+    for (let b = 0; b < BONE_MAP.length; b++) {
+      const [srcName, dstName] = BONE_MAP[b];
+      if (srcNodes.has(srcName) && dstNodes.has(dstName)) {
+        quatBuffers.set(dstName, new Float32Array(frameCount * 4));
+      }
+    }
+    const hipsPosBuf = srcPelvis && dstHips ? new Float32Array(frameCount * 3) : null;
+
+    // Reset destination bones to bind before each clip pass
+    for (const [dstName, q] of savedLocalQuats.entries()) {
+      dstNodes.get(dstName)?.quaternion.copy(q);
+    }
+    if (dstHips) dstHips.position.copy(savedHipsPos);
+    wrapper.updateMatrixWorld(true);
+
+    const action = srcMixer.clipAction(srcClip);
+    action.reset();
+    action.play();
+
+    for (let f = 0; f < frameCount; f++) {
+      const t = f === frameCount - 1 ? duration : (f / (frameCount - 1)) * duration;
+      times[f] = t;
+      srcMixer.setTime(t);
+      srcClone.updateMatrixWorld(true);
+
+      if (hipsPosBuf && srcPelvis && dstHips && dstHips.parent) {
+        srcPelvis.getWorldPosition(tmpSrcPos);
+        const worldDeltaY = tmpSrcPos.y - srcHipsBindWorldY;
+        tmpDstWorldTargetPos.copy(dstHipsBindWorldPos);
+        tmpDstWorldTargetPos.y += worldDeltaY;
+        dstHips.parent.worldToLocal(tmpDstWorldTargetPos);
+        hipsPosBuf[f * 3] = tmpDstWorldTargetPos.x;
+        hipsPosBuf[f * 3 + 1] = tmpDstWorldTargetPos.y;
+        hipsPosBuf[f * 3 + 2] = tmpDstWorldTargetPos.z;
+      }
+
+      for (let b = 0; b < BONE_MAP.length; b++) {
+        const [srcName, dstName] = BONE_MAP[b];
+        const sb = srcNodes.get(srcName);
+        const db = dstNodes.get(dstName);
+        const buf = quatBuffers.get(dstName);
+        if (!sb || !db || !buf) continue;
+
+        const sbBindW = srcBindWorldQ.get(srcName);
+        const dbBindW = dstBindWorldQ.get(dstName);
+        if (!sbBindW || !dbBindW) continue;
+
+        sb.getWorldQuaternion(qSrcCurW);
+        qInvSrcBindW.copy(sbBindW).invert();
+        qTargetW.copy(qSrcCurW).multiply(qInvSrcBindW).multiply(dbBindW);
+
+        if (db.parent) {
+          db.parent.getWorldQuaternion(qParentW);
+          qLocal.copy(qParentW).invert().multiply(qTargetW).normalize();
+        } else {
+          qLocal.copy(qTargetW).normalize();
+        }
+
+        db.quaternion.copy(qLocal);
+        db.updateMatrixWorld(false);
+
+        if (modelId === 'adam' && (dstName === 'mixamorigLeftShoulder' || dstName === 'mixamorigRightShoulder')) {
+          const baseShQ = savedLocalQuats.get(dstName);
+          if (baseShQ) {
+            qLocal.copy(baseShQ).slerp(qLocal, 0.78).normalize();
+            db.quaternion.copy(qLocal);
+            db.updateMatrixWorld(false);
+          }
+        }
+
+        buf[f * 4] = qLocal.x;
+        buf[f * 4 + 1] = qLocal.y;
+        buf[f * 4 + 2] = qLocal.z;
+        buf[f * 4 + 3] = qLocal.w;
+      }
+
+      // For Adam's straight T-pose mesh, softly limit extreme (>60°) elbow bends so arms never crease or over-fold
+      if (modelId === 'adam') {
+        wrapper.updateMatrixWorld(true);
+        const elbowPairs: ReadonlyArray<readonly [string, string, string]> = [
+          ['mixamorigLeftArm', 'mixamorigLeftForeArm', 'mixamorigLeftHand'],
+          ['mixamorigRightArm', 'mixamorigRightForeArm', 'mixamorigRightHand'],
+        ];
+        for (let ep = 0; ep < elbowPairs.length; ep++) {
+          const [armN, foreN, handN] = elbowPairs[ep];
+          const armNode = dstNodes.get(armN);
+          const foreNode = dstNodes.get(foreN);
+          const handNode = dstNodes.get(handN);
+          const foreBuf = quatBuffers.get(foreN);
+          if (!armNode || !foreNode || !handNode || !foreBuf) continue;
+
+          const pA = armNode.getWorldPosition(new THREE.Vector3());
+          const pF = foreNode.getWorldPosition(new THREE.Vector3());
+          const pH = handNode.getWorldPosition(new THREE.Vector3());
+          const vU = pF.clone().sub(pA).normalize();
+          const vF = pH.clone().sub(pF).normalize();
+          const ang = Math.acos(THREE.MathUtils.clamp(vU.dot(vF), -1, 1));
+          if (ang > 1.05) {
+            const targetAng = 1.05 + (ang - 1.05) * 0.3;
+            const axisW = vU.clone().cross(vF);
+            if (axisW.lengthSq() > 1e-8) {
+              axisW.normalize();
+              qTargetW.setFromAxisAngle(axisW, targetAng - ang);
+              if (foreNode.parent) {
+                foreNode.parent.getWorldQuaternion(qParentW);
+                qLocal.copy(qParentW).invert().multiply(qTargetW).multiply(qParentW);
+                foreNode.quaternion.premultiply(qLocal).normalize();
+              } else {
+                foreNode.quaternion.premultiply(qTargetW).normalize();
+              }
+              foreNode.updateMatrixWorld(false);
+              foreBuf[f * 4] = foreNode.quaternion.x;
+              foreBuf[f * 4 + 1] = foreNode.quaternion.y;
+              foreBuf[f * 4 + 2] = foreNode.quaternion.z;
+              foreBuf[f * 4 + 3] = foreNode.quaternion.w;
+            }
+          }
+        }
+      }
+    }
+
+    action.stop();
+
+    const tracks: THREE.KeyframeTrack[] = [];
+    if (hipsPosBuf) {
+      tracks.push(new THREE.VectorKeyframeTrack('mixamorigHips.position', times, hipsPosBuf));
+    }
+    for (const [dstName, buf] of quatBuffers.entries()) {
+      tracks.push(new THREE.QuaternionKeyframeTrack(`${dstName}.quaternion`, times, buf));
+    }
+
+    retargetedClips.push(new THREE.AnimationClip(srcClip.name, duration, tracks));
+  }
+
+  srcMixer.stopAllAction();
+
+  // Restore aligned bind pose on wrapper
+  for (const [dstName, q] of savedLocalQuats.entries()) {
+    dstNodes.get(dstName)?.quaternion.copy(q);
+  }
+  if (dstHips) dstHips.position.copy(savedHipsPos);
+  wrapper.updateMatrixWorld(true);
+
+  // Calibrate mount inverse quaternions & extract upper-body Aim pose quats on a fresh sample clone
+  const spineMountQuat = new THREE.Quaternion();
+  const headMountQuat = new THREE.Quaternion();
+  const weaponMountQuat = new THREE.Quaternion();
+  const aimPoseQuats: Record<string, THREE.Quaternion> = {};
+
+  const sampleClone = SkeletonUtils.clone(wrapper) as THREE.Group;
+  const sampleMixer = new THREE.AnimationMixer(sampleClone);
+
+  const idleClip = retargetedClips.find((a) => a.name === 'Idle_Loop') ?? retargetedClips[0];
+  if (idleClip) {
+    const idleAct = sampleMixer.clipAction(idleClip);
+    idleAct.play();
+    sampleMixer.update(0.05);
+    sampleClone.updateMatrixWorld(true);
+
+    const s2 = sampleClone.getObjectByName('mixamorigSpine2');
+    if (s2) spineMountQuat.copy(s2.getWorldQuaternion(new THREE.Quaternion())).invert();
+
+    const hd = sampleClone.getObjectByName('mixamorigHead');
+    if (hd) headMountQuat.copy(hd.getWorldQuaternion(new THREE.Quaternion())).invert();
+
+    idleAct.stop();
+  }
+
+  const aimClip =
+    retargetedClips.find((a) => a.name === 'Pistol_Aim_Neutral') ??
+    retargetedClips.find((a) => a.name === 'Pistol_Shoot');
+  if (aimClip) {
+    const aimAct = sampleMixer.clipAction(aimClip);
+    aimAct.reset().play();
+    sampleMixer.update(0.05);
+    sampleClone.updateMatrixWorld(true);
+
+    const rh = sampleClone.getObjectByName('mixamorigRightHand');
+    if (rh) weaponMountQuat.copy(rh.getWorldQuaternion(new THREE.Quaternion())).invert();
+
+    for (let b = 0; b < UPPER_AIM_BONE_NAMES.length; b++) {
+      const bName = UPPER_AIM_BONE_NAMES[b];
+      const bone = sampleClone.getObjectByName(bName);
+      if (bone) {
+        aimPoseQuats[bName] = bone.quaternion.clone();
+      }
+    }
+    aimAct.stop();
+  }
+
+  sampleMixer.stopAllAction();
+  sampleMixer.uncacheRoot(sampleClone);
+
+  return {
+    modelId,
+    baseScene: wrapper,
+    animations: retargetedClips,
+    aimPoseQuats,
+    spineMountQuat,
+    headMountQuat,
+    weaponMountQuat,
+    helmetOffsetY,
+  };
+}
+
+export function preloadAdamAssets(
+  onStep?: (pct: number, label: string) => void,
+): Promise<AdamLoadedData | null> {
   if (loadedData) return Promise.resolve(loadedData);
   if (loadPromise) return loadPromise;
 
   loadPromise = (async () => {
     try {
       const loader = new GLTFLoader();
-      onStep?.(52, 'Baixando personagem 3D Adam e animações...');
-      const [adamGltf, buzzedGltf, partedGltf] = await Promise.all([
+      onStep?.(46, 'Carregando personagens Adam e Eva (Free Fire)...');
+      const [animLibGltf, ffAdamGltf, ffEvaGltf] = await Promise.all([
         loadGlbAsync(loader, '/assets/models/adam.glb'),
-        loadGlbAsync(loader, '/assets/models/hair_buzzed.glb').catch(() => null),
-        loadGlbAsync(loader, '/assets/models/hair_parted.glb').catch(() => null),
+        loadGlbAsync(loader, '/assets/models/ff_adam.glb'),
+        loadGlbAsync(loader, '/assets/models/ff_eva.glb'),
       ]);
 
-      onStep?.(78, 'Preparando esqueleto, roupas e texturas do Adam...');
-
-      let bodyMesh: THREE.SkinnedMesh | null = null;
-      let eyeMaterial: THREE.Material | null = null;
-      let eyebrowMaterial: THREE.Material | null = null;
-
-      adamGltf.scene.traverse((obj) => {
-        const mesh = obj as THREE.Mesh;
-        if (!mesh.isMesh) return;
-        mesh.castShadow = false;
-        mesh.receiveShadow = false;
-        mesh.frustumCulled = false; // SkinnedMesh bounding spheres can clip when animated far from bind pose
-        const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-        const n = mesh.name.toLowerCase();
-        if (n.includes('superhero') || n.includes('sphere') || (!n.includes('eye') && mesh instanceof THREE.SkinnedMesh)) {
-          if (mesh instanceof THREE.SkinnedMesh && !n.includes('eye')) {
-            bodyMesh = mesh;
-          }
-        }
-        if (n === 'eyes' || n.includes('eye_')) {
-          eyeMaterial = mat ?? null;
-        } else if (n === 'eyebrows' || n === 'face') {
-          eyebrowMaterial = mat ?? null;
-        }
-      });
-
-      if (!bodyMesh) {
-        // Fallback lookup: pick largest SkinnedMesh
-        let bestCount = -1;
-        adamGltf.scene.traverse((obj) => {
-          if ((obj as THREE.SkinnedMesh).isSkinnedMesh) {
-            const sm = obj as THREE.SkinnedMesh;
-            const c = sm.geometry.attributes.position?.count ?? 0;
-            if (c > bestCount) {
-              bestCount = c;
-              bodyMesh = sm;
-            }
-          }
-        });
-      }
-
-      if (!bodyMesh) {
-        return null;
-      }
-
-      const bm = bodyMesh as THREE.SkinnedMesh;
-      const bodyMat = (Array.isArray(bm.material) ? bm.material[0] : bm.material) as THREE.MeshStandardMaterial;
-      const posAttr = bm.geometry.getAttribute('position');
-      const uvAttr = bm.geometry.getAttribute('uv');
-      const idxAttr = bm.geometry.getIndex();
-
-      const vCount = posAttr ? posAttr.count : 0;
-      const positions = new Float32Array(vCount * 3);
-      const uvs = new Float32Array(vCount * 2);
-      for (let vi = 0; vi < vCount; vi++) {
-        positions[vi * 3] = posAttr.getX(vi);
-        positions[vi * 3 + 1] = posAttr.getY(vi);
-        positions[vi * 3 + 2] = posAttr.getZ(vi);
-        if (uvAttr) {
-          uvs[vi * 2] = uvAttr.getX(vi);
-          uvs[vi * 2 + 1] = uvAttr.getY(vi);
-        }
-      }
-
-      const aimPoseQuats: Record<string, THREE.Quaternion> = {};
-      const aimClip =
-        adamGltf.animations.find((a) => a.name === 'Pistol_Aim_Neutral') ??
-        adamGltf.animations.find((a) => a.name === 'Pistol_Shoot');
-      if (aimClip) {
-        const sampleClone = SkeletonUtils.clone(adamGltf.scene) as THREE.Group;
-        const sampleMixer = new THREE.AnimationMixer(sampleClone);
-        const act = sampleMixer.clipAction(aimClip);
-        act.play();
-        sampleMixer.update(0.05);
-        for (let b = 0; b < UPPER_AIM_BONE_NAMES.length; b++) {
-          const bName = UPPER_AIM_BONE_NAMES[b];
-          const bone = sampleClone.getObjectByName(bName);
-          if (bone) {
-            aimPoseQuats[bName] = bone.quaternion.clone();
-          }
-        }
-        sampleMixer.stopAllAction();
-      }
+      onStep?.(72, 'Aplicando animações Free Fire em Adam e Eva...');
+      const adamPack = buildFFPack('adam', ffAdamGltf.scene, animLibGltf.scene, animLibGltf.animations);
+      const evaPack = buildFFPack('eva', ffEvaGltf.scene, animLibGltf.scene, animLibGltf.animations);
 
       loadedData = {
-        baseScene: adamGltf.scene,
-        animations: adamGltf.animations,
-        aimPoseQuats,
-        hairBuzzedGeo: buzzedGltf ? extractFirstGeometry(buzzedGltf.scene) : null,
-        hairPartedGeo: partedGltf ? extractFirstGeometry(partedGltf.scene) : null,
-        baseSkinTex: bodyMat?.map ?? null,
-        normalTex: bodyMat?.normalMap ?? null,
-        roughnessTex: bodyMat?.roughnessMap ?? null,
-        eyeMaterial,
-        eyebrowMaterial,
-        positions,
-        uvs,
-        indices: idxAttr ? idxAttr.array : null,
+        adam: adamPack,
+        eva: evaPack,
+        animations: adamPack.animations,
+        aimPoseQuats: adamPack.aimPoseQuats,
       };
+      onStep?.(88, 'Personagens Adam & Eva prontos!');
       return loadedData;
     } catch {
       return null;
@@ -197,171 +512,4 @@ export function preloadAdamAssets(onStep?: (pct: number, label: string) => void)
   })();
 
   return loadPromise;
-}
-
-function tintHex(hex: string, factor: number): string {
-  const c = new THREE.Color(hex);
-  c.multiplyScalar(factor);
-  return `#${c.getHexString()}`;
-}
-
-export function getAdamOutfitTexture(cfg: Pick<CharacterConfig, 'skinColor' | 'shirtStyle' | 'shirtColor' | 'pantsColor' | 'shoesColor'>): THREE.Texture | null {
-  if (!loadedData) return null;
-  const key = `${cfg.skinColor}|${cfg.shirtStyle}|${cfg.shirtColor}|${cfg.pantsColor}|${cfg.shoesColor}`;
-  const cached = outfitTextureCache.get(key);
-  if (cached) return cached;
-
-  const isMobile =
-    typeof window !== 'undefined' &&
-    (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
-      (navigator.maxTouchPoints ?? 0) > 0);
-  const size = isMobile ? 256 : 512;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return loadedData.baseSkinTex;
-
-  // 1. Paint clean skin base + subtle baked face contour
-  const baseImg = loadedData.baseSkinTex?.image as HTMLImageElement | HTMLCanvasElement | ImageBitmap | undefined;
-  ctx.fillStyle = cfg.skinColor;
-  ctx.fillRect(0, 0, size, size);
-  if (baseImg) {
-    ctx.globalAlpha = 0.24;
-    ctx.drawImage(baseImg, 0, 0, size, size);
-    ctx.globalAlpha = 1.0;
-  }
-
-  // 2. Rasterize bind-pose triangles cleanly into everyday clothing & skin regions
-  const pos = loadedData.positions;
-  const uvs = loadedData.uvs;
-  const idx = loadedData.indices;
-  const triCount = idx ? Math.floor(idx.length / 3) : Math.floor(pos.length / 9);
-
-  const skinDark = tintHex(cfg.skinColor, 0.91);
-  const soleColor = '#eceef2';
-  const tongueColor = '#17191f';
-  const sockColor = '#e2e5ea';
-  const beltColor = '#1f2024';
-  const shirtShade = tintHex(cfg.shirtColor, 0.84);
-  const pantsShade = tintHex(cfg.pantsColor, 0.84);
-
-  const drawTri = (
-    u0: number,
-    v0: number,
-    u1: number,
-    v1: number,
-    u2: number,
-    v2: number,
-    fill: string,
-    alpha = 1.0,
-  ) => {
-    const x0 = u0 * size;
-    const y0 = v0 * size;
-    const x1 = u1 * size;
-    const y1 = v1 * size;
-    const x2 = u2 * size;
-    const y2 = v2 * size;
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = fill;
-    ctx.strokeStyle = fill;
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
-    ctx.lineTo(x2, y2);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-  };
-
-  for (let t = 0; t < triCount; t++) {
-    const i0 = idx ? idx[t * 3] : t * 3;
-    const i1 = idx ? idx[t * 3 + 1] : t * 3 + 1;
-    const i2 = idx ? idx[t * 3 + 2] : t * 3 + 2;
-
-    const cx = (pos[i0 * 3] + pos[i1 * 3] + pos[i2 * 3]) / 3;
-    const cy = (pos[i0 * 3 + 1] + pos[i1 * 3 + 1] + pos[i2 * 3 + 1]) / 3;
-    const cz = (pos[i0 * 3 + 2] + pos[i1 * 3 + 2] + pos[i2 * 3 + 2]) / 3;
-    const ax = Math.abs(cx);
-
-    const u0 = uvs[i0 * 2];
-    const v0 = uvs[i0 * 2 + 1];
-    const u1 = uvs[i1 * 2];
-    const v1 = uvs[i1 * 2 + 1];
-    const u2 = uvs[i2 * 2];
-    const v2 = uvs[i2 * 2 + 1];
-
-    // Feet / Sneakers (y < 0.128)
-    if (cy < 0.128) {
-      if (cy < 0.036) {
-        drawTri(u0, v0, u1, v1, u2, v2, soleColor, 1.0);
-      } else if (cz > 0.015 && cy > 0.068) {
-        drawTri(u0, v0, u1, v1, u2, v2, tongueColor, 1.0);
-      } else {
-        drawTri(u0, v0, u1, v1, u2, v2, cfg.shoesColor, 1.0);
-      }
-      continue;
-    }
-
-    // Socks (when wearing tank + shorts)
-    if (cfg.shirtStyle === 'tank' && cy >= 0.128 && cy < 0.172) {
-      drawTri(u0, v0, u1, v1, u2, v2, sockColor, 1.0);
-      continue;
-    }
-
-    // Pants (tee/hoodie = full-length everyday pants; tank = cargo shorts)
-    const pantsBottom = cfg.shirtStyle === 'tank' ? 0.48 : 0.128;
-    if (cy >= pantsBottom && cy <= 0.995 && ax < 0.28) {
-      if (cy >= 0.955) {
-        drawTri(u0, v0, u1, v1, u2, v2, beltColor, 1.0);
-      } else if (cy >= 0.54 && cy <= 0.72 && ax > 0.145) {
-        drawTri(u0, v0, u1, v1, u2, v2, pantsShade, 1.0);
-      } else {
-        drawTri(u0, v0, u1, v1, u2, v2, cfg.pantsColor, 1.0);
-      }
-      continue;
-    }
-
-    // Everyday Top (Tank top / Short-sleeve T-shirt / Long-sleeve Hoodie)
-    const maxArmX =
-      cfg.shirtStyle === 'hoodie'
-        ? 0.65
-        : cfg.shirtStyle === 'tee'
-          ? 0.36
-          : 0.185;
-    const isNeckCutout =
-      cfg.shirtStyle === 'tank'
-        ? cy > 1.375 && ax < 0.088 && cz > 0.008
-        : cy > 1.425 && ax < 0.068 && cz > 0.012;
-
-    if (cy >= 0.96 && cy <= 1.505 && ax < maxArmX && !isNeckCutout) {
-      const collarRim =
-        cfg.shirtStyle === 'tee' && cy > 1.41 && ax < 0.095;
-      const ribShade =
-        collarRim || (cfg.shirtStyle === 'tank' && Math.floor(cx * 36) % 2 === 0 && cz > 0);
-      drawTri(u0, v0, u1, v1, u2, v2, ribShade ? shirtShade : cfg.shirtColor, 1.0);
-      continue;
-    }
-
-    // Clean Skin below neck (arms, hands, neck)
-    if (cy < 1.515) {
-      drawTri(u0, v0, u1, v1, u2, v2, cz < -0.02 ? skinDark : cfg.skinColor, 1.0);
-    } else {
-      // Clean Face skin (preserve eyes/eyebrow socket depth while covering superhero mask markings)
-      const isEyeRegion = cy > 1.655 && cy < 1.735 && cz > 0.045 && ax < 0.062;
-      drawTri(u0, v0, u1, v1, u2, v2, cfg.skinColor, isEyeRegion ? 0.65 : 0.92);
-    }
-  }
-
-  ctx.globalAlpha = 1.0;
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.flipY = false;
-  tex.anisotropy = isMobile ? 1 : 2;
-  tex.needsUpdate = true;
-
-  outfitTextureCache.set(key, tex);
-  return tex;
 }

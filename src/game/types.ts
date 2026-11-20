@@ -79,9 +79,12 @@ export interface WeaponSlotState {
   attachments: WeaponAttachments;
 }
 
+export type CharacterModelId = 'adam' | 'eva';
+
 export interface CharacterConfig {
   id: string;
   name: string;
+  modelId?: CharacterModelId;
   skinColor: string;
   hairStyle: 'buzz' | 'spiky' | 'cap' | 'helmet';
   hairColor: string;
@@ -153,6 +156,8 @@ export const DEFAULT_HUD_LAYOUT: HudLayoutConfig = {
   actionPrompt: { xPct: 50, yPct: 81, scale: 1.0, opacity: 1.0 },
 };
 
+export type AutoLootSpeed = 'normal' | 'fast' | 'ultra';
+
 export interface GameSettings {
   sensitivity: number; // 0.2 .. 2.5 (Geral)
   redDotSensitivity: number; // 0.2 .. 2.5 (1x / Red Dot)
@@ -166,6 +171,8 @@ export interface GameSettings {
   showFps: boolean;
   controlMode: ControlMode;
   invertY: boolean;
+  autoLoot: boolean;
+  autoLootSpeed: AutoLootSpeed;
   hudLayout: HudLayoutConfig;
 }
 
@@ -824,8 +831,9 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
 
 export const CHARACTER_PRESETS: CharacterConfig[] = [
   {
-    id: 'adam_classic',
-    name: 'RAFAEL (CLÁSSICO 2017)',
+    id: 'ff_adam_classic',
+    name: 'ADAM',
+    modelId: 'adam',
     skinColor: '#d7a27e',
     hairStyle: 'buzz',
     hairColor: '#2a201b',
@@ -838,45 +846,18 @@ export const CHARACTER_PRESETS: CharacterConfig[] = [
     shoesColor: '#252629',
   },
   {
-    id: 'tactical_recon',
-    name: 'MARCOS (TÁTICO)',
-    skinColor: '#c98e6b',
-    hairStyle: 'helmet',
-    hairColor: '#2b302b',
-    shirtStyle: 'tee',
-    shirtColor: '#1f2421',
-    pantsColor: '#9c8a72',
-    vestEnabled: true,
-    vestColor: '#4f5e39',
-    backpackEnabled: true,
-    shoesColor: '#b32d2e',
-  },
-  {
-    id: 'desert_scout',
-    name: 'LARA (EXPLORADORA)',
+    id: 'ff_eva_classic',
+    name: 'EVA',
+    modelId: 'eva',
     skinColor: '#e2b291',
-    hairStyle: 'cap',
-    hairColor: '#3a281d',
+    hairStyle: 'spiky',
+    hairColor: '#2a201b',
     shirtStyle: 'tank',
     shirtColor: '#384635',
-    pantsColor: '#b49f7d',
-    vestEnabled: true,
+    pantsColor: '#2c333f',
+    vestEnabled: false,
     vestColor: '#3f4739',
     backpackEnabled: true,
     shoesColor: '#30343a',
-  },
-  {
-    id: 'street_runner',
-    name: 'BRUNO (URBANO)',
-    skinColor: '#8d5b3e',
-    hairStyle: 'spiky',
-    hairColor: '#18181b',
-    shirtStyle: 'hoodie',
-    shirtColor: '#8d2b24',
-    pantsColor: '#2c333f',
-    vestEnabled: false,
-    vestColor: '#3c4536',
-    backpackEnabled: true,
-    shoesColor: '#e5e7eb',
   },
 ];
