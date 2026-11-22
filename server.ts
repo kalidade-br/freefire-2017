@@ -566,21 +566,37 @@ export async function createExpressApp(
   app.set('trust proxy', true);
   app.use(express.json({ limit: '512kb' }));
 
-  const allowedOrigins = (process.env.CORS_ORIGIN || '*')
+  const defaultAllowedOrigins = [
+    'https://freefire-2017.vercel.app',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+  ];
+  const envOrigins = (process.env.CORS_ORIGIN || '')
     .split(',')
     .map((s) => s.trim())
-    .filter(Boolean);
+    .filter((s) => s && s !== '*');
+  const allowedOrigins = new Set<string>([...defaultAllowedOrigins, ...envOrigins]);
 
   app.use('/api', (req, res, next) => {
     const reqOrigin = req.headers.origin;
-    if (allowedOrigins.includes('*')) {
-      res.setHeader('Access-Control-Allow-Origin', reqOrigin || '*');
-    } else if (reqOrigin && allowedOrigins.includes(reqOrigin)) {
+    const hostHeader = req.get('host');
+    const sameOriginHttp = hostHeader ? `http://${hostHeader}` : '';
+    const sameOriginHttps = hostHeader ? `https://${hostHeader}` : '';
+    const isAllowedOrigin =
+      Boolean(reqOrigin) &&
+      (allowedOrigins.has(reqOrigin!) ||
+        reqOrigin === sameOriginHttp ||
+        reqOrigin === sameOriginHttps);
+
+    if (isAllowedOrigin && reqOrigin) {
       res.setHeader('Access-Control-Allow-Origin', reqOrigin);
       res.setHeader('Vary', 'Origin');
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, X-Firebase-Id-Token',
+    );
     if (req.method === 'OPTIONS') {
       return res.status(204).end();
     }
@@ -597,11 +613,30 @@ export async function createExpressApp(
       authHeader && authHeader.startsWith('Bearer ')
         ? authHeader.slice(7).trim()
         : '';
-    if (!token) {
+    const fbTokenHeader = req.headers['x-firebase-id-token'];
+    const fbToken = typeof fbTokenHeader === 'string' ? fbTokenHeader.trim() : '';
+
+    if (!token && !fbToken) {
       return res.status(401).json({ error: 'Sessão não autenticada.' });
     }
     try {
-      const account = await getAccountByToken(token);
+      let account = token ? await getAccountByToken(token) : null;
+      if (!account && fbToken) {
+        try {
+          const decoded = await adminAuth.verifyIdToken(fbToken);
+          const restored = await loginOrRegisterFirebaseAccount({
+            firebaseUid: decoded.uid,
+            nickname: decoded.name
+              ? String(decoded.name)
+              : decoded.email
+                ? String(decoded.email).split('@')[0]
+                : 'Sobrevivente',
+          });
+          account = restored.account;
+        } catch {
+          account = null;
+        }
+      }
       if (!account) {
         return res.status(401).json({ error: 'Sessão expirada ou inválida.' });
       }
@@ -1103,8 +1138,9 @@ export async function createExpressApp(
 
   // --- VITE / STATIC ASSET SERVING ---
   if (options.attachFrontend !== false) {
-    if (process.env.NODE_ENV !== 'production') {
-      const { createServer: createViteServer } = await import('vite');
+    if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+      const vitePkg = 'vite';
+      const { createServer: createViteServer } = await import(/* @vite-ignore */ vitePkg);
       const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: 'spa',

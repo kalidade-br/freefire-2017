@@ -92,11 +92,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       onAuthenticated(mergedAccount);
       onClose();
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Erro ao entrar com Google (Firebase).',
-      );
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code?: unknown }).code)
+          : '';
+      if (code === 'auth/unauthorized-domain') {
+        const host = typeof window !== 'undefined' ? window.location.hostname : '';
+        setError(
+          `Domínio "${host}" ainda não autorizado no Firebase Auth. Adicione "${host}" em Firebase Console → Authentication → Settings → Authorized domains.`,
+        );
+      } else {
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Erro ao entrar com Google (Firebase).',
+        );
+      }
     } finally {
       setBusy(false);
     }

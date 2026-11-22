@@ -1,3 +1,4 @@
+import { auth } from '../lib/firebase';
 import type {
   CharacterConfig,
   MatchMode,
@@ -16,8 +17,6 @@ import type {
   RemoteGlooWallSync,
   RemoteKillFeedEvent,
 } from '../shared/multiplayerTypes';
-
-const SESSION_TOKEN_KEY = 'zz17_session_token_v1';
 
 const RAW_API_BASE = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
 const RAW_WS_BASE = (import.meta.env.VITE_WS_URL || '').trim().replace(/\/+$/, '');
@@ -125,12 +124,6 @@ class MultiplayerClient {
 
   constructor() {
     if (typeof window !== 'undefined') {
-      try {
-        this.token = window.localStorage.getItem(SESSION_TOKEN_KEY);
-      } catch {
-        this.token = null;
-      }
-
       window.addEventListener('offline', () => {
         this.connectionLost = true;
       });
@@ -252,17 +245,6 @@ class MultiplayerClient {
 
   public setToken(token: string | null): void {
     this.token = token;
-    if (typeof window !== 'undefined') {
-      try {
-        if (token) {
-          window.localStorage.setItem(SESSION_TOKEN_KEY, token);
-        } else {
-          window.localStorage.removeItem(SESSION_TOKEN_KEY);
-        }
-      } catch {
-        // Ignore storage errors
-      }
-    }
     if (token) {
       this.connectWs();
     } else {
@@ -403,6 +385,7 @@ class MultiplayerClient {
   private async request<T>(
     url: string,
     options: RequestInit = {},
+    allowFirebaseRetry = true,
   ): Promise<T> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -425,6 +408,37 @@ class MultiplayerClient {
     }
 
     this.markRequestSucceeded(t0);
+
+    if (
+      res.status === 401 &&
+      allowFirebaseRetry &&
+      auth.currentUser &&
+      !url.startsWith('/api/auth/login') &&
+      !url.startsWith('/api/auth/register') &&
+      !url.startsWith('/api/auth/firebase')
+    ) {
+      try {
+        const fbIdToken = await auth.currentUser.getIdToken();
+        const refreshed = await this.loginWithFirebase({
+          idToken: fbIdToken,
+          nickname: auth.currentUser.displayName || undefined,
+        });
+        this.token = refreshed.token;
+        return this.request<T>(
+          url,
+          {
+            ...options,
+            headers: {
+              ...(options.headers as Record<string, string> | undefined),
+              'X-Firebase-Id-Token': fbIdToken,
+            },
+          },
+          false,
+        );
+      } catch {
+        // Fall through to normal 401 error handling
+      }
+    }
 
     const text = await res.text();
     let data: Record<string, unknown> = {};
