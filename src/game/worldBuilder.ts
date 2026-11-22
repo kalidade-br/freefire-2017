@@ -67,6 +67,11 @@ export interface TargetDummy {
   armR?: THREE.Mesh;
   gunMesh?: THREE.Object3D;
   backGunMesh?: THREE.Object3D;
+  handWeaponMeshes?: Partial<Record<WeaponId, THREE.Group>>;
+  backWeaponMeshes?: Partial<Record<WeaponId, THREE.Group>>;
+  activeHandWeaponId?: WeaponId | null;
+  activeBackWeaponId?: WeaponId | null;
+  drawTimer?: number;
   parachuteMesh?: THREE.Mesh;
   hp: number;
   maxHp: number;
@@ -91,6 +96,7 @@ export interface TargetDummy {
   helmetMesh: THREE.Mesh | null;
   weaponId: WeaponId;
   secondaryWeaponId?: WeaponId;
+  pistolWeaponId?: WeaponId;
   ammoInMag: number;
   reloadTimer: number;
   ammoCount: number;
@@ -237,7 +243,7 @@ export interface WorldHandle {
   resetExplosiveBarrels: () => void;
   resetVehicles: () => void;
   groundHeightAt: (x: number, z: number) => number;
-  syncProximityLoot: (px: number, pz: number, radius?: number) => void;
+  syncProximityLoot: (px: number, pz: number, radius?: number, maxPerTick?: number) => void;
   resetMatchLoots: () => void;
   spawnDroppedLoot: (item: Omit<LootItem, 'id' | 'collected'>) => void;
   clearDroppedLoots: () => void;
@@ -1114,23 +1120,17 @@ function createBotEntity(
   const armR = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.045, 0.54, 8), bodyMat);
   armR.position.set(0, -0.25, 0.04);
 
-  const gunMesh = new THREE.Mesh(
-    new THREE.BoxGeometry(0.08, 0.1, 0.58),
-    new THREE.MeshStandardMaterial({ color: 0x22262b, roughness: 0.4, metalness: 0.65 }),
-  );
-  gunMesh.position.set(0, -0.44, 0.24);
-  gunMesh.rotation.x = 0.95;
-  armRPivot.add(armR, gunMesh);
+  const gunPivot = new THREE.Group();
+  gunPivot.position.set(0, -0.46, 0.04);
+  gunPivot.rotation.x = 0.95;
+  armRPivot.add(armR, gunPivot);
 
-  // Diagonal slung weapon on bot's back (visible when carrying primary weapon or healing)
-  const backGunMesh = new THREE.Mesh(
-    new THREE.BoxGeometry(0.065, 0.085, 0.66),
-    new THREE.MeshStandardMaterial({ color: 0x1e2228, roughness: 0.42, metalness: 0.72 }),
-  );
-  backGunMesh.position.set(0.095, 0.41, -0.125);
-  backGunMesh.rotation.set(-Math.PI * 0.44, 0.06, -0.18);
-  backGunMesh.visible = true;
-  torsoGroup.add(backGunMesh);
+  // Diagonal slung weapon on bot's back (visible when carrying another primary weapon)
+  const backGunPivot = new THREE.Group();
+  backGunPivot.position.set(0.095, 0.41, -0.125);
+  backGunPivot.rotation.set(-Math.PI * 0.44, 0.06, -0.18);
+  backGunPivot.visible = false;
+  torsoGroup.add(backGunPivot);
 
   // Bot Camo Parachute Canopy (visible during parachute descent across the map)
   const parachuteMesh = new THREE.Mesh(
@@ -1154,7 +1154,7 @@ function createBotEntity(
   const helmetMaxHp =
     helmetLevel === 0 ? 0 : helmetLevel === 1 ? 75 : helmetLevel === 2 ? 120 : 180;
 
-  return {
+  const bot: TargetDummy = {
     id,
     nick,
     isBot: true,
@@ -1170,8 +1170,13 @@ function createBotEntity(
     legR,
     armL,
     armR,
-    gunMesh,
-    backGunMesh,
+    gunMesh: gunPivot,
+    backGunMesh: backGunPivot,
+    handWeaponMeshes: {},
+    backWeaponMeshes: {},
+    activeHandWeaponId: null,
+    activeBackWeaponId: null,
+    drawTimer: 0,
     parachuteMesh,
     hp: 200,
     maxHp: 200,
@@ -1196,6 +1201,7 @@ function createBotEntity(
     helmetMesh,
     weaponId,
     secondaryWeaponId: undefined,
+    pistolWeaponId: weaponId === 'g18' || weaponId === 'deagle' ? weaponId : undefined,
     ammoInMag: 15,
     reloadTimer: 0,
     ammoCount: 45,
@@ -1245,6 +1251,60 @@ function createBotEntity(
     patrolSpeed: 0,
     patrolPhase: idx,
   };
+  setBotWeaponVisual(bot, weaponId, null);
+  return bot;
+}
+
+export function setBotWeaponVisual(
+  bot: TargetDummy,
+  activeWeaponId: WeaponId | null,
+  backWeaponId?: WeaponId | null,
+): void {
+  if (bot.gunMesh) {
+    if (!bot.handWeaponMeshes) bot.handWeaponMeshes = {};
+    const prevId = bot.activeHandWeaponId;
+    if (prevId && prevId !== activeWeaponId && bot.handWeaponMeshes[prevId]) {
+      bot.handWeaponMeshes[prevId]!.visible = false;
+    }
+    if (activeWeaponId) {
+      let mesh = bot.handWeaponMeshes[activeWeaponId];
+      if (!mesh) {
+        mesh = createWeaponModel(activeWeaponId);
+        if (bot.isAdam) {
+          mesh.position.set(0, -0.02, 0.05);
+        } else {
+          mesh.position.set(0, 0, 0.02);
+        }
+        bot.handWeaponMeshes[activeWeaponId] = mesh;
+        bot.gunMesh.add(mesh);
+      }
+      mesh.visible = true;
+    }
+    bot.activeHandWeaponId = activeWeaponId;
+  }
+
+  if (bot.backGunMesh) {
+    if (!bot.backWeaponMeshes) bot.backWeaponMeshes = {};
+    const resolvedBack = backWeaponId && backWeaponId !== activeWeaponId ? backWeaponId : null;
+    const prevBackId = bot.activeBackWeaponId;
+    if (prevBackId && prevBackId !== resolvedBack && bot.backWeaponMeshes[prevBackId]) {
+      bot.backWeaponMeshes[prevBackId]!.visible = false;
+    }
+    if (resolvedBack) {
+      let backMesh = bot.backWeaponMeshes[resolvedBack];
+      if (!backMesh) {
+        backMesh = createWeaponModel(resolvedBack);
+        backMesh.position.set(0, 0, 0);
+        bot.backWeaponMeshes[resolvedBack] = backMesh;
+        bot.backGunMesh.add(backMesh);
+      }
+      backMesh.visible = true;
+      bot.backGunMesh.visible = true;
+    } else {
+      bot.backGunMesh.visible = false;
+    }
+    bot.activeBackWeaponId = resolvedBack;
+  }
 }
 
 const BOT_HIT_PROXY_MAT = new THREE.MeshBasicMaterial({
@@ -1262,12 +1322,6 @@ const BOT_PACK_MAT = new THREE.MeshStandardMaterial({
   color: 0x353b30,
   roughness: 0.78,
   metalness: 0.1,
-});
-const BOT_GUN_GEO = new THREE.BoxGeometry(0.048, 0.064, 0.38);
-const BOT_GUN_MAT = new THREE.MeshStandardMaterial({
-  color: 0x22262b,
-  roughness: 0.4,
-  metalness: 0.65,
 });
 
 export function setBotAdamClip(
@@ -1416,16 +1470,13 @@ export function upgradeBotsToAdam(
     const gunPivot = new THREE.Group();
     gunPivot.quaternion.copy(pack.weaponMountQuat);
     gunPivot.scale.setScalar(invScale);
-    const gunBox = new THREE.Mesh(BOT_GUN_GEO, BOT_GUN_MAT);
-    gunBox.position.set(0, -0.02, 0.12);
-    gunPivot.add(gunBox);
     handRBone.add(gunPivot);
 
-    const backGunMesh = new THREE.Mesh(BOT_GUN_GEO, BOT_GUN_MAT);
-    backGunMesh.position.set(-0.095, 0.05, -0.105);
-    backGunMesh.rotation.set(-Math.PI * 0.44, 0.06, -0.18);
-    backGunMesh.visible = true;
-    spineMount.add(backGunMesh);
+    const backGunPivot = new THREE.Group();
+    backGunPivot.position.set(-0.095, 0.05, -0.105);
+    backGunPivot.rotation.set(-Math.PI * 0.44, 0.06, -0.18);
+    backGunPivot.visible = false;
+    spineMount.add(backGunPivot);
 
     const parachuteMesh = new THREE.Mesh(sharedParachuteGeo, sharedParachuteMat);
     parachuteMesh.rotation.z = Math.PI / 2;
@@ -1473,8 +1524,19 @@ export function upgradeBotsToAdam(
     bot.vestMesh = vestMesh;
     bot.helmetMesh = helmetMesh;
     bot.gunMesh = gunPivot;
-    bot.backGunMesh = backGunMesh;
+    bot.backGunMesh = backGunPivot;
+    bot.handWeaponMeshes = {};
+    bot.backWeaponMeshes = {};
+    bot.activeHandWeaponId = null;
+    bot.activeBackWeaponId = null;
     bot.parachuteMesh = parachuteMesh;
+    const backId =
+      bot.secondaryWeaponId && bot.secondaryWeaponId !== bot.weaponId
+        ? bot.secondaryWeaponId
+        : bot.pistolWeaponId && bot.pistolWeaponId !== bot.weaponId
+          ? bot.pistolWeaponId
+          : null;
+    setBotWeaponVisual(bot, bot.weaponId, backId);
   }
 }
 
@@ -3795,7 +3857,7 @@ export function createIslandWorld(
     spawned: false,
   }));
 
-  const syncProximityLoot = (px: number, pz: number, radius = 56) => {
+  const syncProximityLoot = (px: number, pz: number, radius = 56, maxPerTick = 24) => {
     const rSq = radius * radius;
     let spawnedThisTick = 0;
     for (let i = 0; i < pendingLootDefs.length; i++) {
@@ -3808,7 +3870,7 @@ export function createIslandWorld(
         entry.spawned = true;
         loots.push(buildLootVisual(entry, false));
         spawnedThisTick++;
-        if (spawnedThisTick >= 24) break;
+        if (spawnedThisTick >= maxPerTick) break;
       }
     }
   };
@@ -4016,17 +4078,7 @@ export function createIslandWorld(
     for (let i = 0; i < targets.length; i++) {
       const t = targets[i];
       if (t.hitFlash > 0) {
-        t.hitFlash = Math.max(0, t.hitFlash - dt * 5);
-        if (t.bodyMat) {
-          t.bodyMat.emissive.setRGB(t.hitFlash * 0.85, 0, 0);
-        } else {
-          t.hitMeshes.forEach((m) => {
-            const mat = m.material as THREE.MeshStandardMaterial;
-            if (mat && 'emissive' in mat) {
-              mat.emissive.setRGB(t.hitFlash, 0, 0);
-            }
-          });
-        }
+        t.hitFlash = 0;
       }
     }
     if (airplaneGroup.visible) {

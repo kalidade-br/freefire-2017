@@ -483,6 +483,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               onChangeSettings({
                 ...DEFAULT_SETTINGS,
                 hudLayout: settings.hudLayout,
+                activeHudSlot: settings.activeHudSlot ?? 1,
+                hudSlots: settings.hudSlots ?? DEFAULT_SETTINGS.hudSlots,
               })
             }
             className="flex items-center gap-1.5 text-xs text-neutral-300 hover:text-white cursor-pointer"

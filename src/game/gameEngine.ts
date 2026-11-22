@@ -2,7 +2,12 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { getAimPoseQuats, preloadAdamAssets } from './adamAssets';
 import { soundEngine } from './audio';
-import { CharacterAnimator } from './characterAnimator';
+import {
+  applyAdamOverBackDraw,
+  CharacterAnimator,
+  computeWeaponDrawWeights,
+  WEAPON_DRAW_DURATION,
+} from './characterAnimator';
 import { CharacterRig, createCharacterRig } from './characterBuilder';
 import { InputManager } from './inputManager';
 import { createLobbyScene, LobbySceneHandle } from './lobbyScene';
@@ -53,6 +58,7 @@ import {
   WorldObbCollider,
 } from './types';
 import { isMobileHardware } from './storage';
+import { preloadAllWeaponTextures } from './weapon25d';
 import {
   BERMUDA_HALF,
   botSurfaceHeightAt,
@@ -63,6 +69,7 @@ import {
   riverCenterZ,
   SENTOSA_CENTER,
   setBotAdamClip,
+  setBotWeaponVisual,
   TargetDummy,
   upgradeBotsToAdam,
   VehicleEntity,
@@ -87,6 +94,207 @@ const BACKPACK_CAPACITIES: Record<1 | 2 | 3, number> = {
 
 function emptyAttachments(): WeaponAttachments {
   return { muzzle: null, foregrip: null, magazine: null, stock: null };
+}
+
+function isBotPistol(wid: WeaponId): boolean {
+  return WEAPONS[wid].category === 'HG';
+}
+
+const BOT_GENERAL_SCORE: Record<WeaponId, number> = {
+  xm8: 95,
+  scar: 92,
+  ak47: 90,
+  m4a1: 86,
+  awm: 84,
+  ump45: 78,
+  m1014: 74,
+  deagle: 32,
+  g18: 20,
+};
+
+function isCloseRangePrimary(wid: WeaponId): boolean {
+  return wid === 'm1014' || wid === 'ump45';
+}
+
+function isLongRangePrimary(wid: WeaponId): boolean {
+  const cat = WEAPONS[wid].category;
+  return cat === 'AR' || cat === 'SR';
+}
+
+function scoreBotWeaponForDistance(wid: WeaponId, dist: number): number {
+  if (dist < 17) {
+    switch (wid) {
+      case 'm1014': return 100;
+      case 'ump45': return 92;
+      case 'ak47': return 78;
+      case 'xm8': return 76;
+      case 'scar': return 75;
+      case 'm4a1': return 72;
+      case 'deagle': return 48;
+      case 'g18': return 38;
+      case 'awm': return 18;
+    }
+  }
+  if (dist < 44) {
+    switch (wid) {
+      case 'xm8': return 96;
+      case 'scar': return 94;
+      case 'ak47': return 91;
+      case 'm4a1': return 88;
+      case 'ump45': return 74;
+      case 'awm': return 66;
+      case 'deagle': return 40;
+      case 'm1014': return 26;
+      case 'g18': return 20;
+    }
+  }
+  switch (wid) {
+    case 'awm': return 100;
+    case 'xm8': return 90;
+    case 'scar': return 88;
+    case 'm4a1': return 84;
+    case 'ak47': return 80;
+    case 'ump45': return 42;
+    case 'deagle': return 28;
+    case 'm1014': return 8;
+    case 'g18': return 6;
+  }
+}
+
+function getBotBackWeapon(bot: TargetDummy): WeaponId | null {
+  if (bot.secondaryWeaponId && bot.secondaryWeaponId !== bot.weaponId) {
+    return bot.secondaryWeaponId;
+  }
+  if (bot.pistolWeaponId && bot.pistolWeaponId !== bot.weaponId) {
+    return bot.pistolWeaponId;
+  }
+  return null;
+}
+
+function pickBestBotWeaponForDistance(bot: TargetDummy, dist: number): WeaponId {
+  const candidates: WeaponId[] = [bot.weaponId];
+  if (bot.secondaryWeaponId && !candidates.includes(bot.secondaryWeaponId)) {
+    candidates.push(bot.secondaryWeaponId);
+  }
+  if (bot.pistolWeaponId && !candidates.includes(bot.pistolWeaponId)) {
+    candidates.push(bot.pistolWeaponId);
+  }
+  const hasNonPistolUsableAtRange = candidates.some(
+    (w) => !isBotPistol(w) && !(w === 'awm' && dist < 14),
+  );
+
+  let best = bot.weaponId;
+  let bestScore = -1;
+  for (let i = 0; i < candidates.length; i++) {
+    const w = candidates[i];
+    if (hasNonPistolUsableAtRange && isBotPistol(w)) continue;
+    let sc = scoreBotWeaponForDistance(w, dist);
+    if (w === bot.weaponId) sc += 2.5; // slight hysteresis to prevent flicker at boundary
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = w;
+    }
+  }
+  return best;
+}
+
+function equipBotWeapon(bot: TargetDummy, nextWid: WeaponId, triggerDraw: boolean): void {
+  const prevWid = bot.weaponId;
+  if (prevWid === nextWid) return;
+  if (isBotPistol(prevWid)) {
+    if (!bot.pistolWeaponId || BOT_GENERAL_SCORE[prevWid] >= BOT_GENERAL_SCORE[bot.pistolWeaponId]) {
+      bot.pistolWeaponId = prevWid;
+    }
+  } else {
+    bot.secondaryWeaponId = prevWid;
+  }
+  if (bot.secondaryWeaponId === nextWid) {
+    bot.secondaryWeaponId = prevWid && !isBotPistol(prevWid) ? prevWid : undefined;
+  }
+  bot.weaponId = nextWid;
+  bot.ammoInMag = WEAPONS[nextWid].magSize;
+  bot.reloadTimer = 0;
+  if (triggerDraw) {
+    bot.drawTimer = WEAPON_DRAW_DURATION;
+  }
+  setBotWeaponVisual(bot, bot.weaponId, getBotBackWeapon(bot));
+}
+
+function giveBotLootedWeapon(bot: TargetDummy, newWid: WeaponId): boolean {
+  if (isBotPistol(newWid)) {
+    if (!bot.pistolWeaponId || BOT_GENERAL_SCORE[newWid] > BOT_GENERAL_SCORE[bot.pistolWeaponId]) {
+      bot.pistolWeaponId = newWid;
+      if (isBotPistol(bot.weaponId) && BOT_GENERAL_SCORE[newWid] > BOT_GENERAL_SCORE[bot.weaponId]) {
+        bot.weaponId = newWid;
+        bot.ammoInMag = WEAPONS[newWid].magSize;
+        bot.reloadTimer = 0;
+        bot.drawTimer = WEAPON_DRAW_DURATION;
+      }
+      setBotWeaponVisual(bot, bot.weaponId, getBotBackWeapon(bot));
+      return true;
+    }
+    return false;
+  }
+
+  // Primary weapon! Bot ALWAYS prefers primary weapons over pistols.
+  if (isBotPistol(bot.weaponId)) {
+    if (!bot.pistolWeaponId || BOT_GENERAL_SCORE[bot.weaponId] >= BOT_GENERAL_SCORE[bot.pistolWeaponId]) {
+      bot.pistolWeaponId = bot.weaponId;
+    }
+    bot.weaponId = newWid;
+    bot.ammoInMag = WEAPONS[newWid].magSize;
+    bot.reloadTimer = 0;
+    bot.drawTimer = WEAPON_DRAW_DURATION;
+    setBotWeaponVisual(bot, bot.weaponId, getBotBackWeapon(bot));
+    return true;
+  }
+
+  if (bot.weaponId === newWid || bot.secondaryWeaponId === newWid) {
+    return false;
+  }
+
+  if (!bot.secondaryWeaponId) {
+    if (BOT_GENERAL_SCORE[newWid] > BOT_GENERAL_SCORE[bot.weaponId]) {
+      bot.secondaryWeaponId = bot.weaponId;
+      bot.weaponId = newWid;
+      bot.ammoInMag = WEAPONS[newWid].magSize;
+      bot.reloadTimer = 0;
+      bot.drawTimer = WEAPON_DRAW_DURATION;
+    } else {
+      bot.secondaryWeaponId = newWid;
+    }
+    setBotWeaponVisual(bot, bot.weaponId, getBotBackWeapon(bot));
+    return true;
+  }
+
+  // Already has 2 primaries: keep best complementary pair (1 close + 1 long/mid) or higher score
+  const p1 = bot.weaponId;
+  const p2 = bot.secondaryWeaponId;
+  const scorePair = (a: WeaponId, b: WeaponId): number => {
+    const hasClose = isCloseRangePrimary(a) || isCloseRangePrimary(b);
+    const hasLong = isLongRangePrimary(a) || isLongRangePrimary(b);
+    const synergy = hasClose && hasLong ? 16 : 0;
+    return BOT_GENERAL_SCORE[a] + BOT_GENERAL_SCORE[b] + synergy;
+  };
+  const curScore = scorePair(p1, p2);
+  const optA = scorePair(newWid, p2);
+  const optB = scorePair(p1, newWid);
+  if (optA <= curScore && optB <= curScore) {
+    return false;
+  }
+  const [slotA, slotB]: [WeaponId, WeaponId] = optA >= optB ? [newWid, p2] : [p1, newWid];
+  const primary = BOT_GENERAL_SCORE[slotA] >= BOT_GENERAL_SCORE[slotB] ? slotA : slotB;
+  const secondary = primary === slotA ? slotB : slotA;
+  const changedActive = bot.weaponId !== primary;
+  bot.weaponId = primary;
+  bot.secondaryWeaponId = secondary;
+  if (changedActive) {
+    bot.ammoInMag = WEAPONS[primary].magSize;
+    bot.reloadTimer = 0;
+    bot.drawTimer = WEAPON_DRAW_DURATION;
+  }
+  setBotWeaponVisual(bot, bot.weaponId, getBotBackWeapon(bot));
+  return true;
 }
 
 function lerpAngle(a: number, b: number, t: number): number {
@@ -153,6 +361,7 @@ interface RemoteHumanEntity {
   slotInTeam: number;
   isTeamLeader: boolean;
   rig: CharacterRig;
+  animator: CharacterAnimator;
   hitMeshes: THREE.Mesh[];
   targetPos: THREE.Vector3;
   targetYaw: number;
@@ -566,6 +775,7 @@ export class BattleRoyaleEngine {
     // 4. Procedural textures & scenes
     const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
     this.textures = createProceduralTextures(maxAniso);
+    preloadAllWeaponTextures();
 
     this.lobbyScene = createLobbyScene(this.textures, this.envMap);
     this.lobbyRig = createCharacterRig(
@@ -1140,6 +1350,7 @@ export class BattleRoyaleEngine {
       slotInTeam: slot.slotInTeam,
       isTeamLeader: Boolean(slot.isTeamLeader),
       rig,
+      animator: new CharacterAnimator(),
       hitMeshes: [chestHit, headHit],
       targetPos: new THREE.Vector3(-60, 2.2, 68),
       targetYaw: 0,
@@ -1455,6 +1666,41 @@ export class BattleRoyaleEngine {
           ev.attackerZ,
         );
       }
+      return;
+    }
+
+    if (
+      ev.type === 'spectate_damage_event' &&
+      this.isSpectating &&
+      this.spectateTargetRef?.kind === 'human' &&
+      this.spectateTargetRef.accountId === ev.attackerAccountId
+    ) {
+      let hasHitPos = false;
+      if (ev.botId) {
+        const b = this.targetById.get(ev.botId);
+        if (b) {
+          this.getBotBodyPoint(b, ev.isHeadshot ? 'head' : 'chest', _v2);
+          hasHitPos = true;
+        }
+      } else if (ev.targetAccountId) {
+        const ent = this.onlineRemotePlayers.get(ev.targetAccountId);
+        if (ent) {
+          _v2.set(
+            ent.rig.root.position.x,
+            ent.rig.root.position.y + (ev.isHeadshot ? 1.55 : 1.08),
+            ent.rig.root.position.z,
+          );
+          hasHitPos = true;
+        }
+      }
+      if (hasHitPos) {
+        this.pushDamagePopup(_v2, ev.damage, ev.isHeadshot, 0);
+      }
+      this.hitmarkerTimer = 0.2;
+      if (ev.isHeadshot) {
+        this.headshotFlashTimer = 0.45;
+      }
+      soundEngine.playHitmarker();
     }
   }
 
@@ -1490,6 +1736,9 @@ export class BattleRoyaleEngine {
       if (entity.lastWeaponId !== rh.weaponId) {
         entity.lastWeaponId = rh.weaponId;
         entity.rig.setWeapon(rh.weaponId);
+        if (rh.weaponId) {
+          entity.animator.triggerWeaponDraw();
+        }
       }
       entity.rig.setParachuteVisible(rh.flightPhase === 'parachute');
       entity.rig.setSurfboardVisible(rh.isOnSurfboard);
@@ -1566,6 +1815,8 @@ export class BattleRoyaleEngine {
         bot.kills = rb.kills ?? bot.kills;
         if (bot.weaponId !== rb.weaponId) {
           bot.weaponId = rb.weaponId;
+          bot.drawTimer = WEAPON_DRAW_DURATION;
+          setBotWeaponVisual(bot, bot.weaponId, getBotBackWeapon(bot));
         }
         if (rb.eliminated) {
           bot.group.visible = false;
@@ -1731,7 +1982,7 @@ export class BattleRoyaleEngine {
       prevPos.lerp(entity.targetPos, smooth);
       entity.rig.root.rotation.y = lerpAngle(entity.rig.root.rotation.y, entity.targetYaw + Math.PI, smooth);
 
-      this.animator.update(entity.rig, {
+      entity.animator.update(entity.rig, {
         dt,
         speed: moveSpeed,
         stance: st.stance,
@@ -1746,6 +1997,7 @@ export class BattleRoyaleEngine {
         isDriving: Boolean(st.activeVehicleId),
         isSwimming: st.isSwimming,
         isOnSurfboard: st.isOnSurfboard,
+        hasWeapon: st.weaponId !== null,
         pitchRad: st.pitch,
       });
     }
@@ -2130,6 +2382,9 @@ export class BattleRoyaleEngine {
     }
 
     this.syncPlayerWeaponAndBackVisuals();
+    if (slot !== 4 && newW) {
+      this.animator.triggerWeaponDraw();
+    }
     soundEngine.playWeaponSwitch();
     this.hudDirty = true;
     return true;
@@ -2849,6 +3104,9 @@ export class BattleRoyaleEngine {
       }
       b.weaponId = 'g18';
       b.secondaryWeaponId = undefined;
+      b.pistolWeaponId = 'g18';
+      b.drawTimer = 0;
+      setBotWeaponVisual(b, b.weaponId, null);
       b.ammoInMag = WEAPONS.g18.magSize;
       b.reloadTimer = 0;
       b.ammoCount = 45;
@@ -3021,6 +3279,7 @@ export class BattleRoyaleEngine {
 
     this.resetPlayerForMatch(this.planeStart.x, this.planeStart.z, false);
     this.pos.copy(this.planeStart);
+    this.world.syncProximityLoot(0, 0, 520, 180);
     this.isGrounded = false;
     if (this.stateMachine.getState() !== GameState.AIRPLANE) {
       this.stateMachine.forceState(GameState.AIRPLANE);
@@ -3176,18 +3435,28 @@ export class BattleRoyaleEngine {
 
     // World dynamic props, proximity loot streaming, deployed Gloos, thrown grenades, explosion VFX & tracers
     const inMatchView = state === GameState.PLAYING || state === GameState.WAITING;
-    if (inMatchView) {
+    const isAirborneLootView =
+      state === GameState.AIRPLANE ||
+      state === GameState.DROPPING ||
+      state === GameState.PARACHUTE;
+    if (inMatchView || isAirborneLootView) {
       this.lootSyncAccum += dt;
-      if (this.lootSyncAccum >= 0.35) {
+      const syncInterval = isAirborneLootView ? 0.12 : 0.35;
+      if (this.lootSyncAccum >= syncInterval) {
         this.lootSyncAccum = 0;
-        this.world.syncProximityLoot(this.pos.x, this.pos.z, 54);
+        this.world.syncProximityLoot(
+          this.pos.x,
+          this.pos.z,
+          isAirborneLootView ? 240 : 54,
+          isAirborneLootView ? 80 : 24,
+        );
       }
     }
     this.world.updateDynamicProps(
       dt,
       this.elapsed,
-      this.world.camera.position,
-      inMatchView ? this.getLootRenderDist() : 120,
+      isAirborneLootView ? this.pos : this.world.camera.position,
+      isAirborneLootView ? 240 : inMatchView ? this.getLootRenderDist() : 120,
     );
     if (this.elapsed - this.activeObstaclesLastRefresh >= 0.15 || this.activeObstaclesLastRefresh < 0) {
       this.activeObstaclesLastRefresh = this.elapsed;
@@ -3620,6 +3889,8 @@ export class BattleRoyaleEngine {
           }
           this.isAiming = spAiming;
           this.isSprinting = spSprinting;
+          this.aimLockedTarget = false;
+          this.aimAssistActive = false;
           this.updateThirdPersonCamera(dt, camDist, camHeight, 'none', false, this.spectateSnapNext);
           this.spectateSnapNext = false;
           return;
@@ -6030,7 +6301,7 @@ export class BattleRoyaleEngine {
     attackerZ?: number,
   ): void {
     if (bot.eliminated || (bot.downTimer > 0 && !bot.isDowned)) return;
-    bot.hitFlash = 1.0;
+    bot.hitFlash = 0;
 
     if (bot.isDowned) {
       bot.bleedHp -= dmg * 1.15;
@@ -6654,11 +6925,38 @@ export class BattleRoyaleEngine {
       const bots = this.world.targets;
       for (let i = 0; i < bots.length; i++) {
         const b = bots[i];
-        if (!b.group.visible || b.eliminated || !b.isAdam || !b.mixer) continue;
-        if (b.isDowned) setBotAdamClip(b, 'Crawl_Loop', 1.0, 0.12);
-        else if (b.airState === 'parachuting') setBotAdamClip(b, 'Jump_Loop', 0.85, 0.12);
-        else setBotAdamClip(b, 'Idle_Loop', 1.0, 0.12);
-        b.mixer.update(dt);
+        b.drawTimer = Math.max(0, (b.drawTimer ?? 0) - dt);
+        if (!b.group.visible || b.eliminated) continue;
+        if (b.isAdam && b.mixer) {
+          if (b.isDowned) setBotAdamClip(b, 'Crawl_Loop', 1.0, 0.12);
+          else if (b.airState === 'parachuting') setBotAdamClip(b, 'Jump_Loop', 0.85, 0.12);
+          else setBotAdamClip(b, 'Idle_Loop', 1.0, 0.12);
+          b.mixer.update(dt);
+          let reach = 0;
+          if ((b.drawTimer ?? 0) > 0 && !b.isDowned && b.airState === 'ground' && b.upperAimBones) {
+            reach = applyAdamOverBackDraw(
+              b.visualRoot,
+              b.upperAimBones,
+              b.drawTimer ?? 0,
+              b.modelId ?? 'adam',
+            );
+          }
+          if (b.gunMesh) {
+            if (!b.gunMesh.userData.baseMountQuat) {
+              b.gunMesh.userData.baseMountQuat = b.gunMesh.quaternion.clone();
+            }
+            const baseQ = b.gunMesh.userData.baseMountQuat as THREE.Quaternion;
+            b.gunMesh.quaternion.copy(baseQ);
+            if (reach > 0.005) b.gunMesh.rotateX(0.55 * reach);
+          }
+        } else if (!b.isAdam && b.armRPivot) {
+          const { reachWeight } = computeWeaponDrawWeights(b.drawTimer ?? 0);
+          b.armRPivot.rotation.x = THREE.MathUtils.lerp(0, -2.85, reachWeight);
+          b.armRPivot.rotation.y = THREE.MathUtils.lerp(0, -0.32, reachWeight);
+          b.armRPivot.rotation.z = THREE.MathUtils.lerp(0, -0.44, reachWeight);
+          if (b.torsoGroup) b.torsoGroup.rotation.y = THREE.MathUtils.lerp(0, -0.24, reachWeight);
+          if (b.gunMesh) b.gunMesh.rotation.x = 0.45 * reachWeight;
+        }
       }
       return;
     }
@@ -7082,6 +7380,7 @@ export class BattleRoyaleEngine {
       bot.steerLockTimer = Math.max(0, bot.steerLockTimer - dt);
       bot.vaultTimer = Math.max(0, bot.vaultTimer - dt);
       bot.escapeTimer = Math.max(0, bot.escapeTimer - dt);
+      bot.drawTimer = Math.max(0, (bot.drawTimer ?? 0) - dt);
       if (bot.badLootTimer > 0) {
         bot.badLootTimer = Math.max(0, bot.badLootTimer - dt);
         if (bot.badLootTimer === 0) bot.badLootId = null;
@@ -7125,6 +7424,23 @@ export class BattleRoyaleEngine {
           bot.group.position.set(nx, Math.max(-0.85, surf.y), nz);
           bot.navCheckX = nx;
           bot.navCheckZ = nz;
+        }
+        if (
+          bot.airState === 'ground' &&
+          this.elapsed > 9 &&
+          (isBotPistol(bot.weaponId) || !bot.secondaryWeaponId) &&
+          Math.random() < dt * 0.25
+        ) {
+          const closePool: WeaponId[] = ['m1014', 'ump45'];
+          const longPool: WeaponId[] = ['xm8', 'scar', 'ak47', 'm4a1', 'awm'];
+          const pickFrom =
+            !isBotPistol(bot.weaponId) && isLongRangePrimary(bot.weaponId)
+              ? closePool
+              : Math.random() < 0.34
+                ? closePool
+                : longPool;
+          const scavenged = pickFrom[Math.floor(Math.random() * pickFrom.length)];
+          giveBotLootedWeapon(bot, scavenged);
         }
         continue;
       }
@@ -7473,7 +7789,14 @@ export class BattleRoyaleEngine {
           } else {
             let foundAllyLoot = false;
             const curBotBldg = this.world.findBuildingNavZoneAt(bx, bz);
-            if (bot.weaponId === 'g18' || bot.weaponId === 'deagle' || bot.vestLevel < 2 || bot.medkits < 2) {
+            if (
+              isBotPistol(bot.weaponId) ||
+              !bot.secondaryWeaponId ||
+              bot.vestLevel < 2 ||
+              bot.medkits < 2
+            ) {
+              let bestLootScore = -1;
+              let chosenLoot: LootVisual | null = null;
               for (let l = 0; l < this.world.loots.length; l++) {
                 const loot = this.world.loots[l];
                 if (
@@ -7483,6 +7806,11 @@ export class BattleRoyaleEngine {
                   loot.data.id === bot.badLootId
                 ) {
                   continue;
+                }
+                if (loot.data.kind === 'weapon' && loot.data.weaponId) {
+                  const wid = loot.data.weaponId;
+                  if (wid === bot.weaponId || wid === bot.secondaryWeaponId) continue;
+                  if (isBotPistol(wid) && !isBotPistol(bot.weaponId)) continue;
                 }
                 const ldx = loot.data.x - bx;
                 const ldz = loot.data.z - bz;
@@ -7494,13 +7822,22 @@ export class BattleRoyaleEngine {
                 const db = Math.hypot(ldx, ldz);
                 const dp = Math.hypot(loot.data.x - this.pos.x, loot.data.z - this.pos.z);
                 if (db < 32 && dp > 4.5) {
-                  bot.aiState = 'loot';
-                  bot.goalX = loot.data.x;
-                  bot.goalY = loot.data.y;
-                  bot.goalZ = loot.data.z;
-                  foundAllyLoot = true;
-                  break;
+                  let prio = 32 - db;
+                  if (loot.data.kind === 'weapon' && loot.data.weaponId && !isBotPistol(loot.data.weaponId)) {
+                    prio += isBotPistol(bot.weaponId) ? 75 : !bot.secondaryWeaponId ? 48 : 20;
+                  }
+                  if (prio > bestLootScore) {
+                    bestLootScore = prio;
+                    chosenLoot = loot;
+                  }
                 }
+              }
+              if (chosenLoot) {
+                bot.aiState = 'loot';
+                bot.goalX = chosenLoot.data.x;
+                bot.goalY = chosenLoot.data.y;
+                bot.goalZ = chosenLoot.data.z;
+                foundAllyLoot = true;
               }
             }
             if (!foundAllyLoot && (distGoal < 3.5 || bot.huntTimer <= 0)) {
@@ -7539,7 +7876,9 @@ export class BattleRoyaleEngine {
           let foundLoot = false;
           const curBotBldg = this.world.findBuildingNavZoneAt(bx, bz);
           const maxB = BERMUDA_HALF - 20;
-          if (bot.weaponId === 'g18' || bot.weaponId === 'deagle' || bot.vestLevel === 0) {
+          if (isBotPistol(bot.weaponId) || !bot.secondaryWeaponId || bot.vestLevel === 0) {
+            let bestLootScore = -1;
+            let chosenLoot: LootVisual | null = null;
             for (let l = 0; l < this.world.loots.length; l++) {
               const loot = this.world.loots[l];
               if (
@@ -7548,6 +7887,11 @@ export class BattleRoyaleEngine {
                 loot.data.id === bot.badLootId
               ) {
                 continue;
+              }
+              if (loot.data.kind === 'weapon' && loot.data.weaponId) {
+                const wid = loot.data.weaponId;
+                if (wid === bot.weaponId || wid === bot.secondaryWeaponId) continue;
+                if (isBotPistol(wid) && !isBotPistol(bot.weaponId)) continue;
               }
               const ldx = loot.data.x - bx;
               const ldz = loot.data.z - bz;
@@ -7560,13 +7904,22 @@ export class BattleRoyaleEngine {
               if (!bot.isAlly && dp < 15) continue;
               const db = Math.hypot(ldx, ldz);
               if (db < 30) {
-                bot.aiState = 'loot';
-                bot.goalX = loot.data.x;
-                bot.goalY = loot.data.y;
-                bot.goalZ = loot.data.z;
-                foundLoot = true;
-                break;
+                let prio = 30 - db;
+                if (loot.data.kind === 'weapon' && loot.data.weaponId && !isBotPistol(loot.data.weaponId)) {
+                  prio += isBotPistol(bot.weaponId) ? 75 : !bot.secondaryWeaponId ? 48 : 20;
+                }
+                if (prio > bestLootScore) {
+                  bestLootScore = prio;
+                  chosenLoot = loot;
+                }
               }
+            }
+            if (chosenLoot) {
+              bot.aiState = 'loot';
+              bot.goalX = chosenLoot.data.x;
+              bot.goalY = chosenLoot.data.y;
+              bot.goalZ = chosenLoot.data.z;
+              foundLoot = true;
             }
           }
 
@@ -7827,13 +8180,29 @@ export class BattleRoyaleEngine {
           const faceYaw = Math.atan2(dx, dz);
           bot.group.rotation.y = lerpAngle(bot.group.rotation.y, faceYaw, 1 - Math.exp(-15 * dt));
 
+          const bestCombatWid = pickBestBotWeaponForDistance(bot, dist);
+          if (bestCombatWid !== bot.weaponId && bot.reloadTimer <= 0) {
+            equipBotWeapon(bot, bestCombatWid, true);
+            bot.fireCooldown = Math.max(bot.fireCooldown, 0.28);
+          }
+
           const curCombatBldg = this.world.findBuildingNavZoneAt(bx, bz);
           const targetCombatBldg = this.world.findBuildingNavZoneAt(tx, tz);
           const needBuildingNav =
             curCombatBldg !== null &&
             (curCombatBldg !== targetCombatBldg || Math.abs(bot.group.position.y - targetBaseY) > 1.8);
 
-          if (dist > 20 || needBuildingNav) {
+          const activeBotWid = bot.weaponId;
+          const idealPushDist =
+            activeBotWid === 'm1014'
+              ? 12
+              : activeBotWid === 'ump45' || isBotPistol(activeBotWid)
+                ? 17
+                : activeBotWid === 'awm'
+                  ? 44
+                  : 24;
+
+          if (dist > idealPushDist || needBuildingNav) {
             this.resolveSmartBuildingTarget(bot, bx, bot.group.position.y, bz, tx, tz, targetBaseY);
             const wdx = this._botNavOut.x - bx;
             const wdz = this._botNavOut.z - bz;
@@ -7842,6 +8211,14 @@ export class BattleRoyaleEngine {
             moveDirZ = wdz / wDist;
             isMoving = true;
             wantSteerWaterAvoid = false;
+          } else if (activeBotWid === 'awm' && dist < 18 && dist > 1.8) {
+            const strafeSign = bot.steerSign;
+            moveDirX = (-dx / dist) * 0.65 + (-dz / dist) * 0.55 * strafeSign;
+            moveDirZ = (-dz / dist) * 0.65 + (dx / dist) * 0.55 * strafeSign;
+            const mLen = Math.hypot(moveDirX, moveDirZ) || 1;
+            moveDirX /= mLen;
+            moveDirZ /= mLen;
+            isMoving = true;
           } else if (dist > 1.8) {
             const strafeSign = bot.steerSign;
             moveDirX = (-dz / dist) * 0.72 * strafeSign;
@@ -7857,7 +8234,7 @@ export class BattleRoyaleEngine {
             if (bot.reloadTimer === 0) {
               bot.ammoInMag = WEAPONS[bot.weaponId].magSize;
             }
-          } else if (bot.fireCooldown <= 0 && dist < Math.min(82, WEAPONS[bot.weaponId].range)) {
+          } else if (bot.fireCooldown <= 0 && dist < Math.min(105, WEAPONS[bot.weaponId].range)) {
             const def = WEAPONS[bot.weaponId];
             if (bot.ammoInMag <= 0) {
               bot.reloadTimer = def.reloadTimeSec;
@@ -7887,7 +8264,7 @@ export class BattleRoyaleEngine {
               }
 
               if (bot.targetId === 'player') {
-                if (dist < 62 && Math.random() < (def.automatic ? 0.28 : 0.34)) {
+                if (dist < Math.min(92, def.range) && Math.random() < (def.automatic ? 0.28 : 0.34)) {
                   if (activeVeh && !activeVeh.destroyed && Math.random() < 0.62) {
                     this.damageVehicle(activeVeh, Math.max(12, Math.round(def.damage * 0.45)));
                   } else {
@@ -7910,7 +8287,7 @@ export class BattleRoyaleEngine {
                 const hitChance = dist < 18 ? 0.48 : dist < 42 ? 0.34 : 0.22;
                 if (Math.random() < hitChance) {
                   const isHead = !targetBot.isDowned && Math.random() < 0.16;
-                  const { dmg } = this.computeShotDamage(def, dist, isHead, targetBot);
+                  const { dmg, armorBlocked } = this.computeShotDamage(def, dist, isHead, targetBot);
                   const dealt = Math.round(dmg * 0.78);
                   const prevDead = targetBot.eliminated || targetBot.downTimer > 0;
                   this.applyBotHitDamage(
@@ -7923,6 +8300,15 @@ export class BattleRoyaleEngine {
                     bx,
                     bz,
                   );
+                  if (isSpectatedBot) {
+                    this.hitmarkerTimer = 0.2;
+                    if (isHead) {
+                      this.headshotFlashTimer = 0.45;
+                    }
+                    this.getBotBodyPoint(targetBot, isHead ? 'head' : 'chest', _v2);
+                    this.pushDamagePopup(_v2, dealt, isHead, armorBlocked);
+                    soundEngine.playHitmarker();
+                  }
                   if (!prevDead && (targetBot.eliminated || targetBot.downTimer > 0)) {
                     bot.kills += 1;
                     bot.hp = Math.min(bot.maxHp, bot.hp + 45);
@@ -7933,6 +8319,14 @@ export class BattleRoyaleEngine {
           }
         }
       } else {
+        if (
+          isBotPistol(bot.weaponId) &&
+          bot.secondaryWeaponId &&
+          !isBotPistol(bot.secondaryWeaponId) &&
+          bot.reloadTimer <= 0
+        ) {
+          equipBotWeapon(bot, bot.secondaryWeaponId, false);
+        }
         const curRoamSurf = botSurfaceHeightAt(bx, bz);
         let targetGoalX = bot.goalX;
         let targetGoalZ = bot.goalZ;
@@ -8017,25 +8411,8 @@ export class BattleRoyaleEngine {
                 }
               } else if (loot.data.kind === 'backpack' && loot.data.level) {
                 if (loot.data.level > bot.backpackLevel) bot.backpackLevel = loot.data.level;
-              } else if (
-                loot.data.kind === 'weapon' &&
-                loot.data.weaponId &&
-                loot.data.weaponId !== 'awm'
-              ) {
-                const newWid = loot.data.weaponId;
-                const isNewPistol = WEAPONS[newWid].category === 'HG';
-                const isCurPistol = WEAPONS[bot.weaponId].category === 'HG';
-                if (!isNewPistol || isCurPistol) {
-                  if (!isCurPistol && bot.weaponId !== newWid) {
-                    bot.secondaryWeaponId = bot.weaponId;
-                  }
-                  bot.weaponId = newWid;
-                  bot.ammoInMag = WEAPONS[newWid].magSize;
-                  bot.reloadTimer = 0;
-                  if (bot.backGunMesh) {
-                    bot.backGunMesh.visible = true;
-                  }
-                }
+              } else if (loot.data.kind === 'weapon' && loot.data.weaponId) {
+                giveBotLootedWeapon(bot, loot.data.weaponId);
               } else if (loot.data.kind === 'vest') {
                 const lvl = loot.data.level ?? 1;
                 if (lvl > bot.vestLevel) {
@@ -8406,9 +8783,29 @@ export class BattleRoyaleEngine {
               }
             }
           }
+          let botDrawReach = 0;
+          if ((bot.drawTimer ?? 0) > 0 && !isCrouchingAction && !botInWater && bot.upperAimBones) {
+            botDrawReach = applyAdamOverBackDraw(
+              bot.visualRoot,
+              bot.upperAimBones,
+              bot.drawTimer ?? 0,
+              bot.modelId ?? 'adam',
+            );
+          }
+          if (bot.gunMesh) {
+            if (!bot.gunMesh.userData.baseMountQuat) {
+              bot.gunMesh.userData.baseMountQuat = bot.gunMesh.quaternion.clone();
+            }
+            const baseQ = bot.gunMesh.userData.baseMountQuat as THREE.Quaternion;
+            bot.gunMesh.quaternion.copy(baseQ);
+            if (botDrawReach > 0.005) {
+              bot.gunMesh.rotateX(0.55 * botDrawReach);
+            }
+          }
         }
       } else if (animateLimbs) {
         if (bot.gunMesh) bot.gunMesh.visible = !isCrouchingAction;
+        const { reachWeight: botDrawReach } = computeWeaponDrawWeights(bot.drawTimer ?? 0);
         if (isCrouchingAction) {
           if (bot.gunMesh) bot.gunMesh.visible = false;
           if (bot.torsoGroup) {
@@ -8427,36 +8824,47 @@ export class BattleRoyaleEngine {
           if (bot.torsoGroup) {
             bot.torsoGroup.position.y = 0.78 + bob;
             bot.torsoGroup.rotation.x = 0.08;
+            bot.torsoGroup.rotation.y = THREE.MathUtils.lerp(0, -0.24, botDrawReach);
             bot.torsoGroup.rotation.z = Math.sin(bot.walkPhase) * 0.04;
           }
           if (bot.legLPivot) bot.legLPivot.rotation.x = THREE.MathUtils.damp(bot.legLPivot.rotation.x, swing, 16, dt);
           if (bot.legRPivot) bot.legRPivot.rotation.x = THREE.MathUtils.damp(bot.legRPivot.rotation.x, -swing, 16, dt);
           if (bot.armLPivot) bot.armLPivot.rotation.x = THREE.MathUtils.damp(bot.armLPivot.rotation.x, -swing * 0.65, 16, dt);
           if (bot.armRPivot) {
+            const baseArmX = bot.aiState === 'combat' ? -0.95 : swing * 0.45;
             bot.armRPivot.rotation.x = THREE.MathUtils.damp(
               bot.armRPivot.rotation.x,
-              bot.aiState === 'combat' ? -0.95 : swing * 0.45,
+              THREE.MathUtils.lerp(baseArmX, -2.85, botDrawReach),
               16,
               dt,
             );
+            bot.armRPivot.rotation.y = THREE.MathUtils.lerp(0, -0.32, botDrawReach);
+            bot.armRPivot.rotation.z = THREE.MathUtils.lerp(0, -0.44, botDrawReach);
           }
         } else {
           if (bot.torsoGroup) {
             bot.torsoGroup.position.y = 0.78 + Math.sin(this.elapsed * 2.4 + i) * 0.012;
             bot.torsoGroup.rotation.x = THREE.MathUtils.damp(bot.torsoGroup.rotation.x, 0, 10, dt);
+            bot.torsoGroup.rotation.y = THREE.MathUtils.lerp(0, -0.24, botDrawReach);
             bot.torsoGroup.rotation.z = THREE.MathUtils.damp(bot.torsoGroup.rotation.z, 0, 10, dt);
           }
           if (bot.legLPivot) bot.legLPivot.rotation.x = THREE.MathUtils.damp(bot.legLPivot.rotation.x, 0, 10, dt);
           if (bot.legRPivot) bot.legRPivot.rotation.x = THREE.MathUtils.damp(bot.legRPivot.rotation.x, 0, 10, dt);
           if (bot.armLPivot) bot.armLPivot.rotation.x = THREE.MathUtils.damp(bot.armLPivot.rotation.x, 0, 10, dt);
           if (bot.armRPivot) {
+            const baseArmX = bot.aiState === 'combat' ? -0.95 : 0;
             bot.armRPivot.rotation.x = THREE.MathUtils.damp(
               bot.armRPivot.rotation.x,
-              bot.aiState === 'combat' ? -0.95 : 0,
-              12,
+              THREE.MathUtils.lerp(baseArmX, -2.85, botDrawReach),
+              14,
               dt,
             );
+            bot.armRPivot.rotation.y = THREE.MathUtils.lerp(0, -0.32, botDrawReach);
+            bot.armRPivot.rotation.z = THREE.MathUtils.lerp(0, -0.44, botDrawReach);
           }
+        }
+        if (bot.gunMesh) {
+          bot.gunMesh.rotation.x = 0.45 * botDrawReach;
         }
       }
     }
@@ -8718,6 +9126,7 @@ export class BattleRoyaleEngine {
       this.isReloading = false;
       this.reloadTimer = 0;
       this.syncPlayerWeaponAndBackVisuals();
+      this.animator.triggerWeaponDraw();
     }
 
     this.airDropNotice = hasAwm ? 'AIRDROP SAQUEADO (COLETE NV.3 + M4)!' : 'AIRDROP SAQUEADO (AWM + NV.3)!';
@@ -8975,6 +9384,7 @@ export class BattleRoyaleEngine {
           this.isReloading = false;
           this.reloadTimer = 0;
           this.syncPlayerWeaponAndBackVisuals();
+          this.animator.triggerWeaponDraw();
           soundEngine.playWeaponSwitch();
         }
         return;
@@ -9002,6 +9412,7 @@ export class BattleRoyaleEngine {
       this.isReloading = false;
       this.reloadTimer = 0;
       this.syncPlayerWeaponAndBackVisuals();
+      this.animator.triggerWeaponDraw();
       soundEngine.playWeaponSwitch();
     }
   }
@@ -9160,6 +9571,7 @@ export class BattleRoyaleEngine {
         this.isReloading = false;
         this.reloadTimer = 0;
         this.syncPlayerWeaponAndBackVisuals();
+        this.animator.triggerWeaponDraw();
         soundEngine.playWeaponSwitch();
       }
       return;
@@ -9193,6 +9605,7 @@ export class BattleRoyaleEngine {
           this.isReloading = false;
           this.reloadTimer = 0;
           this.syncPlayerWeaponAndBackVisuals();
+          this.animator.triggerWeaponDraw();
           soundEngine.playWeaponSwitch();
         }
         return;
@@ -9225,6 +9638,7 @@ export class BattleRoyaleEngine {
       this.isReloading = false;
       this.reloadTimer = 0;
       this.syncPlayerWeaponAndBackVisuals();
+      this.animator.triggerWeaponDraw();
       soundEngine.playWeaponSwitch();
     }
   }
@@ -9370,6 +9784,10 @@ export class BattleRoyaleEngine {
       ally.medkits = 1;
       ally.gloos = 2;
       ally.weaponId = 'm4a1';
+      ally.secondaryWeaponId = undefined;
+      ally.pistolWeaponId = 'g18';
+      ally.drawTimer = 0;
+      setBotWeaponVisual(ally, ally.weaponId, getBotBackWeapon(ally));
       ally.airState = 'parachuting';
       ally.vy = -8;
       if (ally.torsoGroup) {
@@ -9462,6 +9880,7 @@ export class BattleRoyaleEngine {
         this.isReloading = false;
         this.reloadTimer = 0;
         this.syncPlayerWeaponAndBackVisuals();
+        this.animator.triggerWeaponDraw();
       } else {
         const slot: 1 | 2 = !this.weapons[1] ? 1 : !this.weapons[2] ? 2 : this.activeSlot === 2 ? 2 : 1;
         if (this.weapons[1] && this.weapons[2] && this.weapons[slot]) {
@@ -9483,6 +9902,7 @@ export class BattleRoyaleEngine {
         this.isReloading = false;
         this.reloadTimer = 0;
         this.syncPlayerWeaponAndBackVisuals();
+        this.animator.triggerWeaponDraw();
       }
     }
     return true;

@@ -502,14 +502,14 @@ interface CachedWeaponAssets {
 }
 
 const DARK_CORE_MAT = new THREE.MeshStandardMaterial({
-  color: 0x16191f,
-  roughness: 0.72,
-  metalness: 0.34,
+  color: 0x262b34,
+  roughness: 0.62,
+  metalness: 0.36,
 });
 const GUN_METAL_MAT = new THREE.MeshStandardMaterial({
-  color: 0x262b33,
-  roughness: 0.38,
-  metalness: 0.82,
+  color: 0x454f5e,
+  roughness: 0.34,
+  metalness: 0.78,
 });
 const SIGHT_ACCENT_MAT = new THREE.MeshStandardMaterial({
   color: 0xef4444,
@@ -526,17 +526,112 @@ const LENS_BLUE_MAT = new THREE.MeshStandardMaterial({
   metalness: 0.9,
 });
 
-function createFallbackWeaponTexture(): THREE.CanvasTexture {
+interface WeaponPalette {
+  body: string;
+  upper: string;
+  accent: string;
+  grip: string;
+  barrel: string;
+}
+
+const WEAPON_PALETTES: Record<WeaponId, WeaponPalette> = {
+  g18: { body: '#374151', upper: '#64748b', accent: '#f59e0b', grip: '#1f2937', barrel: '#94a3b8' },
+  deagle: { body: '#cbd5e1', upper: '#e2e8f0', accent: '#94a3b8', grip: '#27272a', barrel: '#f1f5f9' },
+  ump45: { body: '#3f4856', upper: '#5b6778', accent: '#38bdf8', grip: '#1e293b', barrel: '#64748b' },
+  m4a1: { body: '#384152', upper: '#526075', accent: '#94a3b8', grip: '#1f2937', barrel: '#64748b' },
+  xm8: { body: '#475569', upper: '#78889e', accent: '#38bdf8', grip: '#1e293b', barrel: '#94a3b8' },
+  scar: { body: '#c29f6d', upper: '#d8b785', accent: '#8c6d46', grip: '#3b3328', barrel: '#52525b' },
+  ak47: { body: '#475569', upper: '#6b7280', accent: '#a15623', grip: '#7c3f18', barrel: '#94a3b8' },
+  m1014: { body: '#3b4252', upper: '#606b7d', accent: '#d97706', grip: '#262b33', barrel: '#7c8798' },
+  awm: { body: '#4f6d3b', upper: '#658a4c', accent: '#38bdf8', grip: '#24301d', barrel: '#475569' },
+};
+
+function createFallbackWeaponTexture(weaponId: WeaponId): THREE.CanvasTexture {
+  const spec = WEAPON_IMAGE_SPECS[weaponId];
+  const pal = WEAPON_PALETTES[weaponId];
+  const w = 256;
+  const h = 96;
   const c = document.createElement('canvas');
-  c.width = 4;
-  c.height = 4;
+  c.width = w;
+  c.height = h;
   const ctx = c.getContext('2d');
   if (ctx) {
-    ctx.fillStyle = '#2b3038';
-    ctx.fillRect(0, 0, 4, 4);
+    ctx.clearRect(0, 0, w, h);
+    const [bx0, by0, bx1, by1] = spec.bbox;
+    const x0 = (bx0 / spec.imgW) * w;
+    const y0 = (by0 / spec.imgH) * h;
+    const bw = Math.max(8, ((bx1 - bx0 + 1) / spec.imgW) * w);
+    const bh = Math.max(8, ((by1 - by0 + 1) / spec.imgH) * h);
+
+    // Paint receiver & silhouette contour blocks inside the exact UV bbox
+    for (let i = 0; i < spec.contourBlocks.length; i++) {
+      const [z0, z1, yBot, yTop] = spec.contourBlocks[i];
+      // note: contourBlocks z is +0.5 at front (left side of texture uMin), -0.5 at rear (uMax)
+      const uA = 0.5 - z1;
+      const uB = 0.5 - z0;
+      const vTop = 0.5 - yTop;
+      const vBot = 0.5 - yBot;
+      const rx = x0 + uA * bw;
+      const ry = y0 + vTop * bh;
+      const rw = Math.max(1.5, (uB - uA) * bw + 0.8);
+      const rh = Math.max(1.5, (vBot - vTop) * bh + 0.8);
+
+      const isStockOrGrip = z0 < -0.22 || yBot < -0.15;
+      const isUpper = yTop > 0.25 && z0 >= -0.2;
+      ctx.fillStyle = isStockOrGrip
+        ? weaponId === 'ak47'
+          ? pal.accent
+          : pal.grip
+        : isUpper
+          ? pal.upper
+          : pal.body;
+      ctx.fillRect(rx, ry, rw, rh);
+    }
+
+    // Metallic/wood highlight band along receiver & barrel
+    const barGrad = ctx.createLinearGradient(x0, y0, x0, y0 + bh);
+    barGrad.addColorStop(0, 'rgba(255,255,255,0.28)');
+    barGrad.addColorStop(0.45, 'rgba(255,255,255,0.06)');
+    barGrad.addColorStop(1, 'rgba(0,0,0,0.22)');
+    ctx.fillStyle = barGrad;
+    ctx.globalCompositeOperation = 'source-atop';
+    ctx.fillRect(x0, y0, bw, bh);
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Crisp weapon-specific accent strip (handguard / wood grain / scope lens / rail)
+    const bSpec = spec.barrel;
+    const bU0 = 0.5 - bSpec.z1;
+    const bU1 = 0.5 - bSpec.z0;
+    const bY = y0 + (0.5 - bSpec.yNorm) * bh;
+    ctx.fillStyle = pal.barrel;
+    ctx.fillRect(x0 + bU0 * bw, bY - 2, Math.max(4, (bU1 - bU0) * bw), 4);
+
+    if (bSpec.scope) {
+      const sU0 = 0.5 - bSpec.scope.z1;
+      const sU1 = 0.5 - bSpec.scope.z0;
+      const sY = y0 + (0.5 - bSpec.scope.yNorm) * bh;
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(x0 + sU0 * bw, sY - 3, Math.max(6, (sU1 - sU0) * bw), 6);
+      ctx.fillStyle = pal.accent;
+      ctx.fillRect(x0 + sU0 * bw, sY - 2.5, 3, 5);
+    }
+
+    if (weaponId === 'ak47') {
+      // Iconic wooden forend highlight
+      ctx.fillStyle = '#b45309';
+      ctx.fillRect(x0 + bw * 0.28, y0 + bh * 0.24, bw * 0.22, bh * 0.18);
+    } else if (weaponId === 'scar') {
+      // Tactical black top rail on FDE tan SCAR
+      ctx.fillStyle = '#27272a';
+      ctx.fillRect(x0 + bw * 0.24, y0 + bh * 0.14, bw * 0.44, 3);
+    }
   }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
   return tex;
 }
 
@@ -683,17 +778,18 @@ function getOrCreateCachedWeaponAssets(weaponId: WeaponId): CachedWeaponAssets {
     vTop,
   );
 
-  const fallbackTex = createFallbackWeaponTexture();
+  const fallbackTex = createFallbackWeaponTexture(weaponId);
   const planeMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
     map: fallbackTex,
     emissiveMap: fallbackTex,
-    emissive: new THREE.Color(0x2a2d34),
-    emissiveIntensity: 0.45,
+    emissive: new THREE.Color(0xffffff),
+    emissiveIntensity: 0.34,
     alphaTest: 0.35,
     transparent: false,
     side: THREE.DoubleSide,
-    roughness: 0.48,
-    metalness: 0.22,
+    roughness: 0.44,
+    metalness: 0.14,
   });
 
   if (typeof window !== 'undefined' && typeof Image !== 'undefined') {
@@ -858,4 +954,11 @@ export function buildHybridWeaponModel(weaponId: WeaponId): THREE.Group {
 
   group.scale.setScalar(0.68);
   return group;
+}
+
+export function preloadAllWeaponTextures(): void {
+  const ids = Object.keys(WEAPON_IMAGE_SPECS) as WeaponId[];
+  for (let i = 0; i < ids.length; i++) {
+    getOrCreateCachedWeaponAssets(ids[i]);
+  }
 }

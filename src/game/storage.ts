@@ -2,14 +2,17 @@ import {
   CHARACTER_PRESETS,
   CharacterConfig,
   DEFAULT_HUD_LAYOUT,
+  DEFAULT_HUD_LAYOUT_SLOT_2,
   GameSettings,
   HudElementId,
   HudLayoutConfig,
+  HudSlotId,
   PlayerProfile,
 } from './types';
 
 const SETTINGS_KEY = 'zonazero2017_settings_v2';
 const HUD_LAYOUT_KEY = 'zonazero2017_hud_layout_v1';
+const HUD_SLOTS_KEY = 'zonazero2017_hud_slots_v1';
 const CHARACTER_KEY = 'zonazero2017_character_v1';
 const PROFILE_KEY = 'zonazero2017_profile_v1';
 
@@ -41,14 +44,20 @@ export const DEFAULT_SETTINGS: GameSettings = {
   autoLoot: true,
   autoLootSpeed: 'fast',
   hudLayout: structuredCloneLayout(DEFAULT_HUD_LAYOUT),
+  activeHudSlot: 1,
+  hudSlots: {
+    1: structuredCloneLayout(DEFAULT_HUD_LAYOUT),
+    2: structuredCloneLayout(DEFAULT_HUD_LAYOUT_SLOT_2, DEFAULT_HUD_LAYOUT_SLOT_2),
+  },
 };
 
 export function structuredCloneLayout(
   src?: Partial<HudLayoutConfig> | null,
+  fallbackBase: HudLayoutConfig = DEFAULT_HUD_LAYOUT,
 ): HudLayoutConfig {
   const out = {} as HudLayoutConfig;
-  (Object.keys(DEFAULT_HUD_LAYOUT) as HudElementId[]).forEach((k) => {
-    const base = DEFAULT_HUD_LAYOUT[k];
+  (Object.keys(fallbackBase) as HudElementId[]).forEach((k) => {
+    const base = fallbackBase[k];
     const item = src?.[k];
     const xPct =
       typeof item?.xPct === 'number' && Number.isFinite(item.xPct)
@@ -93,8 +102,60 @@ export function saveHudLayout(layout: HudLayoutConfig): void {
   }
 }
 
+export function loadHudSlots(legacySlot1?: HudLayoutConfig | null): {
+  activeSlot: HudSlotId;
+  slots: Record<HudSlotId, HudLayoutConfig>;
+} {
+  const fallbackSlots: Record<HudSlotId, HudLayoutConfig> = {
+    1: structuredCloneLayout(legacySlot1 ?? DEFAULT_HUD_LAYOUT, DEFAULT_HUD_LAYOUT),
+    2: structuredCloneLayout(DEFAULT_HUD_LAYOUT_SLOT_2, DEFAULT_HUD_LAYOUT_SLOT_2),
+  };
+  try {
+    const raw = localStorage.getItem(HUD_SLOTS_KEY);
+    if (!raw) return { activeSlot: 1, slots: fallbackSlots };
+    const parsed = JSON.parse(raw) as {
+      activeSlot?: HudSlotId;
+      slots?: Partial<Record<'1' | '2', Partial<HudLayoutConfig>>>;
+    };
+    const activeSlot: HudSlotId = parsed.activeSlot === 2 ? 2 : 1;
+    return {
+      activeSlot,
+      slots: {
+        1: structuredCloneLayout(parsed.slots?.['1'] ?? fallbackSlots[1], DEFAULT_HUD_LAYOUT),
+        2: structuredCloneLayout(
+          parsed.slots?.['2'] ?? DEFAULT_HUD_LAYOUT_SLOT_2,
+          DEFAULT_HUD_LAYOUT_SLOT_2,
+        ),
+      },
+    };
+  } catch {
+    return { activeSlot: 1, slots: fallbackSlots };
+  }
+}
+
+export function saveHudSlots(
+  activeSlot: HudSlotId,
+  slots: Record<HudSlotId, HudLayoutConfig>,
+): void {
+  try {
+    localStorage.setItem(
+      HUD_SLOTS_KEY,
+      JSON.stringify({
+        activeSlot,
+        slots: {
+          1: structuredCloneLayout(slots[1], DEFAULT_HUD_LAYOUT),
+          2: structuredCloneLayout(slots[2], DEFAULT_HUD_LAYOUT_SLOT_2),
+        },
+      }),
+    );
+  } catch {
+    // Ignore quota errors
+  }
+}
+
 export function loadSettings(): GameSettings {
   const dedicatedHud = loadHudLayout();
+  const savedSlots = loadHudSlots(dedicatedHud);
   try {
     const raw =
       localStorage.getItem(SETTINGS_KEY) ||
@@ -102,29 +163,67 @@ export function loadSettings(): GameSettings {
     if (!raw) {
       return {
         ...DEFAULT_SETTINGS,
-        hudLayout: dedicatedHud ?? structuredCloneLayout(DEFAULT_HUD_LAYOUT),
+        activeHudSlot: savedSlots.activeSlot,
+        hudSlots: savedSlots.slots,
+        hudLayout: savedSlots.slots[savedSlots.activeSlot],
       };
     }
     const parsed = JSON.parse(raw) as Partial<GameSettings>;
+    const activeHudSlot: HudSlotId = parsed.activeHudSlot === 2 ? 2 : savedSlots.activeSlot;
+    const hudSlots: Record<HudSlotId, HudLayoutConfig> = {
+      1: structuredCloneLayout(
+        parsed.hudSlots?.[1] ?? savedSlots.slots[1],
+        DEFAULT_HUD_LAYOUT,
+      ),
+      2: structuredCloneLayout(
+        parsed.hudSlots?.[2] ?? savedSlots.slots[2],
+        DEFAULT_HUD_LAYOUT_SLOT_2,
+      ),
+    };
+    const activeLayout =
+      dedicatedHud ??
+      structuredCloneLayout(
+        parsed.hudLayout ?? hudSlots[activeHudSlot],
+        activeHudSlot === 2 ? DEFAULT_HUD_LAYOUT_SLOT_2 : DEFAULT_HUD_LAYOUT,
+      );
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
-      hudLayout:
-        dedicatedHud ??
-        structuredCloneLayout(parsed.hudLayout ?? DEFAULT_HUD_LAYOUT),
+      activeHudSlot,
+      hudSlots,
+      hudLayout: activeLayout,
     };
   } catch {
     return {
       ...DEFAULT_SETTINGS,
-      hudLayout: dedicatedHud ?? structuredCloneLayout(DEFAULT_HUD_LAYOUT),
+      activeHudSlot: savedSlots.activeSlot,
+      hudSlots: savedSlots.slots,
+      hudLayout: savedSlots.slots[savedSlots.activeSlot],
     };
   }
 }
 
 export function saveSettings(settings: GameSettings): void {
+  const activeSlot: HudSlotId = settings.activeHudSlot === 2 ? 2 : 1;
+  const slots: Record<HudSlotId, HudLayoutConfig> = {
+    1: structuredCloneLayout(
+      activeSlot === 1 ? settings.hudLayout : (settings.hudSlots?.[1] ?? DEFAULT_HUD_LAYOUT),
+      DEFAULT_HUD_LAYOUT,
+    ),
+    2: structuredCloneLayout(
+      activeSlot === 2
+        ? settings.hudLayout
+        : (settings.hudSlots?.[2] ?? DEFAULT_HUD_LAYOUT_SLOT_2),
+      DEFAULT_HUD_LAYOUT_SLOT_2,
+    ),
+  };
   saveHudLayout(settings.hudLayout);
+  saveHudSlots(activeSlot, slots);
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    localStorage.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({ ...settings, activeHudSlot: activeSlot, hudSlots: slots }),
+    );
   } catch {
     // Ignore quota errors
   }

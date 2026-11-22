@@ -106,23 +106,35 @@ export type HudElementId =
   | 'minimap'
   | 'teamPanel'
   | 'topBanner'
+  | 'killFeed'
+  | 'ffCoins'
   | 'aliveBox'
+  | 'settingsBtn'
+  | 'pingBadge'
+  | 'voiceCall'
   | 'weapons'
+  | 'lootList'
+  | 'tacticalBanner'
   | 'hpBar'
+  | 'quickGlooBtn'
   | 'backpackBtn'
   | 'medkitBtn'
+  | 'smallMedkitBtn'
   | 'grenadeBtn'
   | 'glooBtn'
   | 'sprintBtn'
   | 'leftFireBtn'
   | 'joystick'
+  | 'fpsBadge'
   | 'fireBtn'
   | 'aimBtn'
   | 'jumpBtn'
   | 'crouchBtn'
   | 'proneBtn'
   | 'reloadBtn'
-  | 'actionPrompt';
+  | 'actionPrompt'
+  | 'vehicleSteer'
+  | 'vehiclePedals';
 
 export interface HudElementLayout {
   xPct: number; // 0..100 (% of viewport width, center of element)
@@ -131,29 +143,80 @@ export interface HudElementLayout {
   opacity: number; // 0.1..1.0
 }
 
+export type HudSlotId = 1 | 2;
+
 export type HudLayoutConfig = Record<HudElementId, HudElementLayout>;
 
+// HUD 1: Clássico 2017 (layout original 2 dedos)
 export const DEFAULT_HUD_LAYOUT: HudLayoutConfig = {
   minimap: { xPct: 8, yPct: 12, scale: 1.0, opacity: 1.0 },
   teamPanel: { xPct: 24, yPct: 10, scale: 1.0, opacity: 1.0 },
-  topBanner: { xPct: 50, yPct: 8.5, scale: 1.0, opacity: 1.0 },
-  aliveBox: { xPct: 90, yPct: 4.5, scale: 1.0, opacity: 1.0 },
-  weapons: { xPct: 87, yPct: 19, scale: 1.0, opacity: 1.0 },
-  hpBar: { xPct: 50, yPct: 93, scale: 1.0, opacity: 1.0 },
+  topBanner: { xPct: 50, yPct: 7.5, scale: 1.0, opacity: 1.0 },
+  killFeed: { xPct: 50, yPct: 17.5, scale: 1.0, opacity: 1.0 },
+  ffCoins: { xPct: 74, yPct: 4.5, scale: 1.0, opacity: 1.0 },
+  aliveBox: { xPct: 87.5, yPct: 4.5, scale: 1.0, opacity: 1.0 },
+  settingsBtn: { xPct: 96.5, yPct: 4.5, scale: 1.0, opacity: 1.0 },
+  pingBadge: { xPct: 75, yPct: 10.5, scale: 1.0, opacity: 1.0 },
+  voiceCall: { xPct: 90, yPct: 10.5, scale: 1.0, opacity: 1.0 },
+  weapons: { xPct: 87, yPct: 22, scale: 1.0, opacity: 1.0 },
+  lootList: { xPct: 85, yPct: 38, scale: 1.0, opacity: 1.0 },
+  tacticalBanner: { xPct: 50, yPct: 35, scale: 1.0, opacity: 1.0 },
+  hpBar: { xPct: 49, yPct: 93, scale: 1.0, opacity: 1.0 },
+  quickGlooBtn: { xPct: 68, yPct: 93, scale: 1.0, opacity: 0.95 },
   backpackBtn: { xPct: 4.2, yPct: 31, scale: 1.0, opacity: 0.95 },
   medkitBtn: { xPct: 4.2, yPct: 40.5, scale: 1.0, opacity: 0.95 },
+  smallMedkitBtn: { xPct: 10.5, yPct: 40.5, scale: 1.0, opacity: 0.95 },
   grenadeBtn: { xPct: 4.2, yPct: 50, scale: 1.0, opacity: 0.95 },
   glooBtn: { xPct: 4.2, yPct: 59.5, scale: 1.0, opacity: 0.95 },
   sprintBtn: { xPct: 13.5, yPct: 58, scale: 1.0, opacity: 0.9 },
   leftFireBtn: { xPct: 20.5, yPct: 58, scale: 1.0, opacity: 0.9 },
   joystick: { xPct: 15, yPct: 76, scale: 1.0, opacity: 0.9 },
+  fpsBadge: { xPct: 4.5, yPct: 96, scale: 1.0, opacity: 0.9 },
   fireBtn: { xPct: 84, yPct: 68, scale: 1.0, opacity: 0.92 },
   aimBtn: { xPct: 93, yPct: 56, scale: 1.0, opacity: 0.9 },
   jumpBtn: { xPct: 93, yPct: 40, scale: 1.0, opacity: 0.88 },
-  crouchBtn: { xPct: 92, yPct: 84, scale: 1.0, opacity: 0.88 },
-  proneBtn: { xPct: 81, yPct: 88, scale: 1.0, opacity: 0.88 },
+  crouchBtn: { xPct: 92, yPct: 81, scale: 1.0, opacity: 0.88 },
+  proneBtn: { xPct: 81, yPct: 84, scale: 1.0, opacity: 0.88 },
   reloadBtn: { xPct: 73, yPct: 72, scale: 1.0, opacity: 0.88 },
   actionPrompt: { xPct: 50, yPct: 81, scale: 1.0, opacity: 1.0 },
+  vehicleSteer: { xPct: 12, yPct: 90, scale: 1.0, opacity: 0.95 },
+  vehiclePedals: { xPct: 88, yPct: 94, scale: 1.0, opacity: 0.95 },
+};
+
+// HUD 2: Outro Tipo (3 Dedos / Tático)
+export const DEFAULT_HUD_LAYOUT_SLOT_2: HudLayoutConfig = {
+  minimap: { xPct: 8, yPct: 12, scale: 0.95, opacity: 0.95 },
+  teamPanel: { xPct: 24, yPct: 10, scale: 0.95, opacity: 0.95 },
+  topBanner: { xPct: 50, yPct: 7.5, scale: 0.95, opacity: 0.9 },
+  killFeed: { xPct: 50, yPct: 17.5, scale: 0.95, opacity: 0.95 },
+  ffCoins: { xPct: 74, yPct: 4.5, scale: 0.95, opacity: 0.95 },
+  aliveBox: { xPct: 87.5, yPct: 4.5, scale: 1.0, opacity: 1.0 },
+  settingsBtn: { xPct: 96.5, yPct: 4.5, scale: 1.0, opacity: 1.0 },
+  pingBadge: { xPct: 75, yPct: 10.5, scale: 0.95, opacity: 0.95 },
+  voiceCall: { xPct: 90, yPct: 10.5, scale: 0.95, opacity: 0.95 },
+  weapons: { xPct: 87, yPct: 22, scale: 1.0, opacity: 0.95 },
+  lootList: { xPct: 85, yPct: 38, scale: 0.95, opacity: 0.95 },
+  tacticalBanner: { xPct: 50, yPct: 35, scale: 0.95, opacity: 0.95 },
+  hpBar: { xPct: 49, yPct: 93, scale: 0.95, opacity: 0.95 },
+  quickGlooBtn: { xPct: 68, yPct: 93, scale: 1.0, opacity: 0.95 },
+  backpackBtn: { xPct: 4.2, yPct: 33, scale: 0.95, opacity: 0.85 },
+  medkitBtn: { xPct: 4.2, yPct: 43, scale: 0.95, opacity: 0.85 },
+  smallMedkitBtn: { xPct: 10.5, yPct: 43, scale: 0.95, opacity: 0.85 },
+  grenadeBtn: { xPct: 4.2, yPct: 53, scale: 0.95, opacity: 0.85 },
+  glooBtn: { xPct: 72, yPct: 60, scale: 1.15, opacity: 0.95 },
+  sprintBtn: { xPct: 13.5, yPct: 58, scale: 1.05, opacity: 0.85 },
+  leftFireBtn: { xPct: 16, yPct: 28, scale: 1.3, opacity: 0.92 },
+  joystick: { xPct: 14, yPct: 77, scale: 0.95, opacity: 0.85 },
+  fpsBadge: { xPct: 4.5, yPct: 96, scale: 0.95, opacity: 0.85 },
+  fireBtn: { xPct: 83, yPct: 72, scale: 1.15, opacity: 0.9 },
+  aimBtn: { xPct: 86, yPct: 48, scale: 1.15, opacity: 0.92 },
+  jumpBtn: { xPct: 93, yPct: 58, scale: 1.1, opacity: 0.9 },
+  crouchBtn: { xPct: 73, yPct: 81, scale: 1.1, opacity: 0.9 },
+  proneBtn: { xPct: 84, yPct: 85, scale: 0.95, opacity: 0.85 },
+  reloadBtn: { xPct: 74, yPct: 42, scale: 1.0, opacity: 0.88 },
+  actionPrompt: { xPct: 50, yPct: 80, scale: 1.0, opacity: 0.95 },
+  vehicleSteer: { xPct: 12, yPct: 90, scale: 1.0, opacity: 0.95 },
+  vehiclePedals: { xPct: 88, yPct: 94, scale: 1.0, opacity: 0.95 },
 };
 
 export type AutoLootSpeed = 'normal' | 'fast' | 'ultra';
@@ -174,6 +237,8 @@ export interface GameSettings {
   autoLoot: boolean;
   autoLootSpeed: AutoLootSpeed;
   hudLayout: HudLayoutConfig;
+  activeHudSlot?: HudSlotId;
+  hudSlots?: Record<HudSlotId, HudLayoutConfig>;
 }
 
 export interface PlayerProfile {

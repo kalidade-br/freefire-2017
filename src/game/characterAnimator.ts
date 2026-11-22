@@ -51,6 +51,94 @@ export interface CharacterAnimInput {
   pitchRad: number;
 }
 
+export const WEAPON_DRAW_DURATION = 0.4;
+
+export function computeWeaponDrawWeights(drawTimer: number): {
+  progress: number;
+  reachWeight: number;
+} {
+  if (drawTimer <= 0) {
+    return { progress: 1, reachWeight: 0 };
+  }
+  const progress = THREE.MathUtils.clamp(1 - drawTimer / WEAPON_DRAW_DURATION, 0, 1);
+  // 0..0.38: snap arm up & behind right shoulder like grabbing an arrow/gun off the back
+  // 0.38..1.0: pull cleanly forward over shoulder into combat grip
+  const reachWeight =
+    progress < 0.38
+      ? Math.sin((progress / 0.38) * Math.PI * 0.5)
+      : Math.pow(Math.cos(((progress - 0.38) / 0.62) * Math.PI * 0.5), 1.35);
+  return { progress, reachWeight };
+}
+
+export function applyAdamOverBackDraw(
+  vis: THREE.Object3D | undefined,
+  upperBones: Array<{ name: string; bone: THREE.Object3D }> | undefined,
+  drawTimer: number,
+  modelId: 'adam' | 'eva' = 'adam',
+): number {
+  if (!vis || !upperBones || drawTimer <= 0) return 0;
+  const { reachWeight } = computeWeaponDrawWeights(drawTimer);
+  if (reachWeight <= 0.005) return 0;
+
+  const aimQuats = getAimPoseQuats(modelId);
+  let spineBone: THREE.Object3D | undefined;
+  let rShoulder: THREE.Object3D | undefined;
+  let rArm: THREE.Object3D | undefined;
+  let rForeArm: THREE.Object3D | undefined;
+  let lArm: THREE.Object3D | undefined;
+
+  for (let i = 0; i < upperBones.length; i++) {
+    const e = upperBones[i];
+    if (e.name === 'mixamorigSpine2' || e.name === 'mixamorigSpine1') {
+      if (e.name === 'mixamorigSpine2' || !spineBone) spineBone = e.bone;
+    } else if (e.name === 'mixamorigRightShoulder') {
+      rShoulder = e.bone;
+    } else if (e.name === 'mixamorigRightArm') {
+      rArm = e.bone;
+    } else if (e.name === 'mixamorigRightForeArm') {
+      rForeArm = e.bone;
+    } else if (e.name === 'mixamorigLeftArm') {
+      lArm = e.bone;
+    }
+    if (
+      aimQuats &&
+      (e.name === 'mixamorigRightShoulder' ||
+        e.name === 'mixamorigRightArm' ||
+        e.name === 'mixamorigRightForeArm' ||
+        e.name === 'mixamorigRightHand')
+    ) {
+      const q = aimQuats[e.name];
+      if (q) e.bone.quaternion.slerp(q, Math.min(1, reachWeight * 0.92));
+    }
+  }
+
+  vis.updateMatrixWorld(true);
+  vis.getWorldQuaternion(_qVisW);
+  if (spineBone) {
+    rotateBoneCharAxis(_qVisW, spineBone, 0, 1, 0, -0.26 * reachWeight);
+    rotateBoneCharAxis(_qVisW, spineBone, 1, 0, 0, -0.06 * reachWeight);
+  }
+  if (rShoulder) {
+    rotateBoneCharAxis(_qVisW, rShoulder, 0, 0, 1, -0.18 * reachWeight);
+    rotateBoneCharAxis(_qVisW, rShoulder, 0, 1, 0, -0.16 * reachWeight);
+  }
+  if (rArm) {
+    // Lift right upper arm straight up & over shoulder, elbow flared slightly out
+    rotateBoneCharAxis(_qVisW, rArm, 1, 0, 0, -1.78 * reachWeight);
+    rotateBoneCharAxis(_qVisW, rArm, 0, 0, 1, -0.44 * reachWeight);
+    rotateBoneCharAxis(_qVisW, rArm, 0, 1, 0, -0.32 * reachWeight);
+  }
+  if (rForeArm) {
+    // Bend forearm deeply behind the right shoulder blade onto the slung weapon
+    rotateBoneCharAxis(_qVisW, rForeArm, 1, 0, 0, -1.28 * reachWeight);
+    rotateBoneCharAxis(_qVisW, rForeArm, 0, 1, 0, 0.34 * reachWeight);
+  }
+  if (lArm) {
+    rotateBoneCharAxis(_qVisW, lArm, 1, 0, 0, 0.18 * reachWeight);
+  }
+  return reachWeight;
+}
+
 export class CharacterAnimator {
   private walkPhase = 0;
   private idleTime = 0;
@@ -65,10 +153,15 @@ export class CharacterAnimator {
   private reloadPhase = 0;
   private fireHold = 0;
   private combatUpperBlend = 0;
+  private drawTimer = 0;
 
   public triggerFire(): void {
     this.recoil = 1.0;
     this.fireHold = 0.55;
+  }
+
+  public triggerWeaponDraw(): void {
+    this.drawTimer = WEAPON_DRAW_DURATION;
   }
 
   public triggerPunch(): void {
@@ -96,6 +189,7 @@ export class CharacterAnimator {
     this.reloadPhase = 0;
     this.fireHold = 0;
     this.combatUpperBlend = 0;
+    this.drawTimer = 0;
   }
 
   private playAdamClip(
@@ -418,6 +512,21 @@ export class CharacterAnimator {
         rotateBoneCharAxis(_qVisW, rig.adamHeadBone, 1, 0, 0, headTilt);
       }
     }
+
+    // Over-the-shoulder "pegando flecha nas costas" weapon draw pose
+    const drawReach =
+      hasWeapon && this.drawTimer > 0 && !input.isHealing && !input.isReloading
+        ? applyAdamOverBackDraw(vis, rig.adamUpperBones, this.drawTimer, rig.modelId ?? 'adam')
+        : 0;
+    // Reset weaponMount tilt cleanly when draw completes; while reaching back, angle gun into draw arc
+    if (!rig.weaponMount.userData.baseMountQuat) {
+      rig.weaponMount.userData.baseMountQuat = rig.weaponMount.quaternion.clone();
+    }
+    const baseMountQ = rig.weaponMount.userData.baseMountQuat as THREE.Quaternion;
+    rig.weaponMount.quaternion.copy(baseMountQ);
+    if (drawReach > 0.005) {
+      rig.weaponMount.rotateX(0.55 * drawReach);
+    }
   }
 
   public update(rig: CharacterRig, input: CharacterAnimInput): void {
@@ -426,6 +535,7 @@ export class CharacterAnimator {
     this.recoil = THREE.MathUtils.damp(this.recoil, 0, 18, dt);
     this.fireHold = Math.max(0, this.fireHold - dt);
     this.punchTimer = Math.max(0, this.punchTimer - dt);
+    this.drawTimer = Math.max(0, this.drawTimer - dt);
     this.hitFlash = THREE.MathUtils.damp(this.hitFlash, 0, 10, dt);
     this.hitStagger = THREE.MathUtils.damp(this.hitStagger, 0, 12, dt);
     this.landingDip = THREE.MathUtils.damp(this.landingDip, 0, 11, dt);
@@ -857,6 +967,18 @@ export class CharacterAnimator {
       rig.leftShoulder.rotation.y = THREE.MathUtils.damp(rig.leftShoulder.rotation.y, -0.46, 18, dt);
       rig.leftShoulder.rotation.z = THREE.MathUtils.damp(rig.leftShoulder.rotation.z, 0.14, 18, dt);
       rig.leftElbow.rotation.x = THREE.MathUtils.damp(rig.leftElbow.rotation.x, -0.58, 20, dt);
+    }
+
+    if (this.drawTimer > 0) {
+      const { reachWeight } = computeWeaponDrawWeights(this.drawTimer);
+      rig.torso.rotation.y += -0.26 * reachWeight;
+      rig.rightShoulder.rotation.x = THREE.MathUtils.lerp(rig.rightShoulder.rotation.x, -2.85, reachWeight);
+      rig.rightShoulder.rotation.y = THREE.MathUtils.lerp(rig.rightShoulder.rotation.y, -0.32, reachWeight);
+      rig.rightShoulder.rotation.z = THREE.MathUtils.lerp(rig.rightShoulder.rotation.z, -0.44, reachWeight);
+      rig.rightElbow.rotation.x = THREE.MathUtils.lerp(rig.rightElbow.rotation.x, -1.65, reachWeight);
+      rig.weaponMount.rotation.x = 0.45 * reachWeight;
+    } else {
+      rig.weaponMount.rotation.x = 0;
     }
   }
 }

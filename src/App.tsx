@@ -1174,9 +1174,16 @@ export default function App() {
       {showHudEditor && (
         <HudEditorModal
           layout={settings.hudLayout}
-          onSave={(nextLayout) => {
+          activeSlot={settings.activeHudSlot ?? 1}
+          hudSlots={settings.hudSlots}
+          onSave={(nextLayout, nextSlot, nextSlots) => {
             soundEngine.playUiConfirm();
-            handleUpdateSettings({ ...settings, hudLayout: nextLayout });
+            handleUpdateSettings({
+              ...settings,
+              hudLayout: nextLayout,
+              activeHudSlot: nextSlot,
+              hudSlots: nextSlots,
+            });
             setShowHudEditor(false);
           }}
           onClose={() => {

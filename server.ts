@@ -435,6 +435,17 @@ function handleRoomAction(
       isHeadshot: action.isHeadshot,
       weaponId: action.weaponId,
     });
+    broadcastRoom(
+      room,
+      {
+        type: 'spectate_damage_event',
+        attackerAccountId: actorAccountId,
+        targetAccountId: action.targetAccountId,
+        damage: dmg,
+        isHeadshot: action.isHeadshot,
+      },
+      actorAccountId,
+    );
     return;
   }
 
@@ -518,17 +529,29 @@ function handleRoomAction(
   }
 
   if (action.type === 'damage_bot') {
+    const dmg = Math.max(1, Math.min(400, Math.round(action.damage)));
     sendWs(room.hostAccountId, {
       type: 'remote_bot_damage',
       fromAccountId: actorAccountId,
       fromNickname: actor.nickname,
       botId: action.botId,
-      damage: action.damage,
+      damage: dmg,
       isHeadshot: action.isHeadshot,
       weaponShort: action.weaponShort,
       attackerX: action.attackerX,
       attackerZ: action.attackerZ,
     });
+    broadcastRoom(
+      room,
+      {
+        type: 'spectate_damage_event',
+        attackerAccountId: actorAccountId,
+        botId: action.botId,
+        damage: dmg,
+        isHeadshot: action.isHeadshot,
+      },
+      actorAccountId,
+    );
   }
 }
 

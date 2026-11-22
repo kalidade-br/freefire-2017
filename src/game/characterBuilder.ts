@@ -577,12 +577,11 @@ function createAdamCharacterRig(
     surfboard.group.visible = visible;
   };
 
-  const setHitFlash = (amount: number) => {
-    const r = Math.max(0, Math.min(1, amount));
+  const setHitFlash = (_amount: number) => {
     for (let m = 0; m < bodyMats.length; m++) {
-      bodyMats[m].emissive.setRGB(r * 0.85, 0, 0);
+      bodyMats[m].emissive.setRGB(0, 0, 0);
     }
-    vestMat.emissive.setRGB(r * 0.75, 0, 0);
+    vestMat.emissive.setRGB(0, 0, 0);
   };
 
   const dispose = () => {
@@ -1038,11 +1037,10 @@ function createProceduralCharacterRig(
     surfboard.group.visible = visible;
   };
 
-  const setHitFlash = (amount: number) => {
-    const r = Math.max(0, Math.min(1, amount));
-    shirtMat.emissive.setRGB(r * 0.85, 0, 0);
-    skinMat.emissive.setRGB(r * 0.85, 0, 0);
-    vestMat.emissive.setRGB(r * 0.75, 0, 0);
+  const setHitFlash = (_amount: number) => {
+    shirtMat.emissive.setRGB(0, 0, 0);
+    skinMat.emissive.setRGB(0, 0, 0);
+    vestMat.emissive.setRGB(0, 0, 0);
   };
 
   const dispose = () => {

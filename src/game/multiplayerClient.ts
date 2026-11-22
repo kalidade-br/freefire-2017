@@ -97,6 +97,14 @@ export type MultiplayerServerEvent =
       attackerX: number;
       attackerZ: number;
     }
+  | {
+      type: 'spectate_damage_event';
+      attackerAccountId: number;
+      targetAccountId?: number;
+      botId?: string;
+      damage: number;
+      isHeadshot: boolean;
+    }
   | { type: 'friends_refresh' }
   | { type: 'match_kicked'; roomId: string; reason: string }
   | { type: 'webrtc_signal'; fromAccountId: number; signal: unknown };
