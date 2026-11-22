@@ -63,6 +63,7 @@ import {
 } from './HudIcons';
 import { NetworkPingBadge } from './NetworkPingBadge';
 import { ScopeOverlay } from './ScopeOverlay';
+import { VoiceChatHudWidget } from './VoiceChatHudWidget';
 import { WeaponIcon } from './WeaponIcon';
 
 interface GameHudProps {
@@ -1450,6 +1451,7 @@ export const GameHud: React.FC<GameHudProps> = ({
             disconnected={hud.isNetworkDisconnected}
             compact
           />
+          <VoiceChatHudWidget />
         </div>
         {hud.likeToast && (
           <div className="flex items-center gap-1.5 bg-black/80 border border-amber-400/80 px-2.5 py-1 text-[10px] font-bold text-amber-200 shadow-lg animate-pulse">

@@ -1138,6 +1138,17 @@ async function startServer(): Promise<void> {
       if (msg.type === 'room_action' && msg.action) {
         handleRoomAction(room, accountId, msg.action as MatchRoomAction);
       }
+
+      if (msg.type === 'webrtc_signal') {
+        const targetId = Number(msg.targetAccountId);
+        if (room && targetId && room.humans.has(targetId)) {
+          sendWs(targetId, {
+            type: 'webrtc_signal',
+            fromAccountId: accountId,
+            signal: msg.signal,
+          });
+        }
+      }
     });
 
     ws.on('close', () => {

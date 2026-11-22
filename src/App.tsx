@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { soundEngine } from './game/audio';
 import { BattleRoyaleEngine } from './game/gameEngine';
 import { multiplayerClient } from './game/multiplayerClient';
+import { voiceChatManager } from './game/voiceChat';
 import {
   loadCharacterConfig,
   loadProfile,
@@ -866,6 +867,7 @@ export default function App() {
             setIsBackpackOpen(false);
             setIsShopOpen(false);
             activeLaunchedRoomIdRef.current = null;
+            voiceChatManager.disconnect();
             if (account) {
               void multiplayerClient.leaveMatch();
             }

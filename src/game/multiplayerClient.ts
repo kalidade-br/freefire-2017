@@ -78,7 +78,8 @@ export type MultiplayerServerEvent =
       attackerZ: number;
     }
   | { type: 'friends_refresh' }
-  | { type: 'match_kicked'; roomId: string; reason: string };
+  | { type: 'match_kicked'; roomId: string; reason: string }
+  | { type: 'webrtc_signal'; fromAccountId: number; signal: unknown };
 
 type EventListener = (ev: MultiplayerServerEvent) => void;
 
@@ -637,6 +638,14 @@ class MultiplayerClient {
   public sendWsAction(action: MatchRoomAction): boolean {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'room_action', action }));
+      return true;
+    }
+    return false;
+  }
+
+  public sendWebrtcSignal(targetAccountId: number, signal: unknown): boolean {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'webrtc_signal', targetAccountId, signal }));
       return true;
     }
     return false;
