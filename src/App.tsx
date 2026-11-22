@@ -823,6 +823,10 @@ export default function App() {
           onUseSmallKit={() => engineRef.current?.useSmallKit()}
           onCycleSpectate={(dir) => engineRef.current?.cycleSpectateTarget(dir)}
           onSendSpectateLike={() => engineRef.current?.sendSpectateLike()}
+          onSendFriendRequest={(publicId) => {
+            soundEngine.playUiClick();
+            void multiplayerClient.sendFriendRequest(publicId).catch(() => {});
+          }}
           onExitSpectate={() => engineRef.current?.exitSpectateToResults()}
           onInspectSpectatedPlayer={(accountId) => {
             soundEngine.playUiClick();

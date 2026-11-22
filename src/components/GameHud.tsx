@@ -96,6 +96,7 @@ interface GameHudProps {
   onJumpFromPlane: () => void;
   onOpenParachute: () => void;
   onReturnLobby: () => void;
+  onSendFriendRequest?: (publicId: string) => void;
   onTestDamage: () => void;
   onTestVictory: () => void;
 }
@@ -159,6 +160,7 @@ export const GameHud: React.FC<GameHudProps> = ({
   onJumpFromPlane,
   onOpenParachute,
   onReturnLobby,
+  onSendFriendRequest,
   onTestDamage,
   onTestVictory,
 }) => {
@@ -675,7 +677,7 @@ export const GameHud: React.FC<GameHudProps> = ({
   const canAimWeapon =
     hud.activeSlot !== 4 &&
     Boolean(activeWeaponDef && activeWeaponDef.category !== 'HG');
-  const hideGameplayHud = Boolean(hud.isSpectating || hud.isDead);
+  const hideGameplayHud = Boolean(hud.isDead);
 
   // Virtual Joystick Handlers
   const handleJoyStart = (e: React.TouchEvent) => {
@@ -2870,6 +2872,18 @@ export const GameHud: React.FC<GameHudProps> = ({
                 <ThumbsUp className={`w-4 h-4 ${sp.likedByMe ? 'fill-black' : ''}`} />
                 <span className="hidden sm:inline">{sp.likedByMe ? 'CURTIDO' : 'LIKE'}</span>
               </button>
+
+              {!sp.isBot && !sp.isFriend && sp.publicId && (
+                <button
+                  type="button"
+                  onClick={() => onSendFriendRequest?.(sp.publicId)}
+                  title="Enviar Pedido de Amizade"
+                  className="h-10 px-2.5 bg-neutral-900/90 hover:bg-amber-400 hover:text-black border border-amber-400/70 text-amber-300 flex items-center gap-1 text-[11px] font-black uppercase shadow-xl transition-colors cursor-pointer"
+                >
+                  <Users className="w-4 h-4" />
+                  <span className="hidden sm:inline">+ AMIGO</span>
+                </button>
+              )}
             </div>
 
             {/* Quit / Kitar Match Button (does not penalize alive teammates) */}
