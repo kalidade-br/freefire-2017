@@ -16,7 +16,6 @@ import {
   IconGlooSvg,
   IconGrenadeSvg,
   IconHelmetSvg,
-  IconMedkitSvg,
   IconScopeSvg,
   IconVestSvg,
 } from './HudIcons';
@@ -27,6 +26,8 @@ interface BackpackModalProps {
   onClose: () => void;
   onUseMedkit: () => void;
   onDropMedkit: () => void;
+  onUseSmallKit?: () => void;
+  onDropSmallKit?: () => void;
   onDropGloo: () => void;
   onDropGrenade: () => void;
   onDropAmmo: (slot: 1 | 2 | 3, amount: number) => void;
@@ -58,6 +59,7 @@ type DragPayload =
     }
   | { kind: 'backpack-item'; itemId: string; itemKind: string; label: string }
   | { kind: 'medkit'; label: string }
+  | { kind: 'smallkit'; label: string }
   | { kind: 'gloo'; label: string }
   | { kind: 'grenade'; label: string }
   | { kind: 'ammo'; slot: 1 | 2 | 3; amount: number; label: string };
@@ -92,6 +94,8 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
   onClose,
   onUseMedkit,
   onDropMedkit,
+  onUseSmallKit,
+  onDropSmallKit,
   onDropGloo,
   onDropGrenade,
   onDropAmmo,
@@ -140,6 +144,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
   const suppressClickUntilRef = useRef(0);
   const handlersRef = useRef({
     onDropMedkit,
+    onDropSmallKit,
     onDropGloo,
     onDropGrenade,
     onDropAmmo,
@@ -154,6 +159,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
   });
   handlersRef.current = {
     onDropMedkit,
+    onDropSmallKit,
     onDropGloo,
     onDropGrenade,
     onDropAmmo,
@@ -219,6 +225,7 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
             h.onDropEquippedAttachment(p.slot, p.attKey);
           else if (p.kind === 'backpack-item') h.onDropItem(p.itemId);
           else if (p.kind === 'medkit') h.onDropMedkit();
+          else if (p.kind === 'smallkit') h.onDropSmallKit?.();
           else if (p.kind === 'gloo') h.onDropGloo();
           else if (p.kind === 'grenade') h.onDropGrenade();
           else if (p.kind === 'ammo') h.onDropAmmo(p.slot, p.amount);
@@ -300,10 +307,21 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
               : def.category === 'SMG'
                 ? 'munição de SMG'
                 : 'munição de AR';
+      const ammoIcon =
+        def.category === 'SR'
+          ? '/icons/rifle.png'
+          : def.category === 'SG'
+            ? '/icons/doze.png'
+            : def.category === 'SMG'
+              ? '/icons/smg.png'
+              : def.category === 'AR'
+                ? '/icons/ar.png'
+                : undefined;
       return {
         slot,
         weaponId: w.weaponId,
         label: ammoTitle,
+        ammoIcon,
         total: w.reserveAmmo,
         dropChunk,
       };
@@ -367,7 +385,11 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
               <span className="self-start text-[9px] font-mono font-bold text-white/90 leading-none">
                 {hud.backpackCapacity}
               </span>
-              <IconBackpackSvg className="w-8 h-8 my-0.5 text-emerald-300" />
+              <img
+                src={`/icons/mochila-nv${hud.backpackLevel}.png`}
+                alt={`Mochila Nível ${hud.backpackLevel}`}
+                className="w-8 h-8 my-0.5 object-contain drop-shadow"
+              />
               <span className="text-[8px] sm:text-[9px] leading-tight text-white/85">
                 Mochila Lv{hud.backpackLevel}
               </span>
@@ -677,9 +699,9 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
             </span>
           </div>
 
-          <div className="flex-1 overflow-y-auto pt-2 pr-0.5">
-            <div className="grid grid-cols-2 gap-1.5">
-              {/* Medkits */}
+          <div className="flex-1 overflow-y-auto overscroll-contain touch-pan-y pt-2 pr-0.5">
+            <div className="grid grid-cols-2 gap-2">
+              {/* Kit Médico Grande */}
               {hud.medkitCount > 0 && (
                 <div
                   onPointerDown={(e) =>
@@ -692,17 +714,55 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                       onClose();
                     }
                   }}
-                  className="touch-none select-none bg-black/45 hover:bg-white/10 border border-white/25 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
+                  className="touch-none select-none bg-black/55 hover:bg-white/10 border border-white/30 p-2 flex flex-col justify-between min-h-[90px] cursor-grab active:cursor-grabbing shadow"
                   title="Clique para usar ou arraste até a direita para dropar"
                 >
-                  <div className="text-[9px] font-medium text-white/90 leading-tight line-clamp-2">
-                    Kit de primeiros socorros
+                  <div className="text-[10px] font-bold text-white/95 leading-tight line-clamp-2">
+                    Kit Médico (+75 HP)
                   </div>
-                  <div className="flex items-end justify-between mt-1">
-                    <span className="text-[10px] font-mono font-bold text-white tabular-nums leading-none">
+                  <div className="flex items-end justify-between mt-1.5">
+                    <span className="text-xs font-mono font-black text-white tabular-nums leading-none">
                       {hud.medkitCount}
                     </span>
-                    <IconMedkitSvg className="w-7 h-7 text-emerald-300" />
+                    <img
+                      src="/icons/kit-grande.png"
+                      alt="Kit Médico"
+                      draggable={false}
+                      className="w-10 h-10 object-contain drop-shadow pointer-events-none select-none"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Kit Pequeno */}
+              {hud.smallkitCount > 0 && (
+                <div
+                  onPointerDown={(e) =>
+                    beginDrag(e, { kind: 'smallkit', label: 'Kit Pequeno' })
+                  }
+                  onClick={() => {
+                    if (!canClickNow()) return;
+                    if (hud.hp < hud.maxHp) {
+                      onUseSmallKit?.();
+                      onClose();
+                    }
+                  }}
+                  className="touch-none select-none bg-black/55 hover:bg-white/10 border border-emerald-400/40 p-2 flex flex-col justify-between min-h-[90px] cursor-grab active:cursor-grabbing shadow"
+                  title="Cura rápida +35 HP · Clique para usar ou arraste para dropar"
+                >
+                  <div className="text-[10px] font-bold text-emerald-200 leading-tight line-clamp-2">
+                    Kit Pequeno (+35 HP)
+                  </div>
+                  <div className="flex items-end justify-between mt-1.5">
+                    <span className="text-xs font-mono font-black text-white tabular-nums leading-none">
+                      {hud.smallkitCount}
+                    </span>
+                    <img
+                      src="/icons/kit.png"
+                      alt="Kit Pequeno"
+                      draggable={false}
+                      className="w-9 h-9 object-contain drop-shadow pointer-events-none select-none"
+                    />
                   </div>
                 </div>
               )}
@@ -713,17 +773,17 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                   onPointerDown={(e) =>
                     beginDrag(e, { kind: 'gloo', label: 'Parede de Gelo' })
                   }
-                  className="touch-none select-none bg-black/45 hover:bg-white/10 border border-white/25 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
+                  className="touch-none select-none bg-black/55 hover:bg-white/10 border border-white/30 p-2 flex flex-col justify-between min-h-[90px] cursor-grab active:cursor-grabbing shadow"
                   title="Arraste até a direita para dropar"
                 >
-                  <div className="text-[9px] font-medium text-white/90 leading-tight">
+                  <div className="text-[10px] font-bold text-white/95 leading-tight">
                     Parede de Gelo
                   </div>
-                  <div className="flex items-end justify-between mt-1">
-                    <span className="text-[10px] font-mono font-bold text-white tabular-nums leading-none">
+                  <div className="flex items-end justify-between mt-1.5">
+                    <span className="text-xs font-mono font-black text-white tabular-nums leading-none">
                       {hud.glooCount}
                     </span>
-                    <IconGlooSvg className="w-7 h-7 text-cyan-300" />
+                    <IconGlooSvg className="w-9 h-9 text-cyan-300 pointer-events-none select-none" />
                   </div>
                 </div>
               )}
@@ -734,17 +794,17 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                   onPointerDown={(e) =>
                     beginDrag(e, { kind: 'grenade', label: 'Granada' })
                   }
-                  className="touch-none select-none bg-black/45 hover:bg-white/10 border border-white/25 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
+                  className="touch-none select-none bg-black/55 hover:bg-white/10 border border-white/30 p-2 flex flex-col justify-between min-h-[90px] cursor-grab active:cursor-grabbing shadow"
                   title="Arraste até a direita para dropar"
                 >
-                  <div className="text-[9px] font-medium text-white/90 leading-tight">
+                  <div className="text-[10px] font-bold text-white/95 leading-tight">
                     Granada Explosiva
                   </div>
-                  <div className="flex items-end justify-between mt-1">
-                    <span className="text-[10px] font-mono font-bold text-white tabular-nums leading-none">
+                  <div className="flex items-end justify-between mt-1.5">
+                    <span className="text-xs font-mono font-black text-white tabular-nums leading-none">
                       {hud.grenadeCount}
                     </span>
-                    <IconGrenadeSvg className="w-7 h-7 text-red-400" />
+                    <IconGrenadeSvg className="w-9 h-9 text-red-400 pointer-events-none select-none" />
                   </div>
                 </div>
               )}
@@ -761,17 +821,26 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                       label: ae.label,
                     })
                   }
-                  className="touch-none select-none bg-black/45 hover:bg-white/10 border border-white/25 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
+                  className="touch-none select-none bg-black/55 hover:bg-white/10 border border-white/30 p-2 flex flex-col justify-between min-h-[90px] cursor-grab active:cursor-grabbing shadow"
                   title={`Arraste até a direita para dropar ${ae.dropChunk} balas`}
                 >
-                  <div className="text-[9px] font-medium text-white/90 leading-tight">
+                  <div className="text-[10px] font-bold text-white/95 leading-tight">
                     {ae.label}
                   </div>
-                  <div className="flex items-end justify-between mt-1">
-                    <span className="text-[10px] font-mono font-bold text-white tabular-nums leading-none">
+                  <div className="flex items-end justify-between mt-1.5">
+                    <span className="text-xs font-mono font-black text-white tabular-nums leading-none">
                       {ae.total}
                     </span>
-                    <IconAmmoSvg className="w-8 h-6" />
+                    {ae.ammoIcon ? (
+                      <img
+                        src={ae.ammoIcon}
+                        alt={ae.label}
+                        draggable={false}
+                        className="w-9 h-9 object-contain drop-shadow pointer-events-none select-none"
+                      />
+                    ) : (
+                      <IconAmmoSvg className="w-10 h-8 pointer-events-none select-none" />
+                    )}
                   </div>
                 </div>
               ))}
@@ -805,20 +874,26 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                         onEquipItem(item.id, selectedWeaponSlot);
                       }
                     }}
-                    className="touch-none select-none bg-black/45 hover:bg-amber-500/15 border border-amber-400/40 p-1.5 flex flex-col justify-between min-h-[76px] cursor-grab active:cursor-grabbing"
+                    className="touch-none select-none bg-black/55 hover:bg-amber-500/15 border border-amber-400/50 p-2 flex flex-col justify-between min-h-[90px] cursor-grab active:cursor-grabbing shadow"
                     title="Arraste para uma Arma (equipar) ou para a Direita (descartar). Clique para equipar rápido."
                   >
-                    <div className="text-[9px] font-medium text-amber-200 leading-tight line-clamp-2">
+                    <div className="text-[10px] font-bold text-amber-200 leading-tight line-clamp-2">
                       {item.label}
                     </div>
-                    <div className="flex items-end justify-between mt-1">
-                      <span className="text-[10px] font-mono font-bold text-white tabular-nums leading-none">
+                    <div className="flex items-end justify-between mt-1.5">
+                      <span className="text-xs font-mono font-black text-white tabular-nums leading-none">
                         {item.quantity}
                       </span>
                       {item.kind === 'scope' ? (
-                        <IconScopeSvg className="w-6 h-6 text-emerald-300" />
+                        item.scopeType === '2x' ? (
+                          <img src="/icons/mira-2x.png" alt="Mira 2x" draggable={false} className="w-8 h-8 object-contain pointer-events-none select-none" />
+                        ) : item.scopeType === '4x' ? (
+                          <img src="/icons/mira-4x.png" alt="Mira 4x" draggable={false} className="w-8 h-8 object-contain pointer-events-none select-none" />
+                        ) : (
+                          <IconScopeSvg className="w-8 h-8 text-emerald-300 pointer-events-none select-none" />
+                        )
                       ) : (
-                        <Wrench className="w-5 h-5 text-sky-300" />
+                        <Wrench className="w-7 h-7 text-sky-300 pointer-events-none select-none" />
                       )}
                     </div>
                   </div>

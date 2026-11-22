@@ -6,8 +6,20 @@ import { CharacterAnimator } from './characterAnimator';
 import { CharacterRig, createCharacterRig } from './characterBuilder';
 import { InputManager } from './inputManager';
 import { createLobbyScene, LobbySceneHandle } from './lobbyScene';
+import { multiplayerClient, MultiplayerServerEvent } from './multiplayerClient';
 import { GameStateMachine } from './stateMachine';
 import { createProceduralTextures, ProceduralTextureSet } from './textures';
+import type {
+  AirplaneRouteSync,
+  ClientMatchStatePush,
+  MatchRoomAction,
+  MatchRoomJoinInfo,
+  MatchRoomSnapshot,
+  RemoteBotSync,
+  RemoteFlightPhase,
+  RemotePlayerSync,
+  RoomHumanSlot,
+} from '../shared/multiplayerTypes';
 import {
   ATTACHMENT_LABELS,
   AttachmentKind,
@@ -130,6 +142,24 @@ interface BulletTracer {
   active: boolean;
 }
 
+interface RemoteHumanEntity {
+  accountId: number;
+  publicId: string;
+  nickname: string;
+  level: number;
+  rankPoints: number;
+  modelId: 'adam' | 'eva';
+  teamId: number;
+  slotInTeam: number;
+  isTeamLeader: boolean;
+  rig: CharacterRig;
+  hitMeshes: THREE.Mesh[];
+  targetPos: THREE.Vector3;
+  targetYaw: number;
+  lastState: RemotePlayerSync | null;
+  lastWeaponId: WeaponId | null;
+}
+
 interface AirDropCrate {
   id: string;
   x: number;
@@ -159,6 +189,11 @@ export class BattleRoyaleEngine {
   private lobbyScene: LobbySceneHandle;
   private world: WorldHandle;
   private lobbyRig: CharacterRig;
+  private lobbyExtraRigs: CharacterRig[] = [];
+  private lobbySquadSignature = '';
+  private lobbySquadTargetZ = 3.72;
+  private lobbySelfOffsetX = 0;
+  private lobbySelfOffsetZ = 0;
   private playerRig: CharacterRig;
   private animator = new CharacterAnimator();
 
@@ -350,13 +385,16 @@ export class BattleRoyaleEngine {
   private helmetMaxHp = 0;
   private backpackLevel: 1 | 2 | 3 = 1;
   private medkitCount = 1;
+  private smallkitCount = 0;
   private glooCount = 2;
   private grenadeCount = 2;
   private isPlacingGloo = false;
   private isHoldingGrenade = false;
   private usingMedkit = false;
+  private healingKind: 'medkit' | 'smallkit' = 'medkit';
   private medkitTimer = 0;
   private readonly medkitDuration = 4.0;
+  private readonly smallkitDuration = 1.4;
   private backpackItems: BackpackItem[] = [];
   private nextBackpackItemId = 1;
   private vaultTimer = 0;
@@ -428,11 +466,55 @@ export class BattleRoyaleEngine {
   private playerNick = 'SOBREVIVENTE';
   private matchMode: MatchMode = 'solo';
   private isRanked = false;
+  private autoFillBots = true;
   private ffCoins = 100;
   private activeVehicleId: string | null = null;
   private prevCharYawForTurn = 0;
   private onLoadProgress?: (pct: number, label: string) => void;
   private loadTimers: number[] = [];
+
+  // Online Multiplayer Room State (50ms WS + HTTP fallback)
+  private onlineRoomId: string | null = null;
+  private onlineAccountId = 0;
+  private onlineHostAccountId = 0;
+  private onlineTeamId = 1;
+  private onlineSlotInTeam = 1;
+  private onlineWaitingEndsAtMs = 0;
+  private onlinePlaneStartedAtMs = 0;
+  private onlineAirplaneRoute: AirplaneRouteSync | null = null;
+  private onlineHumanSlots: RoomHumanSlot[] = [];
+  private onlineRemotePlayers = new Map<number, RemoteHumanEntity>();
+  private onlineSyncAccum = 0;
+  private onlineBotSyncAccum = 0;
+  private onlineSyncInFlight = false;
+  private pendingRoomActions: MatchRoomAction[] = [];
+  private syncedServerLootIds = new Set<string>();
+  private syncedServerGlooIds = new Set<string>();
+  private seenRemoteKillIds = new Set<number>();
+  private isSpectating = false;
+  private spectateTargetRef:
+    | { kind: 'human'; accountId: number }
+    | { kind: 'bot'; botId: string }
+    | null = null;
+  private spectateSnapNext = false;
+  private lastAttackerRef:
+    | { kind: 'human'; accountId: number }
+    | { kind: 'bot'; botId: string }
+    | null = null;
+  private playerDeathPlacement: number | null = null;
+  private likedSpectateTargets = new Set<string>();
+  private botSpectators: Array<{
+    id: string;
+    nick: string;
+    leaveAtElapsed: number;
+    likeAtElapsed: number | null;
+    liked: boolean;
+  }> = [];
+  private matchVisualLikes = 0;
+  private likeToasts: Array<{ id: number; nick: string; age: number }> = [];
+  private nextLikeToastId = 1;
+  private followingTeamLeader = true;
+  private unsubMultiplayer?: () => void;
 
   // Settings & callbacks
   private settings: GameSettings;
@@ -580,6 +662,10 @@ export class BattleRoyaleEngine {
     // Subscribe to state transitions
     this.stateMachine.subscribe((next) => {
       this.onStateEntered(next);
+    });
+
+    this.unsubMultiplayer = multiplayerClient.subscribe((ev) => {
+      this.handleMultiplayerEvent(ev);
     });
 
     soundEngine.configure(initialSettings.soundVolume, initialSettings.muted);
@@ -744,6 +830,7 @@ export class BattleRoyaleEngine {
     this.lobbyRig.setWeapon(null);
     this.lobbyRig.setBackWeapons(null, null);
     this.lobbyScene.characterAnchor.add(this.lobbyRig.root);
+    this.lobbyRig.root.position.set(this.lobbySelfOffsetX, 0, this.lobbySelfOffsetZ);
 
     this.world.scene.remove(this.playerRig.root);
     this.playerRig.dispose();
@@ -758,12 +845,97 @@ export class BattleRoyaleEngine {
     upgradeBotsToAdam(this.world.targets, this.textures.camoParachute);
   }
 
+  public setLobbySquadMembers(
+    members: Array<{
+      accountId: number;
+      nickname: string;
+      modelId: 'adam' | 'eva';
+      isLeader: boolean;
+      isSelf: boolean;
+    }>,
+  ): void {
+    const active = members.slice(0, 4);
+    const sig = active
+      .map((m) => `${m.accountId}:${m.modelId}:${m.isSelf ? 1 : 0}`)
+      .join('|');
+    if (sig === this.lobbySquadSignature) return;
+    this.lobbySquadSignature = sig;
+
+    for (let i = 0; i < this.lobbyExtraRigs.length; i++) {
+      this.lobbyScene.characterAnchor.remove(this.lobbyExtraRigs[i].root);
+      this.lobbyExtraRigs[i].dispose();
+    }
+    this.lobbyExtraRigs.length = 0;
+
+    const count = active.length;
+    const xLayouts: Record<number, number[]> = {
+      1: [0],
+      2: [-0.62, 0.62],
+      3: [-1.1, 0, 1.1],
+      4: [-1.45, -0.48, 0.48, 1.45],
+    };
+    const zLayouts: Record<number, number[]> = {
+      1: [0],
+      2: [0, 0],
+      3: [-0.15, 0.08, -0.15],
+      4: [-0.22, 0.08, 0.08, -0.22],
+    };
+    const xs = xLayouts[count] ?? [0];
+    const zs = zLayouts[count] ?? [0];
+    this.lobbySquadTargetZ = count <= 1 ? 3.72 : count === 2 ? 4.3 : 4.85;
+
+    let placedSelf = false;
+    for (let i = 0; i < count; i++) {
+      const m = active[i];
+      const px = xs[i] ?? 0;
+      const pz = zs[i] ?? 0;
+      if (m.isSelf && !placedSelf) {
+        placedSelf = true;
+        this.lobbySelfOffsetX = px;
+        this.lobbySelfOffsetZ = pz;
+        this.lobbyRig.root.position.set(px, 0, pz);
+      } else {
+        const rig = createCharacterRig(
+          {
+            ...this.currentCharConfig,
+            id: m.modelId === 'eva' ? 'ff_eva_classic' : 'ff_adam_classic',
+            name: m.modelId === 'eva' ? 'EVA' : 'ADAM',
+            modelId: m.modelId,
+            vestEnabled: false,
+            backpackEnabled: true,
+          },
+          this.textures.camoParachute,
+          this.textures.contactShadow,
+        );
+        rig.setWeapon(null);
+        rig.setBackWeapons(null, null);
+        rig.root.position.set(px, 0, pz);
+        this.lobbyScene.characterAnchor.add(rig.root);
+        this.lobbyExtraRigs.push(rig);
+      }
+    }
+
+    if (!placedSelf) {
+      this.lobbySelfOffsetX = 0;
+      this.lobbySelfOffsetZ = 0;
+      this.lobbyRig.root.position.set(0, 0, 0);
+    }
+  }
+
   public setMatchMode(mode: MatchMode): void {
     this.matchMode = mode;
   }
 
   public getMatchMode(): MatchMode {
     return this.matchMode;
+  }
+
+  public setAutoFillBots(fill: boolean): void {
+    this.autoFillBots = fill;
+  }
+
+  public getAutoFillBots(): boolean {
+    return this.autoFillBots;
   }
 
   public setRankedMode(ranked: boolean): void {
@@ -851,13 +1023,732 @@ export class BattleRoyaleEngine {
   public startMatchmaking(): void {
     soundEngine.unlock();
     soundEngine.playUiConfirm();
+    this.clearOnlineRoomState();
     this.matchmakingTimer = 0;
     this.stateMachine.forceState(GameState.MATCHMAKING);
   }
 
+  public startOnlineMatch(joinInfo: MatchRoomJoinInfo, partyAutoFill?: boolean): void {
+    soundEngine.unlock();
+    soundEngine.playUiConfirm();
+    this.clearOnlineRoomState();
+
+    this.onlineRoomId = joinInfo.roomId;
+    this.onlineAccountId = joinInfo.yourAccountId;
+    this.onlineHostAccountId = joinInfo.hostAccountId;
+    this.onlineTeamId = joinInfo.yourTeamId;
+    this.onlineSlotInTeam = joinInfo.yourSlotInTeam;
+    this.onlineWaitingEndsAtMs = joinInfo.waitingEndsAtMs;
+    this.onlinePlaneStartedAtMs = joinInfo.planeStartedAtMs;
+    this.onlineAirplaneRoute = joinInfo.airplane;
+    this.onlineHumanSlots = joinInfo.humans;
+
+    this.matchMode = joinInfo.mode;
+    this.isRanked = joinInfo.isRanked;
+    this.autoFillBots = partyAutoFill ?? joinInfo.autoFillBots;
+
+    // Create 3D Adam/Eva rigs for up to 3 other online humans in this room
+    for (let i = 0; i < joinInfo.humans.length; i++) {
+      const slot = joinInfo.humans[i];
+      if (slot.accountId === joinInfo.yourAccountId) continue;
+      this.createRemotePlayerEntity(slot);
+    }
+
+    this.beginMatchLoading('waiting');
+  }
+
   public cancelMatchmaking(): void {
     soundEngine.playUiClick(480);
+    this.clearOnlineRoomState();
+    void multiplayerClient.leaveMatch();
     this.stateMachine.forceState(GameState.LOBBY);
+  }
+
+  private clearOnlineRoomState(): void {
+    this.onlineRoomId = null;
+    this.onlineAccountId = 0;
+    this.onlineHostAccountId = 0;
+    this.onlineTeamId = 1;
+    this.onlineSlotInTeam = 1;
+    this.onlineWaitingEndsAtMs = 0;
+    this.onlinePlaneStartedAtMs = 0;
+    this.onlineAirplaneRoute = null;
+    this.onlineHumanSlots = [];
+    this.onlineSyncAccum = 0;
+    this.onlineBotSyncAccum = 0;
+    this.onlineSyncInFlight = false;
+    this.pendingRoomActions.length = 0;
+    this.syncedServerLootIds.clear();
+    this.syncedServerGlooIds.clear();
+    this.seenRemoteKillIds.clear();
+    this.isSpectating = false;
+    this.spectateTargetRef = null;
+    this.spectateSnapNext = false;
+
+    for (const entity of this.onlineRemotePlayers.values()) {
+      this.world.scene.remove(entity.rig.root);
+      entity.rig.dispose();
+    }
+    this.onlineRemotePlayers.clear();
+  }
+
+  private createRemotePlayerEntity(slot: RoomHumanSlot): RemoteHumanEntity {
+    const existing = this.onlineRemotePlayers.get(slot.accountId);
+    if (existing) return existing;
+
+    const modelId = slot.character?.modelId === 'eva' ? 'eva' : 'adam';
+    const charCfg: CharacterConfig = {
+      ...this.currentCharConfig,
+      ...slot.character,
+      modelId,
+      vestEnabled: false,
+      backpackEnabled: slot.character?.backpackEnabled ?? true,
+    };
+    const rig = createCharacterRig(
+      charCfg,
+      this.textures.camoParachute,
+      this.textures.contactShadow,
+    );
+    rig.setWeapon('g18');
+    rig.setBackWeapons(null, null);
+    rig.root.position.set(-60, 2.2, 68);
+    rig.root.visible = false;
+
+    const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+    const chestHit = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.98, 0.56), hitMat);
+    chestHit.position.set(0, 1.05, 0);
+    chestHit.userData.remoteAccountId = slot.accountId;
+    chestHit.userData.isHeadshot = false;
+    rig.root.add(chestHit);
+
+    const headHit = new THREE.Mesh(new THREE.SphereGeometry(0.26, 8, 6), hitMat);
+    headHit.position.set(0, 1.66, 0);
+    headHit.userData.remoteAccountId = slot.accountId;
+    headHit.userData.isHeadshot = true;
+    rig.root.add(headHit);
+
+    this.world.scene.add(rig.root);
+
+    const entity: RemoteHumanEntity = {
+      accountId: slot.accountId,
+      publicId: slot.publicId,
+      nickname: slot.nickname,
+      level: slot.level ?? 1,
+      rankPoints: slot.rankPoints ?? 1000,
+      modelId,
+      teamId: slot.teamId,
+      slotInTeam: slot.slotInTeam,
+      isTeamLeader: Boolean(slot.isTeamLeader),
+      rig,
+      hitMeshes: [chestHit, headHit],
+      targetPos: new THREE.Vector3(-60, 2.2, 68),
+      targetYaw: 0,
+      lastState: null,
+      lastWeaponId: 'g18',
+    };
+    this.onlineRemotePlayers.set(slot.accountId, entity);
+    return entity;
+  }
+
+  private queueOrSendRoomAction(action: MatchRoomAction): void {
+    if (!this.onlineRoomId) return;
+    if (!multiplayerClient.sendWsAction(action)) {
+      this.pendingRoomActions.push(action);
+      if (this.pendingRoomActions.length > 24) {
+        this.pendingRoomActions.shift();
+      }
+    }
+  }
+
+  private findOnlineTeamLeader(): RemoteHumanEntity | null {
+    if (!this.onlineRoomId || this.matchMode === 'solo') return null;
+    const selfSlot = this.onlineHumanSlots.find((s) => s.accountId === this.onlineAccountId);
+    if (selfSlot?.isTeamLeader) return null;
+    for (const entity of this.onlineRemotePlayers.values()) {
+      if (entity.teamId === this.onlineTeamId && entity.isTeamLeader) {
+        return entity;
+      }
+    }
+    for (const entity of this.onlineRemotePlayers.values()) {
+      if (entity.teamId === this.onlineTeamId && entity.slotInTeam === 1) {
+        return entity;
+      }
+    }
+    return null;
+  }
+
+  public toggleFollowLeader(): void {
+    this.followingTeamLeader = !this.followingTeamLeader;
+    if (
+      this.followingTeamLeader &&
+      this.stateMachine.getState() === GameState.AIRPLANE
+    ) {
+      const leader = this.findOnlineTeamLeader();
+      if (
+        leader?.lastState &&
+        (leader.lastState.flightPhase === 'dropping' ||
+          leader.lastState.flightPhase === 'parachute')
+      ) {
+        this.jumpFromPlane(true);
+      }
+    }
+    this.hudDirty = true;
+  }
+
+  private findLivingOnlineTeammate(): RemoteHumanEntity | null {
+    for (const entity of this.onlineRemotePlayers.values()) {
+      if (entity.teamId !== this.onlineTeamId) continue;
+      if (entity.lastState && !entity.lastState.eliminated) {
+        return entity;
+      }
+    }
+    return null;
+  }
+
+  private getSpectateCandidates(): Array<
+    { kind: 'human'; accountId: number } | { kind: 'bot'; botId: string }
+  > {
+    const humanMates: Array<{ kind: 'human'; accountId: number }> = [];
+    const otherHumans: Array<{ kind: 'human'; accountId: number }> = [];
+    for (const entity of this.onlineRemotePlayers.values()) {
+      if (!entity.lastState || entity.lastState.eliminated) continue;
+      if (entity.teamId === this.onlineTeamId) {
+        humanMates.push({ kind: 'human', accountId: entity.accountId });
+      } else {
+        otherHumans.push({ kind: 'human', accountId: entity.accountId });
+      }
+    }
+
+    const allyBots: Array<{ kind: 'bot'; botId: string }> = [];
+    const enemyBots: Array<{ kind: 'bot'; botId: string }> = [];
+    for (let i = 0; i < this.world.targets.length; i++) {
+      const b = this.world.targets[i];
+      if (b.eliminated || b.downTimer > 0) continue;
+      if (b.isAlly) {
+        allyBots.push({ kind: 'bot', botId: b.id });
+      } else {
+        enemyBots.push({ kind: 'bot', botId: b.id });
+      }
+    }
+
+    const ordered: Array<
+      { kind: 'human'; accountId: number } | { kind: 'bot'; botId: string }
+    > = [...humanMates, ...allyBots];
+
+    const killer = this.lastAttackerRef;
+    const isSameRef = (
+      a: { kind: 'human'; accountId: number } | { kind: 'bot'; botId: string },
+      b: { kind: 'human'; accountId: number } | { kind: 'bot'; botId: string },
+    ) =>
+      a.kind === b.kind &&
+      (a.kind === 'human'
+        ? a.accountId === (b as { kind: 'human'; accountId: number }).accountId
+        : a.botId === (b as { kind: 'bot'; botId: string }).botId);
+
+    if (killer) {
+      const killerInOthers =
+        (killer.kind === 'human' &&
+          otherHumans.some((h) => h.accountId === killer.accountId)) ||
+        (killer.kind === 'bot' &&
+          enemyBots.some((b) => b.botId === killer.botId));
+      if (killerInOthers && !ordered.some((o) => isSameRef(o, killer))) {
+        ordered.push(killer);
+      }
+    }
+
+    for (const h of otherHumans) {
+      if (!ordered.some((o) => isSameRef(o, h))) ordered.push(h);
+    }
+    for (const b of enemyBots) {
+      if (!ordered.some((o) => isSameRef(o, b))) ordered.push(b);
+    }
+    return ordered;
+  }
+
+  public cycleSpectateTarget(dir: -1 | 1 = 1): void {
+    if (!this.isSpectating) return;
+    const candidates = this.getSpectateCandidates();
+    if (candidates.length <= 1) return;
+    const cur = this.spectateTargetRef;
+    const idx = cur
+      ? candidates.findIndex(
+          (c) =>
+            c.kind === cur.kind &&
+            (c.kind === 'human'
+              ? c.accountId === (cur as { kind: 'human'; accountId: number }).accountId
+              : c.botId === (cur as { kind: 'bot'; botId: string }).botId),
+        )
+      : 0;
+    const baseIdx = idx >= 0 ? idx : 0;
+    this.spectateTargetRef =
+      candidates[(baseIdx + dir + candidates.length) % candidates.length];
+    this.spectateSnapNext = true;
+    this.hudDirty = true;
+  }
+
+  public sendSpectateLike(): void {
+    if (!this.isSpectating || !this.spectateTargetRef) return;
+    const ref = this.spectateTargetRef;
+    const key = ref.kind === 'human' ? `h:${ref.accountId}` : `b:${ref.botId}`;
+    if (this.likedSpectateTargets.has(key)) return;
+    this.likedSpectateTargets.add(key);
+
+    let nick = 'Jogador';
+    if (ref.kind === 'human') {
+      nick = this.onlineRemotePlayers.get(ref.accountId)?.nickname ?? nick;
+    } else {
+      nick = this.targetById.get(ref.botId)?.nick ?? nick;
+    }
+    this.likeToasts.push({
+      id: this.nextLikeToastId++,
+      nick: `Você curtiu ${nick}`,
+      age: 0,
+    });
+    soundEngine.playUiClick();
+    this.hudDirty = true;
+  }
+
+  public exitSpectateToResults(): void {
+    if (this.onlineRoomId && this.findLivingOnlineTeammate()) {
+      this.returnToLobby();
+      return;
+    }
+    this.isSpectating = false;
+    this.spectateTargetRef = null;
+    this.stateMachine.forceState(GameState.GAMEOVER);
+  }
+
+  private handleMultiplayerEvent(ev: MultiplayerServerEvent): void {
+    if (!this.onlineRoomId) return;
+
+    if (ev.type === 'match_kicked' && (!ev.roomId || ev.roomId === this.onlineRoomId)) {
+      this.returnToLobby();
+      return;
+    }
+
+    if (ev.type === 'room_snapshot' && ev.snapshot.roomId === this.onlineRoomId) {
+      this.applyRoomSnapshot(ev.snapshot);
+      return;
+    }
+
+    if (ev.type === 'remote_shot') {
+      const entity = this.onlineRemotePlayers.get(ev.accountId);
+      const dist = entity
+        ? entity.rig.root.position.distanceTo(this.pos)
+        : Math.hypot(ev.originX - this.pos.x, ev.originZ - this.pos.z);
+      if (dist < 140) {
+        soundEngine.playGunshot(ev.weaponId, false);
+      }
+      _v1.set(ev.originX, ev.originY, ev.originZ);
+      _v2.set(ev.hitX, ev.hitY, ev.hitZ);
+      this.spawnTracer(_v1, _v2);
+      return;
+    }
+
+    if (ev.type === 'incoming_damage') {
+      if (this.isDead || this.isSpectating) return;
+      const wShort = WEAPONS[ev.weaponId]?.shortName ?? 'ARMA';
+      this.applyPlayerDamage(
+        ev.damage,
+        ev.fromX,
+        ev.fromZ,
+        ev.fromNickname,
+        wShort,
+        ev.isHeadshot,
+      );
+      return;
+    }
+
+    if (ev.type === 'revived_by_ally') {
+      if (this.isPlayerDowned && !this.isDead) {
+        this.isPlayerDowned = false;
+        this.hp = 115;
+        this.playerBleedHp = 100;
+        this.pushKillFeed(ev.fromNickname, `${this.playerNick} SALVO`, 'REVIVE', false, true);
+        soundEngine.completeMedkitAudio();
+        this.hudDirty = true;
+      }
+      return;
+    }
+
+    if (ev.type === 'revive_from_shop_drop') {
+      // Redeploy eliminated player right above the Vending Shop via parachute!
+      this.isSpectating = false;
+      this.spectateTargetRef = null;
+      this.spectateSnapNext = false;
+      this.playerDeathPlacement = null;
+      this.isDead = false;
+      this.isPlayerDowned = false;
+      this.hp = this.maxHp;
+      this.playerBleedHp = 100;
+      const dropX = THREE.MathUtils.clamp(ev.shopX, -BERMUDA_HALF + 20, BERMUDA_HALF - 20);
+      const dropZ = THREE.MathUtils.clamp(ev.shopZ, -BERMUDA_HALF + 20, BERMUDA_HALF - 20);
+      const groundY = Math.max(0, this.world.groundHeightAt(dropX, dropZ));
+      this.pos.set(dropX, groundY + 95, dropZ);
+      this.vel.set(0, -8.5, 0);
+      this.isGrounded = false;
+      this.weapons = {
+        1: null,
+        2: null,
+        3: {
+          weaponId: 'g18',
+          ammoInMag: WEAPONS.g18.magSize,
+          reserveAmmo: 45,
+          scope: 'none',
+          attachments: emptyAttachments(),
+        },
+      };
+      this.activeSlot = 3;
+      this.syncPlayerWeaponAndBackVisuals();
+      soundEngine.playParachuteOpen();
+      this.pushKillFeed('LOJINHA', `${this.playerNick} REDESDOBRADO`, 'LOJA', false, true);
+      this.stateMachine.forceState(GameState.PARACHUTE);
+      this.hudDirty = true;
+      return;
+    }
+
+    if (ev.type === 'loot_collected') {
+      if (!this.syncedServerLootIds.has(ev.lootId)) {
+        this.syncedServerLootIds.add(ev.lootId);
+        const lv = this.world.loots.find((l) => l.data.id === ev.lootId && !l.data.collected);
+        if (lv) {
+          lv.data.collected = true;
+          lv.mesh.visible = false;
+        }
+      }
+      return;
+    }
+
+    if (ev.type === 'gloo_spawned') {
+      if (!this.syncedServerGlooIds.has(ev.wall.id)) {
+        this.syncedServerGlooIds.add(ev.wall.id);
+        this.spawnGlooWallAt(ev.wall.x, ev.wall.y, ev.wall.z, ev.wall.rotY, true);
+      }
+      return;
+    }
+
+    if (ev.type === 'kill_feed_event') {
+      if (!this.seenRemoteKillIds.has(ev.entry.id)) {
+        this.seenRemoteKillIds.add(ev.entry.id);
+        this.pushKillFeed(
+          ev.entry.killerName,
+          ev.entry.victimName,
+          ev.entry.weaponShort,
+          ev.entry.isHeadshot,
+          ev.entry.killerAccountId === this.onlineAccountId,
+        );
+      }
+      return;
+    }
+
+    if (ev.type === 'remote_bot_damage' && this.onlineAccountId === this.onlineHostAccountId) {
+      const bot = this.targetById.get(ev.botId);
+      if (bot) {
+        this.applyBotHitDamage(
+          bot,
+          ev.damage,
+          false,
+          ev.fromNickname,
+          ev.weaponShort,
+          ev.isHeadshot,
+          ev.attackerX,
+          ev.attackerZ,
+        );
+      }
+    }
+  }
+
+  private applyRoomSnapshot(snap: MatchRoomSnapshot): void {
+    this.onlineHostAccountId = snap.hostAccountId;
+    this.onlineWaitingEndsAtMs = snap.waitingEndsAtMs;
+    this.onlinePlaneStartedAtMs = snap.planeStartedAtMs;
+    this.onlineAirplaneRoute = snap.airplane;
+
+    // 1. Update Remote Human Entities (including late joiners during waiting countdown)
+    const presentAccounts = new Set<number>();
+    for (let i = 0; i < snap.humans.length; i++) {
+      const rh = snap.humans[i];
+      if (rh.accountId === this.onlineAccountId) continue;
+      presentAccounts.add(rh.accountId);
+      let entity = this.onlineRemotePlayers.get(rh.accountId);
+      if (!entity) {
+        entity = this.createRemotePlayerEntity({
+          accountId: rh.accountId,
+          publicId: rh.publicId,
+          nickname: rh.nickname,
+          teamId: rh.teamId,
+          slotInTeam: rh.slotInTeam,
+          character: rh.character,
+        });
+      }
+      entity.targetPos.set(rh.x, rh.y, rh.z);
+      entity.targetYaw = rh.yaw;
+      entity.lastState = rh;
+      if (typeof rh.level === 'number') entity.level = rh.level;
+      if (typeof rh.rankPoints === 'number') entity.rankPoints = rh.rankPoints;
+      if (typeof rh.isTeamLeader === 'boolean') entity.isTeamLeader = rh.isTeamLeader;
+      if (entity.lastWeaponId !== rh.weaponId) {
+        entity.lastWeaponId = rh.weaponId;
+        entity.rig.setWeapon(rh.weaponId);
+      }
+      entity.rig.setParachuteVisible(rh.flightPhase === 'parachute');
+      entity.rig.setSurfboardVisible(rh.isOnSurfboard);
+    }
+    for (const [accId, ent] of this.onlineRemotePlayers.entries()) {
+      if (!presentAccounts.has(accId)) {
+        ent.rig.root.visible = false;
+        if (ent.lastState) {
+          ent.lastState.eliminated = true;
+        }
+      }
+    }
+
+    // 2. Shared Vehicles (driven by other remote humans)
+    for (let i = 0; i < snap.vehicles.length; i++) {
+      const rv = snap.vehicles[i];
+      if (rv.id === this.activeVehicleId) continue;
+      const veh = this.world.vehicles.find((v) => v.id === rv.id);
+      if (!veh) continue;
+      if (rv.driverAccountId !== null && rv.driverAccountId !== this.onlineAccountId) {
+        veh.x = rv.x;
+        veh.y = rv.y;
+        veh.z = rv.z;
+        veh.yaw = rv.yaw;
+        veh.speed = rv.speed;
+        veh.hp = rv.hp;
+        veh.destroyed = rv.destroyed;
+        veh.group.position.set(rv.x, rv.y, rv.z);
+        veh.group.rotation.y = rv.yaw;
+        veh.collider.cx = rv.x;
+        veh.collider.cz = rv.z;
+        veh.collider.rotY = rv.yaw;
+        veh.collider.minY = rv.y;
+        veh.collider.maxY = rv.y + 2.05;
+      }
+    }
+
+    // 3. Shared Ground Loot Collected State
+    for (let i = 0; i < snap.collectedLootIds.length; i++) {
+      const lid = snap.collectedLootIds[i];
+      if (this.syncedServerLootIds.has(lid)) continue;
+      this.syncedServerLootIds.add(lid);
+      const lv = this.world.loots.find((l) => l.data.id === lid && !l.data.collected);
+      if (lv) {
+        lv.data.collected = true;
+        lv.mesh.visible = false;
+      }
+    }
+
+    // 4. Shared Safe Zone (when in PLAYING)
+    if (this.stateMachine.getState() === GameState.PLAYING) {
+      this.zonePhase = snap.safeZone.phase;
+      this.zoneIsShrinking = snap.safeZone.isShrinking;
+      this.zoneTimer = snap.safeZone.timerSec;
+      this.zoneCurrentX = snap.safeZone.currentX;
+      this.zoneCurrentZ = snap.safeZone.currentZ;
+      this.zoneCurrentRadius = snap.safeZone.currentRadius;
+      this.zoneNextX = snap.safeZone.nextX;
+      this.zoneNextZ = snap.safeZone.nextZ;
+      this.zoneNextRadius = snap.safeZone.nextRadius;
+    }
+
+    // 5. Shared Bots when client is NOT the room host
+    if (this.onlineAccountId !== this.onlineHostAccountId && snap.bots.length > 0) {
+      this.aliveCount = snap.aliveCount;
+      for (let i = 0; i < snap.bots.length; i++) {
+        const rb = snap.bots[i];
+        const bot = this.targetById.get(rb.id);
+        if (!bot) continue;
+        bot.hp = rb.hp;
+        bot.isDowned = rb.isDowned;
+        bot.bleedHp = rb.bleedHp;
+        bot.eliminated = rb.eliminated;
+        bot.kills = rb.kills ?? bot.kills;
+        if (bot.weaponId !== rb.weaponId) {
+          bot.weaponId = rb.weaponId;
+        }
+        if (rb.eliminated) {
+          bot.group.visible = false;
+          if (bot.parachuteMesh) bot.parachuteMesh.visible = false;
+          continue;
+        }
+        bot.group.position.lerp(_v1.set(rb.x, rb.y, rb.z), 0.45);
+        bot.group.rotation.y = lerpAngle(bot.group.rotation.y, rb.yaw, 0.45);
+        bot.airState = rb.inParachute ? 'parachuting' : 'ground';
+        if (bot.parachuteMesh) bot.parachuteMesh.visible = rb.inParachute;
+        const dSq =
+          (bot.group.position.x - this.pos.x) * (bot.group.position.x - this.pos.x) +
+          (bot.group.position.z - this.pos.z) * (bot.group.position.z - this.pos.z);
+        bot.group.visible = bot.isAlly || dSq <= 150 * 150;
+      }
+    }
+
+    // 6. Kill feed catch-up
+    for (let i = 0; i < snap.killFeed.length; i++) {
+      const kf = snap.killFeed[i];
+      if (!this.seenRemoteKillIds.has(kf.id)) {
+        this.seenRemoteKillIds.add(kf.id);
+        this.pushKillFeed(
+          kf.killerName,
+          kf.victimName,
+          kf.weaponShort,
+          kf.isHeadshot,
+          kf.killerAccountId === this.onlineAccountId,
+        );
+      }
+    }
+  }
+
+  private pushOnlineSyncState(dt: number): void {
+    if (!this.onlineRoomId) return;
+    this.onlineSyncAccum += dt;
+    this.onlineBotSyncAccum += dt;
+    if (this.onlineSyncAccum < 0.05) return; // 50ms sync interval
+    this.onlineSyncAccum = 0;
+
+    const state = this.stateMachine.getState();
+    const flightPhase: RemoteFlightPhase =
+      state === GameState.WAITING
+        ? 'waiting'
+        : state === GameState.AIRPLANE
+          ? 'airplane'
+          : state === GameState.DROPPING
+            ? 'dropping'
+            : state === GameState.PARACHUTE
+              ? 'parachute'
+              : 'landed';
+
+    const activeW = this.getActiveWeaponState();
+    const activeVeh = this.activeVehicleId
+      ? this.world.vehicles.find((v) => v.id === this.activeVehicleId) ?? null
+      : null;
+
+    let botsPayload: RemoteBotSync[] | undefined;
+    if (this.onlineAccountId === this.onlineHostAccountId && this.onlineBotSyncAccum >= 0.1) {
+      this.onlineBotSyncAccum = 0;
+      botsPayload = this.world.targets.map((b) => ({
+        id: b.id,
+        x: Math.round(b.group.position.x * 100) / 100,
+        y: Math.round(b.group.position.y * 100) / 100,
+        z: Math.round(b.group.position.z * 100) / 100,
+        yaw: Math.round(b.group.rotation.y * 1000) / 1000,
+        hp: Math.round(b.hp),
+        maxHp: b.maxHp,
+        isDowned: b.isDowned,
+        bleedHp: Math.round(b.bleedHp),
+        eliminated: b.eliminated,
+        weaponId: b.weaponId,
+        stance: b.isDowned ? 'crouch' : 'stand',
+        inParachute: b.airState === 'parachuting',
+        isSwimming: b.group.position.y < -0.15,
+        kills: b.kills ?? 0,
+      }));
+    }
+
+    const push: ClientMatchStatePush = {
+      x: Math.round(this.pos.x * 100) / 100,
+      y: Math.round(this.pos.y * 100) / 100,
+      z: Math.round(this.pos.z * 100) / 100,
+      yaw: Math.round(this.characterYaw * 1000) / 1000,
+      pitch: Math.round(this.pitch * 1000) / 1000,
+      stance: this.stance,
+      isSprinting: this.isSprinting,
+      isAiming: this.isAiming,
+      inWater: this.inWater,
+      isSwimming: this.isSwimming,
+      isOnSurfboard: this.isOnSurfboard,
+      flightPhase,
+      weaponId: activeW ? activeW.weaponId : null,
+      ammoInMag: activeW ? activeW.ammoInMag : 0,
+      reserveAmmo: activeW ? activeW.reserveAmmo : 0,
+      hp: Math.round(this.hp),
+      maxHp: this.maxHp,
+      vestLevel: this.vestLevel,
+      helmetLevel: this.helmetLevel,
+      isDowned: this.isPlayerDowned,
+      bleedHp: Math.round(this.playerBleedHp),
+      eliminated: this.isDead,
+      kills: this.kills,
+      activeVehicleId: this.activeVehicleId,
+      vehicleState: activeVeh
+        ? {
+            id: activeVeh.id,
+            x: Math.round(activeVeh.x * 100) / 100,
+            y: Math.round(activeVeh.y * 100) / 100,
+            z: Math.round(activeVeh.z * 100) / 100,
+            yaw: Math.round(activeVeh.yaw * 1000) / 1000,
+            speed: Math.round(activeVeh.speed * 100) / 100,
+            hp: Math.round(activeVeh.hp),
+            destroyed: activeVeh.destroyed,
+          }
+        : null,
+      bots: botsPayload,
+      aliveCountHint: this.onlineAccountId === this.onlineHostAccountId ? this.aliveCount : undefined,
+    };
+
+    const sentWs = multiplayerClient.sendWsState(push);
+    if (!sentWs && !this.onlineSyncInFlight) {
+      this.onlineSyncInFlight = true;
+      const acts = this.pendingRoomActions.splice(0, this.pendingRoomActions.length);
+      void multiplayerClient
+        .syncRoomHttp(this.onlineRoomId, push, acts.length > 0 ? acts : undefined)
+        .catch((err: unknown) => {
+          const status = (err as { status?: number } | null)?.status;
+          if (status === 404 && this.onlineRoomId) {
+            this.returnToLobby();
+          }
+        })
+        .finally(() => {
+          this.onlineSyncInFlight = false;
+        });
+    } else if (sentWs && this.pendingRoomActions.length > 0) {
+      const acts = this.pendingRoomActions.splice(0, this.pendingRoomActions.length);
+      for (let i = 0; i < acts.length; i++) {
+        multiplayerClient.sendWsAction(acts[i]);
+      }
+    }
+  }
+
+  private updateRemoteHumanEntities(dt: number, state: GameState): void {
+    const smooth = 1 - Math.exp(-16 * dt);
+    const showInGround =
+      state === GameState.WAITING ||
+      state === GameState.PLAYING ||
+      state === GameState.DROPPING ||
+      state === GameState.PARACHUTE;
+
+    for (const entity of this.onlineRemotePlayers.values()) {
+      const st = entity.lastState;
+      if (!st || !showInGround || st.eliminated || st.flightPhase === 'airplane') {
+        entity.rig.root.visible = false;
+        continue;
+      }
+      entity.rig.root.visible = true;
+      const prevPos = entity.rig.root.position;
+      const dx = entity.targetPos.x - prevPos.x;
+      const dz = entity.targetPos.z - prevPos.z;
+      const moveSpeed = Math.min(18, Math.hypot(dx, dz) / Math.max(0.016, dt));
+      prevPos.lerp(entity.targetPos, smooth);
+      entity.rig.root.rotation.y = lerpAngle(entity.rig.root.rotation.y, entity.targetYaw + Math.PI, smooth);
+
+      this.animator.update(entity.rig, {
+        dt,
+        speed: moveSpeed,
+        stance: st.stance,
+        isGrounded: st.flightPhase === 'landed' || st.flightPhase === 'waiting',
+        isSprinting: st.isSprinting,
+        isAiming: st.isAiming,
+        isFiring: false,
+        isLobby: false,
+        isSkydiving: st.flightPhase === 'dropping',
+        isParachuting: st.flightPhase === 'parachute',
+        isDead: st.isDowned || st.eliminated,
+        isDriving: Boolean(st.activeVehicleId),
+        isSwimming: st.isSwimming,
+        isOnSurfboard: st.isOnSurfboard,
+        pitchRad: st.pitch,
+      });
+    }
   }
 
   public startQuickTraining(): void {
@@ -871,9 +1762,12 @@ export class BattleRoyaleEngine {
     this.enterAirplanePhase();
   }
 
-  public jumpFromPlane(): void {
+  public jumpFromPlane(fromLeaderFollow = false): void {
     if (this.stateMachine.getState() !== GameState.AIRPLANE) return;
-    if (this.airplaneProgress < 0.08) return;
+    if (!fromLeaderFollow && this.airplaneProgress < 0.08) return;
+    if (!fromLeaderFollow) {
+      this.followingTeamLeader = false;
+    }
     soundEngine.playJump();
     this.vel.set(0, -4, 0);
     this.stateMachine.transition(GameState.DROPPING);
@@ -931,6 +1825,10 @@ export class BattleRoyaleEngine {
     this.exitVehicleImmediate();
     soundEngine.stopVehicleAudio();
     this.input.setGameplayActive(false);
+    if (this.onlineRoomId) {
+      this.clearOnlineRoomState();
+      void multiplayerClient.leaveMatch();
+    }
     this.stateMachine.forceState(GameState.LOBBY);
   }
 
@@ -952,6 +1850,46 @@ export class BattleRoyaleEngine {
     this.deathTimer = 1.6;
     this.input.setGameplayActive(false);
     this.pushKillFeed(attackerName, this.playerNick, weaponShort, isHead, false);
+    if (this.onlineRoomId) {
+      this.queueOrSendRoomAction({
+        type: 'kill_feed',
+        killerName: attackerName,
+        victimName: this.playerNick,
+        weaponShort,
+        isHeadshot: isHead,
+      });
+    }
+
+    this.playerDeathPlacement = Math.max(2, this.aliveCount);
+    this.lastAttackerRef = null;
+    for (const entity of this.onlineRemotePlayers.values()) {
+      if (entity.nickname === attackerName && entity.lastState && !entity.lastState.eliminated) {
+        this.lastAttackerRef = { kind: 'human', accountId: entity.accountId };
+        break;
+      }
+    }
+    if (!this.lastAttackerRef) {
+      for (let i = 0; i < this.world.targets.length; i++) {
+        const b = this.world.targets[i];
+        if (b.nick === attackerName && !b.eliminated && b.downTimer <= 0) {
+          this.lastAttackerRef = { kind: 'bot', botId: b.id };
+          break;
+        }
+      }
+    }
+
+    // Check if an online teammate is still alive -> immediately enter Spectator mode
+    if (this.onlineRoomId && this.matchMode !== 'solo') {
+      const livingHumanMate = this.findLivingOnlineTeammate();
+      if (livingHumanMate) {
+        this.isSpectating = true;
+        this.spectateTargetRef = { kind: 'human', accountId: livingHumanMate.accountId };
+        this.spectateSnapNext = true;
+        this.deathTimer = 0;
+        this.hudDirty = true;
+        return;
+      }
+    }
 
     // Team wipe: eliminate any already-downed teammates on team 0
     const bots = this.world.targets;
@@ -974,7 +1912,18 @@ export class BattleRoyaleEngine {
   ): void {
     if (this.isDead || this.isPlayerDowned) return;
     const isPlaying = this.stateMachine.getState() === GameState.PLAYING;
-    if (isPlaying && this.matchMode !== 'solo' && this.hasStandingTeammate(0, 'player')) {
+    const hasOnlineStandingMate = Boolean(
+      this.onlineRoomId &&
+        this.matchMode !== 'solo' &&
+        Array.from(this.onlineRemotePlayers.values()).some(
+          (e) => e.teamId === this.onlineTeamId && e.lastState && !e.lastState.eliminated && !e.lastState.isDowned,
+        ),
+    );
+    if (
+      isPlaying &&
+      this.matchMode !== 'solo' &&
+      (hasOnlineStandingMate || this.hasStandingTeammate(0, 'player'))
+    ) {
       this.exitVehicleImmediate();
       soundEngine.stopVehicleAudio();
       soundEngine.stopRunAudio();
@@ -1235,9 +2184,29 @@ export class BattleRoyaleEngine {
     const state = this.stateMachine.getState();
     if (state !== GameState.PLAYING && state !== GameState.WAITING) return;
     if (this.isDead || this.isPlayerDowned || this.usingMedkit || this.isSwimming) return;
-    if (this.medkitCount <= 0 || this.hp >= this.maxHp) return;
+    if (this.hp >= this.maxHp) return;
+    if (this.medkitCount <= 0) {
+      if (this.smallkitCount > 0) {
+        this.useSmallKit();
+      }
+      return;
+    }
     this.usingMedkit = true;
+    this.healingKind = 'medkit';
     this.medkitTimer = this.medkitDuration;
+    this.isReloading = false;
+    this.hudDirty = true;
+    soundEngine.startMedkitAudio();
+  }
+
+  public useSmallKit(): void {
+    const state = this.stateMachine.getState();
+    if (state !== GameState.PLAYING && state !== GameState.WAITING) return;
+    if (this.isDead || this.isPlayerDowned || this.usingMedkit || this.isSwimming) return;
+    if (this.smallkitCount <= 0 || this.hp >= this.maxHp) return;
+    this.usingMedkit = true;
+    this.healingKind = 'smallkit';
+    this.medkitTimer = this.smallkitDuration;
     this.isReloading = false;
     this.hudDirty = true;
     soundEngine.startMedkitAudio();
@@ -1257,7 +2226,11 @@ export class BattleRoyaleEngine {
     if (this.medkitTimer <= 0) {
       this.usingMedkit = false;
       this.medkitTimer = 0;
-      if (this.medkitCount > 0) {
+      if (this.healingKind === 'smallkit' && this.smallkitCount > 0) {
+        this.smallkitCount -= 1;
+        this.hp = Math.min(this.maxHp, this.hp + 35);
+        soundEngine.completeMedkitAudio();
+      } else if (this.medkitCount > 0) {
         this.medkitCount -= 1;
         this.hp = Math.min(this.maxHp, this.hp + 75);
         soundEngine.completeMedkitAudio();
@@ -1272,6 +2245,16 @@ export class BattleRoyaleEngine {
     this.spawnItemInFront({
       kind: 'medkit',
       label: 'Kit Médico (+75 HP)',
+    });
+    soundEngine.playUiClick(420);
+  }
+
+  public dropSmallKit(): void {
+    if (this.smallkitCount <= 0) return;
+    this.smallkitCount -= 1;
+    this.spawnItemInFront({
+      kind: 'smallkit',
+      label: 'Kit Pequeno (+35 HP)',
     });
     soundEngine.playUiClick(420);
   }
@@ -1538,7 +2521,7 @@ export class BattleRoyaleEngine {
   }
 
   private getBackpackUsedWeight(): number {
-    let w = this.medkitCount * 12;
+    let w = this.medkitCount * 12 + this.smallkitCount * 6;
     for (let i = 0; i < this.backpackItems.length; i++) {
       const it = this.backpackItems[i];
       const unitW = it.kind === 'scope' ? 10 : it.kind === 'attachment' ? 8 : 6;
@@ -1599,7 +2582,7 @@ export class BattleRoyaleEngine {
 
   private spawnItemInFront(
     partial: {
-      kind: 'ammo' | 'medkit' | 'weapon' | 'scope' | 'vest' | 'helmet' | 'backpack' | 'attachment' | 'gloo' | 'grenade';
+      kind: 'ammo' | 'medkit' | 'smallkit' | 'weapon' | 'scope' | 'vest' | 'helmet' | 'backpack' | 'attachment' | 'gloo' | 'grenade';
       weaponId?: WeaponId;
       scopeType?: ScopeType;
       attachmentKind?: AttachmentKind;
@@ -1723,6 +2706,7 @@ export class BattleRoyaleEngine {
     this.helmetMaxHp = 0;
     this.backpackLevel = 1;
     this.medkitCount = 1;
+    this.smallkitCount = 0;
     this.glooCount = 2;
     this.grenadeCount = 2;
     this.isPlacingGloo = false;
@@ -1740,6 +2724,15 @@ export class BattleRoyaleEngine {
     this.damagePopups = [];
     this.damageIndicators = [];
     this.killFeed = [];
+    this.isSpectating = false;
+    this.spectateTargetRef = null;
+    this.spectateSnapNext = false;
+    this.lastAttackerRef = null;
+    this.playerDeathPlacement = null;
+    this.likedSpectateTargets.clear();
+    this.botSpectators = [];
+    this.matchVisualLikes = 0;
+    this.likeToasts = [];
     this.aliveCount = 1 + this.world.targets.length;
 
     // Start ONLY with Glock G18 (Slot 3) when dropping into Battle Royale
@@ -1819,6 +2812,7 @@ export class BattleRoyaleEngine {
       b.knockedByPlayer = false;
       b.downTimer = 0;
       b.eliminated = false;
+      b.kills = 0;
       b.hitFlash = 0;
       b.vestLevel = 0;
       b.vestHp = 0;
@@ -1883,28 +2877,42 @@ export class BattleRoyaleEngine {
       b.aiTimer = 0.2 + ((i * 19) % 15) * 0.05;
       b.fireCooldown = 0.5 + (i % 4) * 0.2;
 
+      const onlineHumansInMyTeam = this.onlineRoomId
+        ? 1 +
+          Array.from(this.onlineRemotePlayers.values()).filter(
+            (e) => e.teamId === this.onlineTeamId,
+          ).length
+        : 1;
+      const desiredTeamMax =
+        this.matchMode === 'duo' ? 2 : this.matchMode === 'squad' ? 4 : 1;
+      const neededBotAllies = this.autoFillBots
+        ? Math.max(0, desiredTeamMax - onlineHumansInMyTeam)
+        : 0;
+
       if (this.matchMode === 'duo') {
-        if (i === 0) {
-          b.teamId = 0;
-          b.isAlly = true;
-          b.nick = chosenAllyNicks[0];
-        } else {
-          b.teamId = 1 + Math.floor((i - 1) / 2);
-          b.isAlly = false;
-        }
-      } else if (this.matchMode === 'squad') {
-        if (i < 3) {
+        if (i < neededBotAllies) {
           b.teamId = 0;
           b.isAlly = true;
           b.nick = chosenAllyNicks[i % chosenAllyNicks.length];
         } else {
-          b.teamId = 1 + Math.floor((i - 3) / 4);
+          b.teamId = 1 + Math.floor((i - neededBotAllies) / 2);
+          b.isAlly = false;
+        }
+      } else if (this.matchMode === 'squad') {
+        if (i < neededBotAllies) {
+          b.teamId = 0;
+          b.isAlly = true;
+          b.nick = chosenAllyNicks[i % chosenAllyNicks.length];
+        } else {
+          b.teamId = 1 + Math.floor((i - neededBotAllies) / 4);
           b.isAlly = false;
         }
       } else {
         b.teamId = i + 1;
         b.isAlly = false;
       }
+
+      // If auto-fill is disabled in Duo/Squad, remove unused bot slots from team 0? No unused bot slots exist because i >= neededBotAllies are assigned to enemy teams!
 
       // Group teammates into the same drop POI so squads/duos fight together
       const poiIdx =
@@ -1997,10 +3005,16 @@ export class BattleRoyaleEngine {
 
   private enterAirplanePhase(): void {
     this.airplaneProgress = 0;
-    const angle = Math.random() * Math.PI * 2;
-    const r = 630;
-    this.planeStart.set(Math.cos(angle) * r, 128, Math.sin(angle) * r);
-    this.planeEnd.set(-Math.cos(angle) * r, 128, -Math.sin(angle) * r);
+    this.followingTeamLeader = true;
+    if (this.onlineAirplaneRoute) {
+      this.planeStart.set(this.onlineAirplaneRoute.startX, 128, this.onlineAirplaneRoute.startZ);
+      this.planeEnd.set(this.onlineAirplaneRoute.endX, 128, this.onlineAirplaneRoute.endZ);
+    } else {
+      const angle = Math.random() * Math.PI * 2;
+      const r = 630;
+      this.planeStart.set(Math.cos(angle) * r, 128, Math.sin(angle) * r);
+      this.planeEnd.set(-Math.cos(angle) * r, 128, -Math.sin(angle) * r);
+    }
     this.world.airplaneGroup.visible = true;
     this.world.airplaneGroup.position.copy(this.planeStart);
     this.world.airplaneGroup.lookAt(this.planeEnd);
@@ -2117,10 +3131,10 @@ export class BattleRoyaleEngine {
 
       this.lobbyRig.root.rotation.y =
         this.lobbyOrbitYaw + Math.sin(this.elapsed * 0.75) * 0.06;
-      this.animator.update(this.lobbyRig, {
+      const lobbyAnimState = {
         dt,
         speed: 0,
-        stance: 'stand',
+        stance: 'stand' as const,
         isGrounded: true,
         isSprinting: false,
         isAiming: false,
@@ -2130,7 +3144,13 @@ export class BattleRoyaleEngine {
         isParachuting: false,
         isDead: false,
         pitchRad: 0,
-      });
+      };
+      this.animator.update(this.lobbyRig, lobbyAnimState);
+      for (let i = 0; i < this.lobbyExtraRigs.length; i++) {
+        this.lobbyExtraRigs[i].root.rotation.y =
+          this.lobbyOrbitYaw + Math.sin(this.elapsed * 0.75 + (i + 1) * 0.8) * 0.05;
+        this.animator.update(this.lobbyExtraRigs[i], lobbyAnimState);
+      }
 
       this.lobbyScene.camera.position.x = THREE.MathUtils.damp(
         this.lobbyScene.camera.position.x,
@@ -2140,13 +3160,13 @@ export class BattleRoyaleEngine {
       );
       this.lobbyScene.camera.position.y = THREE.MathUtils.damp(
         this.lobbyScene.camera.position.y,
-        1.14,
+        this.lobbySquadTargetZ > 4 ? 1.24 : 1.14,
         8,
         dt,
       );
       this.lobbyScene.camera.position.z = THREE.MathUtils.damp(
         this.lobbyScene.camera.position.z,
-        3.72,
+        this.lobbySquadTargetZ,
         8,
         dt,
       );
@@ -2200,6 +3220,31 @@ export class BattleRoyaleEngine {
         this.killFeed.splice(i, 1);
       }
     }
+    for (let i = this.likeToasts.length - 1; i >= 0; i--) {
+      this.likeToasts[i].age += dt;
+      if (this.likeToasts[i].age >= 3.2) {
+        this.likeToasts.splice(i, 1);
+      }
+    }
+    if (state === GameState.PLAYING && !this.isDead && this.botSpectators.length > 0) {
+      for (let i = this.botSpectators.length - 1; i >= 0; i--) {
+        const spec = this.botSpectators[i];
+        if (!spec.liked && spec.likeAtElapsed !== null && this.elapsed >= spec.likeAtElapsed) {
+          spec.liked = true;
+          this.matchVisualLikes += 1;
+          this.likeToasts.push({
+            id: this.nextLikeToastId++,
+            nick: `${spec.nick} deu Like!`,
+            age: 0,
+          });
+          this.hudDirty = true;
+        }
+        if (this.elapsed >= spec.leaveAtElapsed) {
+          this.botSpectators.splice(i, 1);
+          this.hudDirty = true;
+        }
+      }
+    }
 
     if (
       state === GameState.WAITING ||
@@ -2209,11 +3254,19 @@ export class BattleRoyaleEngine {
       state === GameState.PLAYING
     ) {
       this.updateBots(dt, state);
+      if (this.onlineRoomId) {
+        this.updateRemoteHumanEntities(dt, state);
+        this.pushOnlineSyncState(dt);
+      }
     }
 
     // Waiting Island countdown
     if (state === GameState.WAITING) {
-      this.waitingTimer = Math.max(0, this.waitingTimer - dt);
+      if (this.onlineRoomId && this.onlineWaitingEndsAtMs > 0) {
+        this.waitingTimer = Math.max(0, (this.onlineWaitingEndsAtMs - Date.now()) / 1000);
+      } else {
+        this.waitingTimer = Math.max(0, this.waitingTimer - dt);
+      }
       if (this.waitingTimer <= 0) {
         this.enterAirplanePhase();
         return;
@@ -2233,11 +3286,30 @@ export class BattleRoyaleEngine {
         0.5,
       );
 
-      this.airplaneProgress += dt * 0.036;
+      if (this.onlineAirplaneRoute) {
+        const dur = Math.max(10, this.onlineAirplaneRoute.durationSec);
+        this.airplaneProgress = Math.min(
+          1,
+          Math.max(0, (Date.now() - this.onlineAirplaneRoute.startedAtMs) / (dur * 1000)),
+        );
+      } else {
+        this.airplaneProgress += dt * 0.036;
+      }
       this.pos.lerpVectors(this.planeStart, this.planeEnd, this.airplaneProgress);
       this.world.airplaneGroup.position.copy(this.pos);
       this.playerRig.root.visible = false;
 
+      if (this.followingTeamLeader) {
+        const leader = this.findOnlineTeamLeader();
+        if (
+          leader?.lastState &&
+          (leader.lastState.flightPhase === 'dropping' ||
+            leader.lastState.flightPhase === 'parachute')
+        ) {
+          this.jumpFromPlane(true);
+          return;
+        }
+      }
       if (edges.jump || edges.interact) {
         this.jumpFromPlane();
         return;
@@ -2293,31 +3365,65 @@ export class BattleRoyaleEngine {
       const rightX = Math.cos(this.yaw);
       const rightZ = -Math.sin(this.yaw);
 
-      if (this.launchPadFlightTimer > 0) {
-        this.launchPadFlightTimer = Math.max(0, this.launchPadFlightTimer - dt);
-        this.isSprinting = false;
-        this.vel.y -= 14.5 * dt;
+      const leaderFollowTarget = this.followingTeamLeader ? this.findOnlineTeamLeader() : null;
+      const leaderAirPhase = leaderFollowTarget?.lastState?.flightPhase;
+      if (
+        leaderFollowTarget?.lastState &&
+        (leaderAirPhase === 'dropping' || leaderAirPhase === 'parachute')
+      ) {
+        const formOffsets: Array<[number, number]> = [
+          [-3.0, -2.5],
+          [3.0, -2.5],
+          [0, -4.6],
+        ];
+        const [rx, fx] = formOffsets[(Math.max(2, this.onlineSlotInTeam) - 2) % formOffsets.length];
+        const lyaw = leaderFollowTarget.targetYaw;
+        const lFwdX = -Math.sin(lyaw);
+        const lFwdZ = -Math.cos(lyaw);
+        const lRightX = Math.cos(lyaw);
+        const lRightZ = -Math.sin(lyaw);
+        const goalX = leaderFollowTarget.targetPos.x + lRightX * rx + lFwdX * fx;
+        const goalY = leaderFollowTarget.targetPos.y + 0.35;
+        const goalZ = leaderFollowTarget.targetPos.z + lRightZ * rx + lFwdZ * fx;
+        const followLerp = 1 - Math.exp(-8 * dt);
+        this.pos.x = THREE.MathUtils.lerp(this.pos.x, goalX, followLerp);
+        this.pos.y = THREE.MathUtils.lerp(this.pos.y, goalY, followLerp);
+        this.pos.z = THREE.MathUtils.lerp(this.pos.z, goalZ, followLerp);
+        this.vel.set(0, isChute ? -8.5 : -28, 0);
+        if (!isChute && leaderAirPhase === 'parachute') {
+          this.openParachute();
+        }
       } else {
-        const airMoveActive =
-          Math.abs(this.input.moveX) > 0.05 || Math.abs(this.input.moveZ) > 0.05;
-        this.isSprinting = this.input.isSprinting && airMoveActive;
-        const sprintMult = this.isSprinting ? 1.28 : 1.0;
-        const moveSpeed = (isChute ? 17 : 26) * sprintMult;
-        const mx = (forwardX * this.input.moveZ + rightX * this.input.moveX) * moveSpeed;
-        const mz = (forwardZ * this.input.moveZ + rightZ * this.input.moveX) * moveSpeed;
-        this.vel.x = THREE.MathUtils.damp(this.vel.x, mx, 4, dt);
-        this.vel.z = THREE.MathUtils.damp(this.vel.z, mz, 4, dt);
-        const targetFallY = isChute
-          ? this.isSprinting
-            ? -10.5
-            : -8.5
-          : this.isSprinting
-            ? -34
-            : -28;
-        this.vel.y = THREE.MathUtils.damp(this.vel.y, targetFallY, 3.5, dt);
+        if (this.followingTeamLeader && leaderAirPhase === 'landed') {
+          this.followingTeamLeader = false;
+        }
+        if (this.launchPadFlightTimer > 0) {
+          this.launchPadFlightTimer = Math.max(0, this.launchPadFlightTimer - dt);
+          this.isSprinting = false;
+          this.vel.y -= 14.5 * dt;
+        } else {
+          const airMoveActive =
+            Math.abs(this.input.moveX) > 0.05 || Math.abs(this.input.moveZ) > 0.05;
+          this.isSprinting = this.input.isSprinting && airMoveActive;
+          const sprintMult = this.isSprinting ? 1.28 : 1.0;
+          const moveSpeed = (isChute ? 17 : 26) * sprintMult;
+          const mx = (forwardX * this.input.moveZ + rightX * this.input.moveX) * moveSpeed;
+          const mz = (forwardZ * this.input.moveZ + rightZ * this.input.moveX) * moveSpeed;
+          this.vel.x = THREE.MathUtils.damp(this.vel.x, mx, 4, dt);
+          this.vel.z = THREE.MathUtils.damp(this.vel.z, mz, 4, dt);
+          const targetFallY = isChute
+            ? this.isSprinting
+              ? -10.5
+              : -8.5
+            : this.isSprinting
+              ? -34
+              : -28;
+          this.vel.y = THREE.MathUtils.damp(this.vel.y, targetFallY, 3.5, dt);
+        }
+
+        this.pos.addScaledVector(this.vel, dt);
       }
 
-      this.pos.addScaledVector(this.vel, dt);
       this.pos.x = THREE.MathUtils.clamp(this.pos.x, -BERMUDA_HALF + 15, BERMUDA_HALF - 15);
       this.pos.z = THREE.MathUtils.clamp(this.pos.z, -BERMUDA_HALF + 15, BERMUDA_HALF - 15);
 
@@ -2326,6 +3432,7 @@ export class BattleRoyaleEngine {
 
       if (!isChute && (edges.jump || edges.interact || (this.vel.y < -2.0 && altitude < 28))) {
         this.launchPadFlightTimer = 0;
+        this.followingTeamLeader = false;
         this.openParachute();
       }
       if (this.pos.y <= groundY && this.vel.y <= 0) {
@@ -2374,11 +3481,152 @@ export class BattleRoyaleEngine {
 
       if (this.isDead) {
         this.isAiming = false;
+        this.isSprinting = false;
         this.usingMedkit = false;
         this.healRingMesh.visible = false;
+        this.lockedTargetId = null;
+
+        if (this.isSpectating) {
+          this.playerRig.root.visible = false;
+          this.input.sample();
+          this.input.consumeLookAndEdges();
+
+          const candidates = this.getSpectateCandidates();
+          if (candidates.length === 0) {
+            this.isSpectating = false;
+            this.spectateTargetRef = null;
+            this.stateMachine.forceState(GameState.GAMEOVER);
+            return;
+          }
+
+          const refValid = (
+            ref: { kind: 'human'; accountId: number } | { kind: 'bot'; botId: string } | null,
+          ): boolean => {
+            if (!ref) return false;
+            if (ref.kind === 'human') {
+              const ent = this.onlineRemotePlayers.get(ref.accountId);
+              return Boolean(ent && ent.lastState && !ent.lastState.eliminated);
+            }
+            const bot = this.targetById.get(ref.botId);
+            return Boolean(bot && !bot.eliminated && bot.downTimer <= 0);
+          };
+
+          if (!refValid(this.spectateTargetRef)) {
+            this.spectateTargetRef = candidates[0];
+            this.spectateSnapNext = true;
+            this.hudDirty = true;
+          }
+
+          const ref = this.spectateTargetRef!;
+          let targetYaw = this.yaw;
+          let targetPitch = -0.12;
+          let camDist = 3.55;
+          let camHeight = 1.44;
+          let spAiming = false;
+          let spSprinting = false;
+
+          if (ref.kind === 'human') {
+            const ent = this.onlineRemotePlayers.get(ref.accountId)!;
+            const st = ent.lastState!;
+            this.pos.copy(ent.rig.root.position);
+            targetYaw = st.yaw;
+            targetPitch = THREE.MathUtils.clamp(st.pitch, -0.85, 0.55);
+            spAiming = st.isAiming;
+            spSprinting = st.isSprinting;
+            if (st.activeVehicleId) {
+              camDist = 6.4;
+              camHeight = 1.55;
+            } else if (st.flightPhase === 'parachute') {
+              camDist = 6.2;
+              camHeight = 1.7;
+            } else if (st.flightPhase === 'dropping') {
+              camDist = 5.0;
+              camHeight = 1.4;
+            } else if (st.isDowned || st.stance === 'prone') {
+              camDist = 3.2;
+              camHeight = 0.62;
+            } else if (st.stance === 'crouch') {
+              camDist = spAiming ? 2.45 : 3.35;
+              camHeight = 1.04;
+            } else {
+              camDist = spAiming ? 2.55 : 3.55;
+              camHeight = 1.46;
+            }
+          } else {
+            const bot = this.targetById.get(ref.botId)!;
+            this.pos.copy(bot.group.position);
+            // Bot forward is (+sin(rotY), +cos(rotY)); player cam forward is (-sin(yaw), -cos(yaw))
+            targetYaw = bot.group.rotation.y + Math.PI;
+            targetPitch = -0.08;
+            if (bot.aiState === 'combat' && bot.targetId) {
+              let tPos: { x: number; y: number; z: number } | null = null;
+              if (bot.targetId !== 'player') {
+                const tb = this.targetById.get(bot.targetId);
+                if (tb && !tb.eliminated) {
+                  tPos = {
+                    x: tb.group.position.x,
+                    y: tb.group.position.y + (tb.isDowned ? 0.45 : tb.chestOffsetY),
+                    z: tb.group.position.z,
+                  };
+                } else {
+                  for (const re of this.onlineRemotePlayers.values()) {
+                    if (`remote_${re.accountId}` === bot.targetId && re.lastState && !re.lastState.eliminated) {
+                      tPos = {
+                        x: re.rig.root.position.x,
+                        y: re.rig.root.position.y + 1.15,
+                        z: re.rig.root.position.z,
+                      };
+                      break;
+                    }
+                  }
+                }
+              }
+              if (tPos) {
+                const hDist = Math.max(
+                  0.5,
+                  Math.hypot(tPos.x - bot.group.position.x, tPos.z - bot.group.position.z),
+                );
+                const dy = tPos.y - (bot.group.position.y + 1.32);
+                targetPitch = THREE.MathUtils.clamp(Math.atan2(dy, hDist), -0.55, 0.45);
+              }
+              spAiming = bot.fireCooldown > 0.02;
+              camDist = 3.05;
+            } else if (bot.airState === 'parachuting') {
+              camDist = 6.2;
+              camHeight = 1.7;
+            } else if (bot.airState === 'skydiving') {
+              camDist = 5.0;
+              camHeight = 1.4;
+            } else if (bot.isDowned) {
+              camDist = 3.2;
+              camHeight = 0.62;
+            } else if (bot.aiState === 'heal' || bot.aiState === 'revive') {
+              camDist = 3.35;
+              camHeight = 1.04;
+            } else {
+              spSprinting = bot.aiState === 'roam' || bot.aiState === 'loot';
+              camDist = 3.55;
+              camHeight = 1.44;
+            }
+          }
+
+          if (this.spectateSnapNext) {
+            this.yaw = targetYaw;
+            this.pitch = targetPitch;
+          } else {
+            const lookAlpha = 1 - Math.exp(-15 * dt);
+            this.yaw = lerpAngle(this.yaw, targetYaw, lookAlpha);
+            this.pitch = THREE.MathUtils.lerp(this.pitch, targetPitch, lookAlpha);
+          }
+          this.isAiming = spAiming;
+          this.isSprinting = spSprinting;
+          this.updateThirdPersonCamera(dt, camDist, camHeight, 'none', false, this.spectateSnapNext);
+          this.spectateSnapNext = false;
+          return;
+        }
+
         this.playerRig.weaponMount.visible = true;
         this.playerRig.root.visible = true;
-        this.lockedTargetId = null;
         this.deathTimer -= dt;
         this.animator.update(this.playerRig, {
           dt,
@@ -2396,7 +3644,15 @@ export class BattleRoyaleEngine {
         });
         this.updateThirdPersonCamera(dt, 4.2, 1.0);
         if (this.deathTimer <= 0) {
-          this.stateMachine.forceState(GameState.GAMEOVER);
+          const candidates = this.getSpectateCandidates();
+          if (candidates.length > 0 && this.aliveCount > 1) {
+            this.isSpectating = true;
+            this.spectateTargetRef = candidates[0];
+            this.spectateSnapNext = true;
+            this.hudDirty = true;
+          } else {
+            this.stateMachine.forceState(GameState.GAMEOVER);
+          }
         }
         return;
       }
@@ -2472,7 +3728,7 @@ export class BattleRoyaleEngine {
     const visR = Math.max(4, this.zoneCurrentRadius);
     this.world.safeZoneMesh.scale.set(visR, 1, visR);
 
-    // Apply discrete 1s Safe Zone damage ticks escalating every 2 minutes inside the gas
+    // Apply discrete 1.5s Safe Zone damage ticks with 0.5s grace period (first tick at 0.5s)
     const playerDist = Math.hypot(
       this.pos.x - this.zoneCurrentX,
       this.pos.z - this.zoneCurrentZ,
@@ -2480,13 +3736,15 @@ export class BattleRoyaleEngine {
     if (!this.isDead && playerDist > this.zoneCurrentRadius) {
       this.zoneGasExposureSec += dt;
       this.zoneDmgTickTimer += dt;
-      if (this.zoneDmgTickTimer >= 1.0) {
-        this.zoneDmgTickTimer -= 1.0;
-        if (this.zoneDmgTickTimer > 1.0) this.zoneDmgTickTimer = 0;
-        const gasMult = 1 + Math.floor(this.zoneGasExposureSec / 120);
-        const tickDmg = Math.max(1, Math.round(phaseDef.damagePerSec * gasMult));
+      const targetInterval = this.zoneGasExposureSec <= 0.55 ? 0.5 : 1.5;
+      if (this.zoneDmgTickTimer >= targetInterval) {
+        this.zoneDmgTickTimer -= targetInterval;
+        if (this.zoneDmgTickTimer > targetInterval) this.zoneDmgTickTimer = 0;
+        const gasMult = 1 + Math.floor(this.zoneGasExposureSec / 150);
+        const baseSafeDmg = Math.max(1, Math.round(phaseDef.damagePerSec * 0.45));
+        const tickDmg = Math.max(1, Math.round(baseSafeDmg * gasMult));
         this.damageFlashTimer = 0.14;
-        soundEngine.playSafeZoneDamage(this.zonePhase >= 3 || gasMult >= 2);
+        soundEngine.playSafeZoneDamage(this.zonePhase >= 4 || gasMult >= 2);
         if (this.isPlayerDowned) {
           this.playerBleedHp = Math.max(0, this.playerBleedHp - tickDmg);
           if (this.playerBleedHp <= 0) {
@@ -2735,6 +3993,16 @@ export class BattleRoyaleEngine {
       t.group.updateMatrixWorld(true);
       for (let j = 0; j < t.hitMeshes.length; j++) {
         this.scratchTargetMeshes.push(t.hitMeshes[j]);
+      }
+    }
+    if (this.onlineRoomId) {
+      for (const ent of this.onlineRemotePlayers.values()) {
+        if (ent.teamId === this.onlineTeamId || !ent.rig.root.visible) continue;
+        if (ent.lastState?.eliminated) continue;
+        ent.rig.root.updateMatrixWorld(true);
+        for (let j = 0; j < ent.hitMeshes.length; j++) {
+          this.scratchTargetMeshes.push(ent.hitMeshes[j]);
+        }
       }
     }
     return this.scratchTargetMeshes.length;
@@ -4045,11 +5313,28 @@ export class BattleRoyaleEngine {
     this.isPlacingGloo = false;
   }
 
-  private spawnGlooWallAt(x: number, y: number, z: number, wallYaw: number): void {
+  private spawnGlooWallAt(
+    x: number,
+    y: number,
+    z: number,
+    wallYaw: number,
+    skipNetEmit = false,
+  ): void {
     if (this.deployedGloos.length >= 28) {
       this.removeGlooWallAt(0);
     }
-    const id = `gloo_${this.nextGlooId++}`;
+    const id = `gloo_${this.onlineAccountId || 'l'}_${this.nextGlooId++}`;
+    this.syncedServerGlooIds.add(id);
+    if (!skipNetEmit && this.onlineRoomId) {
+      this.queueOrSendRoomAction({
+        type: 'spawn_gloo',
+        id,
+        x,
+        y,
+        z,
+        rotY: wallYaw,
+      });
+    }
     const mesh = new THREE.Mesh(this.glooWallGeo, this.glooWallMat);
     mesh.position.set(x, y + 1.175, z);
     mesh.rotation.y = wallYaw;
@@ -4539,8 +5824,29 @@ export class BattleRoyaleEngine {
         } else {
           endDist = tHit.distance;
           const tId = tHit.object.userData.targetId as string | undefined;
+          const remoteAccId = tHit.object.userData.remoteAccountId as number | undefined;
           const isHead = Boolean(tHit.object.userData.isHeadshot);
-          if (tId) {
+          if (remoteAccId && this.onlineRoomId) {
+            const ent = this.onlineRemotePlayers.get(remoteAccId);
+            if (ent && ent.teamId !== this.onlineTeamId && !ent.lastState?.eliminated) {
+              const distFalloff = Math.max(0.45, 1 - tHit.distance / (def.range * 1.4));
+              const dmg = Math.max(1, Math.round(def.damage * distFalloff * (isHead ? 2.4 : 1.0)));
+              this.damageDealt += dmg;
+              this.hitmarkerTimer = 0.18;
+              if (isHead) this.headshotFlashTimer = 0.45;
+              pelletTotalDmg += dmg;
+              pelletAnyHead = pelletAnyHead || isHead;
+              pelletHitPoint = tHit.point;
+              soundEngine.playHitmarker();
+              this.queueOrSendRoomAction({
+                type: 'damage_player',
+                targetAccountId: remoteAccId,
+                damage: dmg,
+                isHeadshot: isHead,
+                weaponId: def.id,
+              });
+            }
+          } else if (tId) {
             const dummy = this.targetById.get(tId);
             if (dummy && !dummy.isAlly && !dummy.eliminated && (dummy.downTimer <= 0 || dummy.isDowned)) {
               const { dmg, armorBlocked } = this.computeShotDamage(
@@ -4570,6 +5876,17 @@ export class BattleRoyaleEngine {
                 this.pos.x,
                 this.pos.z,
               );
+              if (this.onlineRoomId && this.onlineAccountId !== this.onlineHostAccountId) {
+                this.queueOrSendRoomAction({
+                  type: 'damage_bot',
+                  botId: dummy.id,
+                  damage: dmg,
+                  isHeadshot: isHead,
+                  weaponShort: def.shortName,
+                  attackerX: this.pos.x,
+                  attackerZ: this.pos.z,
+                });
+              }
             }
           }
         }
@@ -4602,6 +5919,18 @@ export class BattleRoyaleEngine {
       _rayDir.copy(this.raycaster.ray.direction).normalize();
       _v2.copy(cam.position).addScaledVector(_rayDir, endDist);
       this.spawnTracer(_rayOrigin, _v2);
+      if (this.onlineRoomId && p === 0) {
+        this.queueOrSendRoomAction({
+          type: 'shoot',
+          weaponId: def.id,
+          originX: _rayOrigin.x,
+          originY: _rayOrigin.y,
+          originZ: _rayOrigin.z,
+          hitX: _v2.x,
+          hitY: _v2.y,
+          hitZ: _v2.z,
+        });
+      }
     }
 
     if (pelletTotalDmg > 0 && pelletHitPoint) {
@@ -4639,6 +5968,19 @@ export class BattleRoyaleEngine {
       this.kills += 1;
       this.ffCoins += 100;
       soundEngine.playKillSound(isHeadshot);
+      if (isPlaying && !this.isDead && Math.random() < 0.78) {
+        const giveLike = Math.random() < 0.58;
+        const likeDelay = 1.5 + Math.random() * 4.0;
+        const leaveDelay = giveLike ? likeDelay + 2.2 + Math.random() * 8.5 : 4.2 + Math.random() * 9.5;
+        this.botSpectators.push({
+          id: `${bot.id}_${Math.round(this.elapsed * 10)}`,
+          nick: bot.nick,
+          likeAtElapsed: giveLike ? this.elapsed + likeDelay : null,
+          leaveAtElapsed: this.elapsed + leaveDelay,
+          liked: false,
+        });
+        this.hudDirty = true;
+      }
     }
 
     this.pushKillFeed(killerName, bot.nick, weaponShort, isHeadshot, creditPlayer);
@@ -4670,7 +6012,7 @@ export class BattleRoyaleEngine {
       const anyEnemyAlive = this.world.targets.some(
         (b) => !b.isAlly && !b.eliminated && b.downTimer <= 0,
       );
-      if (!anyEnemyAlive) {
+      if (!anyEnemyAlive && !this.isDead) {
         this.aliveCount = 1;
         this.stateMachine.forceState(GameState.WIN);
       }
@@ -5307,6 +6649,20 @@ export class BattleRoyaleEngine {
   }
 
   private updateBots(dt: number, state: GameState): void {
+    // Non-host online clients follow host's authoritative bot snapshot rather than running diverging AI
+    if (this.onlineRoomId && this.onlineAccountId !== this.onlineHostAccountId) {
+      const bots = this.world.targets;
+      for (let i = 0; i < bots.length; i++) {
+        const b = bots[i];
+        if (!b.group.visible || b.eliminated || !b.isAdam || !b.mixer) continue;
+        if (b.isDowned) setBotAdamClip(b, 'Crawl_Loop', 1.0, 0.12);
+        else if (b.airState === 'parachuting') setBotAdamClip(b, 'Jump_Loop', 0.85, 0.12);
+        else setBotAdamClip(b, 'Idle_Loop', 1.0, 0.12);
+        b.mixer.update(dt);
+      }
+      return;
+    }
+
     const bots = this.world.targets;
     const isPlaying = state === GameState.PLAYING;
     const isWaiting = state === GameState.WAITING;
@@ -5410,6 +6766,7 @@ export class BattleRoyaleEngine {
         }
         if (distantVictim && distantKiller) {
           const wName = WEAPONS[distantKiller.weaponId]?.name ?? 'M4A1';
+          distantKiller.kills += 1;
           this.finalizeBotElimination(
             distantVictim,
             false,
@@ -5735,9 +7092,15 @@ export class BattleRoyaleEngine {
       const botCamDistSq =
         (bx - this.pos.x) * (bx - this.pos.x) + (bz - this.pos.z) * (bz - this.pos.z);
       const allyVisDist = Math.max(effectiveRenderDist, 165);
+      const isSpectatedBot =
+        this.isSpectating &&
+        this.spectateTargetRef?.kind === 'bot' &&
+        this.spectateTargetRef.botId === bot.id;
       const wantRender =
+        isSpectatedBot ||
         botCamDistSq <= (bot.isAlly ? allyVisDist * allyVisDist : effectiveRenderDistSq);
-      const inRenderRange = wantRender && (bot.isAlly || visibleBotCount < maxVisibleBots);
+      const inRenderRange =
+        isSpectatedBot || (wantRender && (bot.isAlly || visibleBotCount < maxVisibleBots));
       bot.group.visible = inRenderRange;
       if (inRenderRange) visibleBotCount++;
 
@@ -6561,6 +7924,7 @@ export class BattleRoyaleEngine {
                     bz,
                   );
                   if (!prevDead && (targetBot.eliminated || targetBot.downTimer > 0)) {
+                    bot.kills += 1;
                     bot.hp = Math.min(bot.maxHp, bot.hp + 45);
                   }
                 }
@@ -6697,7 +8061,7 @@ export class BattleRoyaleEngine {
       }
 
       // 3. Apply intelligent whisker-steered locomotion + OBB collision + smooth stairs/water
-      const animateLimbs = inRenderRange && botCamDistSq < 48 * 48;
+      const animateLimbs = isSpectatedBot || (inRenderRange && botCamDistSq < 48 * 48);
 
       if (isMoving && !isCrouchingAction) {
         const curSurf = botSurfaceHeightAt(bx, bz);
@@ -7420,6 +8784,8 @@ export class BattleRoyaleEngine {
         return true;
       case 'medkit':
         return this.getBackpackUsedWeight() + 12 <= this.getBackpackCapacity();
+      case 'smallkit':
+        return this.getBackpackUsedWeight() + 6 <= this.getBackpackCapacity();
       case 'gloo':
         return this.glooCount < 8;
       case 'grenade':
@@ -7525,6 +8891,15 @@ export class BattleRoyaleEngine {
           this.medkitCount += 1;
         } else {
           this.hp = Math.min(this.maxHp, this.hp + 35);
+        }
+      }
+    } else if (entry.kind === 'smallkit') {
+      const q = entry.smallkitAmount ?? 1;
+      for (let k = 0; k < q; k++) {
+        if (this.getBackpackUsedWeight() + 6 <= this.getBackpackCapacity()) {
+          this.smallkitCount += 1;
+        } else {
+          this.hp = Math.min(this.maxHp, this.hp + 25);
         }
       }
     } else if (entry.kind === 'gloo') {
@@ -7636,6 +9011,10 @@ export class BattleRoyaleEngine {
     if (ld.collected) return;
     ld.collected = true;
     nearby.mesh.visible = false;
+    if (this.onlineRoomId && ld.id) {
+      this.syncedServerLootIds.add(ld.id);
+      this.queueOrSendRoomAction({ type: 'collect_loot', lootId: ld.id });
+    }
 
     if (ld.kind === 'coin') {
       this.ffCoins += ld.coinAmount ?? 100;
@@ -7650,6 +9029,15 @@ export class BattleRoyaleEngine {
         this.medkitCount += 1;
       } else {
         this.hp = Math.min(this.maxHp, this.hp + 35);
+      }
+      return;
+    }
+
+    if (ld.kind === 'smallkit') {
+      if (this.getBackpackUsedWeight() + 6 <= this.getBackpackCapacity()) {
+        this.smallkitCount += 1;
+      } else {
+        this.hp = Math.min(this.maxHp, this.hp + 25);
       }
       return;
     }
@@ -7951,6 +9339,24 @@ export class BattleRoyaleEngine {
 
     if (offerId === 'revive_ally' && reviveAllyId) {
       if (this.ffCoins < 400) return false;
+      if (reviveAllyId.startsWith('human_') && this.onlineRoomId) {
+        const targetAccountId = Number(reviveAllyId.slice(6));
+        const humanAlly = this.onlineRemotePlayers.get(targetAccountId);
+        if (!humanAlly || humanAlly.teamId !== this.onlineTeamId) return false;
+        const vm = this.findNearbyVending();
+        const shopX = vm ? vm.x : this.pos.x;
+        const shopZ = vm ? vm.z : this.pos.z;
+        this.ffCoins -= 400;
+        this.queueOrSendRoomAction({
+          type: 'revive_from_shop',
+          targetAccountId,
+          shopX,
+          shopZ,
+        });
+        this.pushKillFeed('LOJINHA', `${humanAlly.nickname} REDESDOBRADO`, 'LOJA', false, true);
+        soundEngine.playShopBuy();
+        return true;
+      }
       const ally = this.targetById.get(reviveAllyId);
       if (!ally || !ally.isAlly || (!ally.eliminated && !ally.isDowned && ally.downTimer <= 0)) {
         return false;
@@ -8676,6 +10082,7 @@ export class BattleRoyaleEngine {
       backpackUsed: this.getBackpackUsedWeight(),
       backpackCapacity: this.getBackpackCapacity(),
       medkitCount: this.medkitCount,
+      smallkitCount: this.smallkitCount,
       glooCount: this.glooCount,
       grenadeCount: this.grenadeCount,
       ffCoins: this.ffCoins,
@@ -8684,7 +10091,15 @@ export class BattleRoyaleEngine {
       isHoldingGrenade: this.isHoldingGrenade,
       usingMedkit: this.usingMedkit,
       medkitProgress: this.usingMedkit
-        ? Math.max(0, Math.min(1, 1 - this.medkitTimer / this.medkitDuration))
+        ? Math.max(
+            0,
+            Math.min(
+              1,
+              1 -
+                this.medkitTimer /
+                  (this.healingKind === 'smallkit' ? this.smallkitDuration : this.medkitDuration),
+            ),
+          )
         : 0,
       stance: this.stance,
       isSprinting: this.isSprinting,
@@ -8854,7 +10269,7 @@ export class BattleRoyaleEngine {
               const members: HudSnapshot['teamMembers'] = [
                 {
                   id: 'player',
-                  slotNumber: 1,
+                  slotNumber: this.onlineRoomId ? this.onlineSlotInTeam : 1,
                   nick: this.playerNick,
                   hp: this.isPlayerDowned ? Math.round(this.playerBleedHp) : Math.round(this.hp),
                   maxHp: this.isPlayerDowned ? 100 : this.maxHp,
@@ -8862,7 +10277,63 @@ export class BattleRoyaleEngine {
                   eliminated: this.isDead,
                 },
               ];
-              let allySlot = 2;
+
+              // Include online human teammates
+              if (this.onlineRoomId) {
+                for (const ent of this.onlineRemotePlayers.values()) {
+                  if (ent.teamId !== this.onlineTeamId) continue;
+                  const st = ent.lastState;
+                  const elim = Boolean(st?.eliminated);
+                  const hpVal = st ? (st.isDowned ? Math.round(st.bleedHp) : Math.round(st.hp)) : 200;
+                  const maxH = st?.isDowned ? 100 : st?.maxHp ?? 200;
+                  let distance: number | undefined;
+                  let onScreen = false;
+                  let screenXPct: number | undefined;
+                  let screenYPct: number | undefined;
+                  let offscreenAngleRad: number | undefined;
+                  const bx = ent.rig.root.position.x;
+                  const by = ent.rig.root.position.y;
+                  const bz = ent.rig.root.position.z;
+
+                  if (!elim && st?.flightPhase !== 'airplane') {
+                    const dx = bx - this.pos.x;
+                    const dz = bz - this.pos.z;
+                    distance = Math.round(Math.hypot(dx, dz));
+                    const fwdDot = dx * fwdX + dz * fwdZ;
+                    const rightDot = dx * rightX + dz * rightZ;
+                    offscreenAngleRad = Math.atan2(rightDot, fwdDot);
+
+                    _v1.set(bx, by + (st?.isDowned ? 1.05 : 2.15), bz).project(this.world.camera);
+                    const inFront = _v1.z >= -1 && _v1.z <= 1;
+                    const sx = (_v1.x * 0.5 + 0.5) * 100;
+                    const sy = (-_v1.y * 0.5 + 0.5) * 100;
+                    if (inFront && sx >= 4 && sx <= 96 && sy >= 6 && sy <= 92) {
+                      onScreen = true;
+                      screenXPct = sx;
+                      screenYPct = sy;
+                    }
+                  }
+
+                  members.push({
+                    id: `human_${ent.accountId}`,
+                    slotNumber: ent.slotInTeam,
+                    nick: ent.nickname,
+                    hp: hpVal,
+                    maxHp: maxH,
+                    isDowned: Boolean(st?.isDowned),
+                    eliminated: elim,
+                    distance,
+                    onScreen,
+                    screenXPct,
+                    screenYPct,
+                    offscreenAngleRad,
+                    worldX: bx,
+                    worldZ: bz,
+                  });
+                }
+              }
+
+              let allySlot = members.length + 1;
               for (let t = 0; t < this.world.targets.length; t++) {
                 const b = this.world.targets[t];
                 if (!b.isAlly) continue;
@@ -8923,6 +10394,99 @@ export class BattleRoyaleEngine {
         distance: Math.round(Math.hypot(ad.x - this.pos.x, ad.z - this.pos.z)),
       })),
       airDropNotice: this.airDropNotice,
+      isOnlineMatch: Boolean(this.onlineRoomId),
+      autoFillBots: this.autoFillBots,
+      ...(() => {
+        const net = multiplayerClient.getPingInfo();
+        const leader = this.findOnlineTeamLeader();
+        const inFlight =
+          state === GameState.AIRPLANE ||
+          state === GameState.DROPPING ||
+          state === GameState.PARACHUTE;
+        return {
+          pingMs: net.pingMs,
+          isNetworkDisconnected: net.disconnected,
+          showFollowLeaderToggle: Boolean(
+            this.onlineRoomId && this.matchMode !== 'solo' && leader && inFlight,
+          ),
+          isFollowingLeader: this.followingTeamLeader,
+          leaderNick: leader?.nickname ?? null,
+        };
+      })(),
+      isSpectating: this.isSpectating,
+      playerPlacement: this.playerDeathPlacement ?? Math.max(2, this.aliveCount),
+      spectatorCount: this.isDead ? 0 : this.botSpectators.length,
+      matchVisualLikes: this.matchVisualLikes,
+      likeToast:
+        this.likeToasts.length > 0
+          ? {
+              id: this.likeToasts[this.likeToasts.length - 1].id,
+              nick: this.likeToasts[this.likeToasts.length - 1].nick,
+            }
+          : null,
+      spectatingTarget:
+        this.isSpectating && this.spectateTargetRef
+          ? (() => {
+              const candidates = this.getSpectateCandidates();
+              const ref = this.spectateTargetRef!;
+              if (ref.kind === 'human') {
+                const ent = this.onlineRemotePlayers.get(ref.accountId);
+                if (!ent) return null;
+                const key = `h:${ent.accountId}`;
+                const isTeammate = ent.teamId === this.onlineTeamId;
+                const teamLabel = isTeammate
+                  ? `Time ${this.onlineTeamId} (Esquadrão)`
+                  : `Time ${ent.teamId}`;
+                return {
+                  targetKey: key,
+                  isBot: false,
+                  accountId: ent.accountId,
+                  publicId: ent.publicId,
+                  nick: ent.nickname,
+                  level: ent.level,
+                  rankPoints: ent.rankPoints,
+                  modelId: ent.modelId,
+                  hp: Math.round(ent.lastState?.hp ?? 200),
+                  maxHp: ent.lastState?.maxHp ?? 200,
+                  kills: ent.lastState?.kills ?? 0,
+                  slotNumber: ent.slotInTeam,
+                  teamLabel,
+                  isFriend: false,
+                  canCycle: candidates.length > 1,
+                  spectatorCount: 1,
+                  likedByMe: this.likedSpectateTargets.has(key),
+                  isAiming: Boolean(ent.lastState?.isAiming),
+                };
+              }
+              const bot = this.targetById.get(ref.botId);
+              if (!bot) return null;
+              const numHash = Array.from(bot.id).reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+              const botLevel = 12 + (numHash % 48);
+              const botRankPts = 850 + ((numHash * 73) % 2150);
+              const key = `b:${bot.id}`;
+              const teamLabel = bot.isAlly ? `Time ${this.onlineTeamId} (Bot Amigo)` : `Time Inimigo ${1 + (numHash % 12)}`;
+              return {
+                targetKey: key,
+                isBot: true,
+                accountId: 0,
+                publicId: `BOT-${(numHash % 9000) + 1000}`,
+                nick: bot.nick,
+                level: botLevel,
+                rankPoints: botRankPts,
+                modelId: bot.modelId === 'eva' ? 'eva' : 'adam',
+                hp: Math.max(0, Math.round(bot.hp)),
+                maxHp: bot.maxHp,
+                kills: bot.kills ?? 0,
+                slotNumber: bot.isAlly ? 2 : 1,
+                teamLabel,
+                isFriend: false,
+                canCycle: candidates.length > 1,
+                spectatorCount: 1 + (numHash % 2),
+                likedByMe: this.likedSpectateTargets.has(key),
+                isAiming: bot.aiState === 'combat' && bot.fireCooldown > 0.02,
+              };
+            })()
+          : null,
     };
   }
 
@@ -8960,6 +10524,8 @@ export class BattleRoyaleEngine {
 
   public dispose(): void {
     this.disposed = true;
+    this.unsubMultiplayer?.();
+    this.clearOnlineRoomState();
     this.clearLoadTimers();
     soundEngine.setFlightAudioMode('none');
     soundEngine.setLobbyMusicMode('off');
@@ -8979,6 +10545,8 @@ export class BattleRoyaleEngine {
     this.input.dispose();
     this.lobbyRig.dispose();
     this.playerRig.dispose();
+    this.lobbyExtraRigs.forEach((r) => r.dispose());
+    this.lobbyExtraRigs.length = 0;
     this.lobbyScene.dispose();
     this.world.dispose();
     this.textures.dispose();

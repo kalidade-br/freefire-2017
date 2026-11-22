@@ -31,7 +31,7 @@ export const VendingShopModal: React.FC<VendingShopModalProps> = ({
   const [feedback, setFeedback] = useState<string | null>(null);
 
   const deadOrDownedAllies = teamMembers.filter(
-    (m) => m.slotNumber > 1 && (m.eliminated || m.isDowned),
+    (m) => m.id !== 'player' && (m.eliminated || m.isDowned),
   );
 
   const filteredOffers = VENDING_SHOP_OFFERS.filter((o) =>

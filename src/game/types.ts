@@ -383,6 +383,7 @@ export interface HudSnapshot {
   backpackUsed: number;
   backpackCapacity: number;
   medkitCount: number;
+  smallkitCount: number;
   glooCount: number;
   grenadeCount: number;
   ffCoins: number;
@@ -479,6 +480,38 @@ export interface HudSnapshot {
     distance: number;
   }>;
   airDropNotice: string | null;
+  isOnlineMatch?: boolean;
+  autoFillBots?: boolean;
+  pingMs: number;
+  isNetworkDisconnected: boolean;
+  showFollowLeaderToggle?: boolean;
+  isFollowingLeader?: boolean;
+  leaderNick?: string | null;
+  isSpectating?: boolean;
+  playerPlacement?: number;
+  spectatorCount: number;
+  matchVisualLikes: number;
+  likeToast: { id: number; nick: string } | null;
+  spectatingTarget?: {
+    targetKey: string;
+    isBot?: boolean;
+    accountId: number;
+    publicId: string;
+    nick: string;
+    level: number;
+    rankPoints: number;
+    modelId: 'adam' | 'eva';
+    hp: number;
+    maxHp: number;
+    kills: number;
+    slotNumber: number;
+    teamLabel?: string;
+    isFriend?: boolean;
+    canCycle: boolean;
+    spectatorCount: number;
+    likedByMe?: boolean;
+    isAiming?: boolean;
+  } | null;
 }
 
 export interface WorldBoxCollider {
@@ -593,6 +626,7 @@ export interface DeathBoxItemEntry {
   grenadeAmount?: number;
   coinAmount?: number;
   medkitAmount?: number;
+  smallkitAmount?: number;
   collected?: boolean;
 }
 
@@ -604,6 +638,7 @@ export interface LootItem {
   kind:
     | 'ammo'
     | 'medkit'
+    | 'smallkit'
     | 'weapon'
     | 'scope'
     | 'vest'

@@ -5,12 +5,14 @@ import { MatchMode } from '../game/types';
 interface MatchmakingOverlayProps {
   playerCount: number;
   matchMode: MatchMode;
+  isOnline?: boolean;
   onCancel: () => void;
 }
 
 export const MatchmakingOverlay: React.FC<MatchmakingOverlayProps> = ({
   playerCount,
   matchMode,
+  isOnline = false,
   onCancel,
 }) => {
   return (
@@ -20,7 +22,7 @@ export const MatchmakingOverlay: React.FC<MatchmakingOverlayProps> = ({
           PREPARANDO PARTIDA {matchMode.toUpperCase()}
         </div>
         <div className="text-2xl font-black tracking-wider uppercase">
-          BUSCANDO SOBREVIVENTES
+          {isOnline ? 'CONECTANDO AO SERVIDOR' : 'BUSCANDO SOBREVIVENTES'}
         </div>
 
         <div className="bg-[#0e1217] border border-neutral-700 py-3 px-4">
@@ -28,7 +30,7 @@ export const MatchmakingOverlay: React.FC<MatchmakingOverlayProps> = ({
             {playerCount} / 51
           </div>
           <div className="text-[11px] font-mono text-neutral-400 mt-1">
-            BERMUDA CLÁSSICA · {matchMode === 'solo' ? 'SOLO' : `${matchMode.toUpperCase()} (BOTS)`}
+            BERMUDA · {matchMode.toUpperCase()} {isOnline ? '· MULTIPLAYER ONLINE' : '(BOTS)'}
           </div>
         </div>
 

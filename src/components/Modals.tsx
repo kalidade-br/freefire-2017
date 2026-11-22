@@ -1,5 +1,6 @@
 import React from 'react';
 import { X, Check, RotateCcw } from 'lucide-react';
+import { getCharacterAvatar } from '../game/avatars';
 import {
   CharacterConfig,
   ControlMode,
@@ -45,7 +46,7 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({
             <div className="font-bold uppercase tracking-wider text-neutral-300 mb-2">
               PERSONAGEM ORIGINAL (FREE FIRE)
             </div>
-            <div className="grid grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-2 gap-3">
               {(
                 [
                   { id: 'adam', title: 'ADAM', sub: 'Personagem Masculino Clássico' },
@@ -67,17 +68,28 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({
                         hairStyle: ch.id === 'eva' ? 'spiky' : 'buzz',
                       })
                     }
-                    className={`p-3 text-left border-2 cursor-pointer transition-colors flex flex-col gap-1 ${
+                    className={`p-2.5 text-left border-2 cursor-pointer transition-colors flex flex-col gap-2 ${
                       selected
                         ? 'bg-amber-500/20 border-amber-400 text-amber-300'
                         : 'bg-[#1a2028] border-neutral-700 hover:border-neutral-500 text-neutral-200'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="font-black text-sm tracking-wider">{ch.title}</span>
-                      {selected && <Check className="w-4 h-4 text-amber-400" />}
+                    <div className="relative w-full aspect-square bg-black/50 border border-white/15 overflow-hidden">
+                      <img
+                        src={getCharacterAvatar(ch.id)}
+                        alt={ch.title}
+                        className="w-full h-full object-cover object-top"
+                      />
+                      {selected && (
+                        <div className="absolute top-1.5 right-1.5 w-5 h-5 bg-amber-400 text-black flex items-center justify-center">
+                          <Check className="w-3.5 h-3.5" />
+                        </div>
+                      )}
                     </div>
-                    <span className="text-[10px] text-neutral-400">{ch.sub}</span>
+                    <div>
+                      <div className="font-black text-sm tracking-wider">{ch.title}</div>
+                      <span className="text-[10px] text-neutral-400">{ch.sub}</span>
+                    </div>
                   </button>
                 );
               })}

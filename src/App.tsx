@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { soundEngine } from './game/audio';
 import { BattleRoyaleEngine } from './game/gameEngine';
+import { multiplayerClient } from './game/multiplayerClient';
 import {
   loadCharacterConfig,
   loadProfile,
@@ -21,6 +22,12 @@ import {
   PoiMarker,
   computeRankedPointDelta,
 } from './game/types';
+import {
+  MatchRoomJoinInfo,
+  PartyInvitePayload,
+  PartyState,
+  PublicPlayerAccount,
+} from './shared/multiplayerTypes';
 import { BootAndLoadingScreen } from './components/BootAndLoadingScreen';
 import { MainMenuScreen } from './components/MainMenuScreen';
 import { LobbyScreen } from './components/LobbyScreen';
@@ -37,6 +44,15 @@ import { HudEditorModal } from './components/HudEditorModal';
 import { BackpackModal } from './components/BackpackModal';
 import { VendingShopModal } from './components/VendingShopModal';
 import { RankModal } from './components/RankModal';
+import { AuthModal } from './components/AuthModal';
+import { FriendsModal } from './components/FriendsModal';
+import { ModeSelectModal } from './components/ModeSelectModal';
+import {
+  PlayerProfileModal,
+  ProfileModalSubject,
+  profileFromAccount,
+  profileFromLocal,
+} from './components/PlayerProfileModal';
 
 const INITIAL_HUD: HudSnapshot = {
   hp: 200,
@@ -51,6 +67,7 @@ const INITIAL_HUD: HudSnapshot = {
   backpackUsed: 12,
   backpackCapacity: 80,
   medkitCount: 1,
+  smallkitCount: 0,
   glooCount: 2,
   grenadeCount: 2,
   ffCoins: 100,
@@ -139,6 +156,15 @@ const INITIAL_HUD: HudSnapshot = {
   teamMembers: [],
   airDrops: [],
   airDropNotice: null,
+  isOnlineMatch: false,
+  autoFillBots: true,
+  pingMs: 24,
+  isNetworkDisconnected: false,
+  isSpectating: false,
+  spectatorCount: 0,
+  matchVisualLikes: 0,
+  likeToast: null,
+  spectatingTarget: null,
 };
 
 export default function App() {
@@ -162,10 +188,31 @@ export default function App() {
   const [character, setCharacter] = useState<CharacterConfig>(() =>
     loadCharacterConfig(),
   );
+  const characterRef = useRef<CharacterConfig>(character);
+  characterRef.current = character;
+
   const [profile, setProfile] = useState<PlayerProfile>(() => loadProfile());
   const profileRef = useRef<PlayerProfile>(profile);
   profileRef.current = profile;
 
+  // Multiplayer Cloud SQL Account & Party State
+  const [account, setAccount] = useState<PublicPlayerAccount | null>(null);
+  const accountRef = useRef<PublicPlayerAccount | null>(null);
+  accountRef.current = account;
+
+  const [party, setParty] = useState<PartyState | null>(null);
+  const partyRef = useRef<PartyState | null>(null);
+  partyRef.current = party;
+
+  const [invites, setInvites] = useState<PartyInvitePayload[]>([]);
+  const [autoFillBots, setAutoFillBots] = useState(true);
+  const autoFillBotsRef = useRef(true);
+  autoFillBotsRef.current = autoFillBots;
+
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showFriendsModal, setShowFriendsModal] = useState(false);
+  const [profileModalSubject, setProfileModalSubject] = useState<ProfileModalSubject | null>(null);
+  const [showModeModal, setShowModeModal] = useState(false);
   const [showCharModal, setShowCharModal] = useState(false);
   const [showArsenalModal, setShowArsenalModal] = useState(false);
   const [showRankModal, setShowRankModal] = useState(false);
@@ -179,8 +226,130 @@ export default function App() {
   const [isRanked, setIsRanked] = useState(false);
   const [lastRankDelta, setLastRankDelta] = useState<number | null>(null);
   const [webglError, setWebglError] = useState<string | null>(null);
+  const [onlineStarting, setOnlineStarting] = useState(false);
 
   const prevBackpackOpenRef = useRef(false);
+  const activeLaunchedRoomIdRef = useRef<string | null>(null);
+
+  const applyServerAccount = useCallback((acc: PublicPlayerAccount) => {
+    setAccount(acc);
+    const mergedProfile: PlayerProfile = {
+      nickname: acc.nickname,
+      level: acc.level,
+      gold: acc.gold,
+      gems: acc.gems,
+      matchesPlayed: acc.matchesPlayed,
+      wins: acc.wins,
+      rankPoints: acc.rankPoints,
+      rankedMatches: acc.rankedMatches,
+      rankedWins: acc.rankedWins,
+      totalKills: acc.totalKills,
+    };
+    setProfile(mergedProfile);
+    saveProfile(mergedProfile);
+    engineRef.current?.setPlayerNickname(acc.nickname);
+
+    if (acc.character && (acc.character.modelId === 'adam' || acc.character.modelId === 'eva')) {
+      const nextChar: CharacterConfig = {
+        ...characterRef.current,
+        ...acc.character,
+        id: acc.character.modelId === 'eva' ? 'ff_eva_classic' : 'ff_adam_classic',
+        name: acc.character.modelId === 'eva' ? 'EVA' : 'ADAM',
+        modelId: acc.character.modelId,
+        vestEnabled: false,
+      };
+      setCharacter(nextChar);
+      saveCharacterConfig(nextChar);
+      engineRef.current?.updateCharacterConfig(nextChar);
+    }
+  }, []);
+
+  const syncPartyConfigState = useCallback((nextParty: PartyState) => {
+    setParty(nextParty);
+    setMatchMode(nextParty.mode);
+    setIsRanked(nextParty.isRanked);
+    setAutoFillBots(nextParty.autoFillBots);
+    engineRef.current?.setMatchMode(nextParty.mode);
+    engineRef.current?.setRankedMode(nextParty.isRanked);
+    engineRef.current?.setAutoFillBots(nextParty.autoFillBots);
+  }, []);
+
+  const launchOnlineRoom = useCallback((joinInfo: MatchRoomJoinInfo, fillBotsOverride?: boolean) => {
+    if (!engineRef.current) return;
+    if (activeLaunchedRoomIdRef.current === joinInfo.roomId) return;
+    activeLaunchedRoomIdRef.current = joinInfo.roomId;
+    setOnlineStarting(false);
+    setShowAuthModal(false);
+    setShowFriendsModal(false);
+    setShowModeModal(false);
+    engineRef.current.startOnlineMatch(
+      joinInfo,
+      fillBotsOverride ?? partyRef.current?.autoFillBots ?? autoFillBotsRef.current,
+    );
+  }, []);
+
+  // Hydrate existing session token & listen for multiplayer WS events
+  useEffect(() => {
+    if (multiplayerClient.isAuthenticated()) {
+      multiplayerClient
+        .getMe()
+        .then((res) => {
+          applyServerAccount(res.account);
+          syncPartyConfigState(res.party);
+          setInvites(res.invites);
+        })
+        .catch(() => {
+          // Invalid/expired token already cleared
+        });
+    }
+
+    const unsub = multiplayerClient.subscribe((ev) => {
+      if (ev.type === 'party_update') {
+        syncPartyConfigState(ev.party);
+      } else if (ev.type === 'party_invite') {
+        setInvites((prev) => {
+          if (prev.some((p) => p.inviteId === ev.invite.inviteId)) return prev;
+          return [ev.invite, ...prev];
+        });
+      } else if (ev.type === 'match_found') {
+        launchOnlineRoom(ev.joinInfo);
+      }
+    });
+    return () => unsub();
+  }, [applyServerAccount, launchOnlineRoom, syncPartyConfigState]);
+
+  // Keep 3D Lobby Squad characters synced side-by-side with current party & mode
+  useEffect(() => {
+    if (!engineRef.current) return;
+    if (matchMode === 'solo' || !party || party.members.length === 0) {
+      engineRef.current.setLobbySquadMembers([
+        {
+          accountId: account?.id ?? -1,
+          nickname: profile.nickname,
+          modelId: character.modelId === 'eva' ? 'eva' : 'adam',
+          isLeader: true,
+          isSelf: true,
+        },
+      ]);
+      return;
+    }
+    engineRef.current.setLobbySquadMembers(
+      party.members.map((m) => ({
+        accountId: m.accountId,
+        nickname: m.nickname,
+        modelId:
+          m.accountId === account?.id
+            ? character.modelId === 'eva'
+              ? 'eva'
+              : 'adam'
+            : m.character?.modelId === 'eva'
+              ? 'eva'
+              : 'adam',
+        isLeader: m.isLeader,
+        isSelf: account ? m.accountId === account.id : false,
+      })),
+    );
+  }, [account, character.modelId, gameState, matchMode, party, profile.nickname]);
 
   // Release pointer lock when Backpack / Shop / Pause opens & handle keyboard shortcuts to close
   useEffect(() => {
@@ -254,6 +423,7 @@ export default function App() {
     setWebglError(null);
     engineRef.current = engine;
     engine.setPlayerNickname(profile.nickname);
+    engine.setAutoFillBots(autoFillBots);
     setMapMeta(engine.getMapMetadata());
 
     const unsub = engine.stateMachine.subscribe((next) => {
@@ -266,11 +436,23 @@ export default function App() {
         setLastRankDelta(null);
       }
 
+      if (next === GameState.LOBBY) {
+        activeLaunchedRoomIdRef.current = null;
+        if (accountRef.current) {
+          void multiplayerClient.leaveMatch();
+          void multiplayerClient.getParty().then((p) => {
+            syncPartyConfigState(p.party);
+            setInvites(p.invites);
+          }).catch(() => undefined);
+        }
+      }
+
       if (next === GameState.WIN || next === GameState.GAMEOVER) {
+        activeLaunchedRoomIdRef.current = null;
         const snap = hudRef.current;
         const rankedActive = engine.getRankedMode();
         const isWin = next === GameState.WIN;
-        const placement = isWin ? 1 : Math.max(2, snap.aliveCount);
+        const placement = isWin ? 1 : (snap.playerPlacement ?? Math.max(2, snap.aliveCount));
         const curProfile = profileRef.current;
         const delta = rankedActive
           ? computeRankedPointDelta({
@@ -283,21 +465,35 @@ export default function App() {
           : null;
         setLastRankDelta(delta);
 
-        setProfile((prev) => {
-          const appliedDelta = delta ?? 0;
-          const updated: PlayerProfile = {
-            ...prev,
-            matchesPlayed: prev.matchesPlayed + 1,
-            wins: isWin ? prev.wins + 1 : prev.wins,
-            gold: prev.gold + (isWin ? 250 : 60),
-            rankPoints: rankedActive ? Math.max(0, prev.rankPoints + appliedDelta) : prev.rankPoints,
-            rankedMatches: rankedActive ? prev.rankedMatches + 1 : prev.rankedMatches,
-            rankedWins: rankedActive && isWin ? prev.rankedWins + 1 : prev.rankedWins,
-            totalKills: prev.totalKills + snap.kills,
-          };
-          saveProfile(updated);
-          return updated;
-        });
+        const appliedDelta = delta ?? 0;
+        const updated: PlayerProfile = {
+          ...curProfile,
+          matchesPlayed: curProfile.matchesPlayed + 1,
+          wins: isWin ? curProfile.wins + 1 : curProfile.wins,
+          gold: curProfile.gold + (isWin ? 250 : 60),
+          rankPoints: rankedActive ? Math.max(0, curProfile.rankPoints + appliedDelta) : curProfile.rankPoints,
+          rankedMatches: rankedActive ? curProfile.rankedMatches + 1 : curProfile.rankedMatches,
+          rankedWins: rankedActive && isWin ? curProfile.rankedWins + 1 : curProfile.rankedWins,
+          totalKills: curProfile.totalKills + snap.kills,
+        };
+        setProfile(updated);
+        saveProfile(updated);
+
+        if (accountRef.current) {
+          void multiplayerClient.leaveMatch();
+          void multiplayerClient
+            .updateProfile({
+              matchesPlayed: updated.matchesPlayed,
+              wins: updated.wins,
+              gold: updated.gold,
+              rankPoints: updated.rankPoints,
+              rankedMatches: updated.rankedMatches,
+              rankedWins: updated.rankedWins,
+              totalKills: updated.totalKills,
+            })
+            .then((res) => setAccount(res.account))
+            .catch(() => undefined);
+        }
       }
     });
 
@@ -331,13 +527,103 @@ export default function App() {
     setCharacter(next);
     saveCharacterConfig(next);
     engineRef.current?.updateCharacterConfig(next);
+    if (account) {
+      void multiplayerClient
+        .updateProfile({ character: next })
+        .then((res) => setAccount(res.account))
+        .catch(() => undefined);
+    }
   };
 
   const handleUpdateNickname = (name: string) => {
-    const next = { ...profile, nickname: name || 'Sobrevivente_17' };
+    const clean = name.trim() || 'Sobrevivente_17';
+    const next = { ...profile, nickname: clean };
     setProfile(next);
     saveProfile(next);
     engineRef.current?.setPlayerNickname(next.nickname);
+    if (account) {
+      void multiplayerClient
+        .updateProfile({ nickname: clean })
+        .then((res) => setAccount(res.account))
+        .catch(() => undefined);
+    }
+  };
+
+  const handleChangeMatchMode = (mode: MatchMode) => {
+    setMatchMode(mode);
+    engineRef.current?.setMatchMode(mode);
+    if (account) {
+      void multiplayerClient
+        .setPartyConfig({ mode })
+        .then((res) => syncPartyConfigState(res.party))
+        .catch(() => undefined);
+    }
+  };
+
+  const handleChangeRanked = (ranked: boolean) => {
+    setIsRanked(ranked);
+    engineRef.current?.setRankedMode(ranked);
+    if (account) {
+      void multiplayerClient
+        .setPartyConfig({ isRanked: ranked })
+        .then((res) => syncPartyConfigState(res.party))
+        .catch(() => undefined);
+    }
+  };
+
+  const handleChangeAutoFillBots = (fill: boolean) => {
+    setAutoFillBots(fill);
+    engineRef.current?.setAutoFillBots(fill);
+    if (account) {
+      void multiplayerClient
+        .setPartyConfig({ autoFillBots: fill })
+        .then((res) => syncPartyConfigState(res.party))
+        .catch(() => undefined);
+    }
+  };
+
+  const handleStartMatch = async () => {
+    if (!engineRef.current) return;
+    if (account) {
+      setOnlineStarting(true);
+      try {
+        const res = await multiplayerClient.startMatchmaking();
+        launchOnlineRoom(res.joinInfo, autoFillBots);
+      } catch {
+        setOnlineStarting(false);
+        engineRef.current.startMatchmaking();
+      }
+      return;
+    }
+    engineRef.current.startMatchmaking();
+  };
+
+  const handleRespondInvite = async (inviteId: string, accept: boolean) => {
+    setInvites((prev) => prev.filter((i) => i.inviteId !== inviteId));
+    try {
+      const res = await multiplayerClient.respondPartyInvite(inviteId, accept);
+      syncPartyConfigState(res.party);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleKickMember = async (targetAccountId: number) => {
+    try {
+      const res = await multiplayerClient.kickPartyMember(targetAccountId);
+      syncPartyConfigState(res.party);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleLeaveParty = async () => {
+    try {
+      const res = await multiplayerClient.leaveParty();
+      syncPartyConfigState(res.party);
+    } catch {
+      // ignore
+    }
   };
 
   const inGameplayHud =
@@ -380,6 +666,7 @@ export default function App() {
       {gameState === GameState.MENU && (
         <MainMenuScreen
           nickname={profile.nickname}
+          account={account}
           muted={settings.muted}
           onToggleMute={handleToggleMute}
           onPlay={() => {
@@ -399,6 +686,10 @@ export default function App() {
             soundEngine.playUiClick();
             setShowCreditsModal(true);
           }}
+          onOpenAuth={() => {
+            soundEngine.playUiClick();
+            setShowAuthModal(true);
+          }}
         />
       )}
 
@@ -409,19 +700,38 @@ export default function App() {
           character={character}
           matchMode={matchMode}
           isRanked={isRanked}
-          onChangeMatchMode={(mode) => {
-            setMatchMode(mode);
-            engineRef.current?.setMatchMode(mode);
-          }}
-          onChangeRanked={(ranked) => {
-            setIsRanked(ranked);
-            engineRef.current?.setRankedMode(ranked);
-          }}
-          onChangeNickname={handleUpdateNickname}
+          autoFillBots={autoFillBots}
+          account={account}
+          party={party}
+          invites={invites}
+          onChangeMatchMode={handleChangeMatchMode}
+          onChangeRanked={handleChangeRanked}
+          onChangeAutoFillBots={handleChangeAutoFillBots}
           muted={settings.muted}
           onToggleMute={handleToggleMute}
-          onStartMatch={() => engineRef.current?.startMatchmaking()}
+          onStartMatch={() => void handleStartMatch()}
           onQuickTraining={() => engineRef.current?.startQuickTraining()}
+          onOpenMyProfile={() => {
+            soundEngine.playUiClick();
+            setProfileModalSubject(profileFromLocal(profile, character, account));
+          }}
+          onInspectPlayer={(accountId) => {
+            soundEngine.playUiClick();
+            void Promise.all([
+              multiplayerClient.getPlayerProfile(accountId),
+              account ? multiplayerClient.getFriends().catch(() => ({ friends: [] })) : Promise.resolve({ friends: [] }),
+            ])
+              .then(([profRes, frRes]) => {
+                const isFriend = frRes.friends.some((f) => f.account.id === accountId);
+                setProfileModalSubject(
+                  profileFromAccount(profRes.player, {
+                    isOwn: account?.id === accountId,
+                    isFriend,
+                  }),
+                );
+              })
+              .catch(() => undefined);
+          }}
           onOpenCharacter={() => {
             soundEngine.playUiClick();
             setShowCharModal(true);
@@ -446,6 +756,25 @@ export default function App() {
             soundEngine.playUiClick();
             setShowCreditsModal(true);
           }}
+          onOpenAuth={() => {
+            soundEngine.playUiClick();
+            setShowAuthModal(true);
+          }}
+          onOpenFriends={() => {
+            soundEngine.playUiClick();
+            if (!account) {
+              setShowAuthModal(true);
+            } else {
+              setShowFriendsModal(true);
+            }
+          }}
+          onOpenModeSelect={() => {
+            soundEngine.playUiClick();
+            setShowModeModal(true);
+          }}
+          onRespondInvite={(id, accept) => void handleRespondInvite(id, accept)}
+          onKickMember={(id) => void handleKickMember(id)}
+          onLeaveParty={() => void handleLeaveParty()}
           onBackToMenu={() => {
             soundEngine.playUiClick(480);
             engineRef.current?.stateMachine.transition(GameState.MENU);
@@ -454,11 +783,15 @@ export default function App() {
       )}
 
       {/* 5. MATCHMAKING */}
-      {gameState === GameState.MATCHMAKING && (
+      {(gameState === GameState.MATCHMAKING || onlineStarting) && (
         <MatchmakingOverlay
           playerCount={hud.matchmakingCount}
           matchMode={matchMode}
-          onCancel={() => engineRef.current?.cancelMatchmaking()}
+          isOnline={Boolean(account)}
+          onCancel={() => {
+            setOnlineStarting(false);
+            engineRef.current?.cancelMatchmaking();
+          }}
         />
       )}
 
@@ -487,6 +820,28 @@ export default function App() {
             setIsBackpackOpen((b) => !b);
           }}
           onUseMedkit={() => engineRef.current?.useMedkit()}
+          onUseSmallKit={() => engineRef.current?.useSmallKit()}
+          onCycleSpectate={(dir) => engineRef.current?.cycleSpectateTarget(dir)}
+          onSendSpectateLike={() => engineRef.current?.sendSpectateLike()}
+          onExitSpectate={() => engineRef.current?.exitSpectateToResults()}
+          onInspectSpectatedPlayer={(accountId) => {
+            soundEngine.playUiClick();
+            void Promise.all([
+              multiplayerClient.getPlayerProfile(accountId),
+              account ? multiplayerClient.getFriends().catch(() => ({ friends: [] })) : Promise.resolve({ friends: [] }),
+            ])
+              .then(([profRes, frRes]) => {
+                const isFriend = frRes.friends.some((f) => f.account.id === accountId);
+                setProfileModalSubject(
+                  profileFromAccount(profRes.player, {
+                    isOwn: account?.id === accountId,
+                    isFriend,
+                  }),
+                );
+              })
+              .catch(() => undefined);
+          }}
+          onToggleFollowLeader={() => engineRef.current?.toggleFollowLeader()}
           onCollectLoot={(id) => engineRef.current?.collectLootById(id)}
           onOpenVending={() => engineRef.current?.openNearbyVending()}
           onToggleVehicle={() => engineRef.current?.toggleVehicle()}
@@ -506,6 +861,10 @@ export default function App() {
             setIsPaused(false);
             setIsBackpackOpen(false);
             setIsShopOpen(false);
+            activeLaunchedRoomIdRef.current = null;
+            if (account) {
+              void multiplayerClient.leaveMatch();
+            }
             engineRef.current?.returnToLobby();
           }}
           onTestDamage={() => engineRef.current?.applyTestDamage(55)}
@@ -519,6 +878,8 @@ export default function App() {
           onClose={() => setIsBackpackOpen(false)}
           onUseMedkit={() => engineRef.current?.useMedkit()}
           onDropMedkit={() => engineRef.current?.dropMedkit()}
+          onUseSmallKit={() => engineRef.current?.useSmallKit()}
+          onDropSmallKit={() => engineRef.current?.dropSmallKit()}
           onDropGloo={() => engineRef.current?.dropGloo()}
           onDropGrenade={() => engineRef.current?.dropGrenade()}
           onDropAmmo={(slot, amt) => engineRef.current?.dropAmmo(slot, amt)}
@@ -563,12 +924,93 @@ export default function App() {
           isRanked={isRanked || hud.isRanked}
           rankPoints={profile.rankPoints}
           rankDelta={lastRankDelta}
-          onPlayAgain={() => engineRef.current?.startMatchmaking()}
+          onPlayAgain={() => void handleStartMatch()}
           onReturnLobby={() => engineRef.current?.returnToLobby()}
         />
       )}
 
       {/* MODALS */}
+      {showAuthModal && (
+        <AuthModal
+          currentAccount={account}
+          onAuthenticated={(acc) => {
+            applyServerAccount(acc);
+            void multiplayerClient.getParty().then((p) => {
+              syncPartyConfigState(p.party);
+              setInvites(p.invites);
+            }).catch(() => undefined);
+          }}
+          onLoggedOut={() => {
+            setAccount(null);
+            setParty(null);
+            setInvites([]);
+          }}
+          onClose={() => {
+            soundEngine.playUiClick();
+            setShowAuthModal(false);
+          }}
+        />
+      )}
+
+      {showFriendsModal && account && (
+        <FriendsModal
+          currentAccount={account}
+          onClose={() => {
+            soundEngine.playUiClick();
+            setShowFriendsModal(false);
+          }}
+        />
+      )}
+
+      {profileModalSubject && (
+        <PlayerProfileModal
+          subject={
+            profileModalSubject.isOwn
+              ? profileFromLocal(profile, character, account)
+              : profileModalSubject
+          }
+          onClose={() => {
+            soundEngine.playUiClick();
+            setProfileModalSubject(null);
+          }}
+          onChangeNickname={handleUpdateNickname}
+          onOpenCharacter={() => setShowCharModal(true)}
+          onOpenAuth={() => setShowAuthModal(true)}
+          onInviteToParty={(accId) => {
+            if (matchMode === 'solo') {
+              handleChangeMatchMode('duo');
+            }
+            void multiplayerClient.inviteToParty(accId).catch(() => undefined);
+          }}
+          onAddFriend={(pubId) => {
+            void multiplayerClient.sendFriendRequest(pubId).catch(() => undefined);
+          }}
+          onRemoveFriend={(accId) => {
+            void multiplayerClient.removeFriend(accId).then(() => {
+              setProfileModalSubject(null);
+            }).catch(() => undefined);
+          }}
+        />
+      )}
+
+      {showModeModal && (
+        <ModeSelectModal
+          matchMode={matchMode}
+          isRanked={isRanked}
+          autoFillBots={autoFillBots}
+          rankPoints={profile.rankPoints}
+          isPartyLeader={!party || !account || party.leaderId === account.id}
+          onChangeMatchMode={handleChangeMatchMode}
+          onChangeRanked={handleChangeRanked}
+          onChangeAutoFillBots={handleChangeAutoFillBots}
+          onQuickTraining={() => engineRef.current?.startQuickTraining()}
+          onClose={() => {
+            soundEngine.playUiClick();
+            setShowModeModal(false);
+          }}
+        />
+      )}
+
       {showCharModal && (
         <CharacterModal
           config={character}

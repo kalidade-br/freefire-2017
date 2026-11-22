@@ -12,6 +12,7 @@ type SfxBufferKey =
   | 'xm8'
   | 'scar'
   | 'ak47'
+  | 'm1014'
   | 'awm'
   | 'run'
   | 'jump'
@@ -20,6 +21,7 @@ type SfxBufferKey =
   | 'backpack'
   | 'medkit'
   | 'gloo'
+  | 'pickupItem'
   | 'safeWeak'
   | 'safeStrong1'
   | 'safeStrong2';
@@ -33,6 +35,7 @@ const SFX_URLS: Record<SfxBufferKey, string> = {
   xm8: '/audio/xm8-1tiro.mp3',
   scar: '/audio/scar-1tiro.mp3',
   ak47: '/audio/ak-1tiro.mp3',
+  m1014: '/audio/m1014-1tiro.mp3',
   awm: '/audio/awm-1tiro.mp3',
   run: '/audio/correndo.mp3',
   jump: '/audio/pulo.mp3',
@@ -41,6 +44,7 @@ const SFX_URLS: Record<SfxBufferKey, string> = {
   backpack: '/audio/abrindo-mochila.mp3',
   medkit: '/audio/usando-kit-medico.mp3',
   gloo: '/audio/gelo.mp3',
+  pickupItem: '/audio/coletar-item.mp3',
   safeWeak: '/audio/dano-safe-fraco-ou-medio.mp3',
   safeStrong1: '/audio/dano-safe-forte1.mp3',
   safeStrong2: '/audio/dano-safe-forte2.mp3',
@@ -61,6 +65,7 @@ const SAMPLE_SHOT_PROFILES: Partial<Record<WeaponId, SampleShotProfile>> = {
   xm8: { offset: 0.273, duration: 0.48, gain: 0.88, fadeStart: 0.26 },
   scar: { offset: 0.355, duration: 0.52, gain: 6.5, fadeStart: 0.34 },
   ak47: { offset: 0.475, duration: 0.54, gain: 6.8, fadeStart: 0.35 },
+  m1014: { offset: 0.0, duration: 0.56, gain: 2.1, fadeStart: 0.34 },
   awm: { offset: 0.38, duration: 0.61, gain: 1.15, fadeStart: 0.45 },
 };
 
@@ -511,6 +516,7 @@ class SoundEngine {
       weaponId === 'xm8' ||
       weaponId === 'scar' ||
       weaponId === 'ak47' ||
+      weaponId === 'm1014' ||
       weaponId === 'awm'
         ? weaponId
         : null;
@@ -995,7 +1001,18 @@ class SoundEngine {
 
   public playPickup(): void {
     if (!this.ready() || !this.ctx || !this.masterGain) return;
+    const pickupBuf = this.sfxBuffers.get('pickupItem');
     const now = this.ctx.currentTime;
+    if (pickupBuf) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = pickupBuf;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(1.55, now);
+      src.connect(g);
+      g.connect(this.masterGain);
+      src.start(now, 0, Math.min(0.65, pickupBuf.duration));
+      return;
+    }
     const osc = this.ctx.createOscillator();
     const g = this.ctx.createGain();
     osc.type = 'sine';

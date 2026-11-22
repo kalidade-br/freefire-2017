@@ -1,14 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  Crosshair,
   HeartPulse,
   LogOut,
   Move,
   Play,
   Settings,
+  ThumbsUp,
   Trophy,
+  Users,
   Wrench,
 } from 'lucide-react';
+import { getCharacterAvatar } from '../game/avatars';
 import { InputManager } from '../game/inputManager';
 import {
   ATTACHMENT_LABELS,
@@ -24,6 +30,7 @@ import {
   ScopeType,
   WEAPONS,
   WeaponSlotId,
+  getRankInfo,
 } from '../game/types';
 import {
   BERMUDA_MAP_RANGE,
@@ -44,7 +51,6 @@ import {
   IconGrenadeSvg,
   IconHelmetSvg,
   IconJumpSvg,
-  IconMedkitSvg,
   IconProneSvg,
   IconReloadSvg,
   IconScopeSvg,
@@ -53,7 +59,9 @@ import {
   IconVehicleSvg,
   IconVendingSvg,
   IconVestSvg,
+  RankEmblemSvg,
 } from './HudIcons';
+import { NetworkPingBadge } from './NetworkPingBadge';
 import { ScopeOverlay } from './ScopeOverlay';
 import { WeaponIcon } from './WeaponIcon';
 
@@ -72,6 +80,12 @@ interface GameHudProps {
   onTogglePause: () => void;
   onToggleBackpack: () => void;
   onUseMedkit: () => void;
+  onUseSmallKit?: () => void;
+  onCycleSpectate?: (dir: -1 | 1) => void;
+  onSendSpectateLike?: () => void;
+  onExitSpectate?: () => void;
+  onInspectSpectatedPlayer?: (accountId: number) => void;
+  onToggleFollowLeader?: () => void;
   onCollectLoot: (id: string) => void;
   onOpenVending: () => void;
   onToggleVehicle: () => void;
@@ -129,6 +143,12 @@ export const GameHud: React.FC<GameHudProps> = ({
   onTogglePause,
   onToggleBackpack,
   onUseMedkit,
+  onUseSmallKit,
+  onCycleSpectate,
+  onSendSpectateLike,
+  onExitSpectate,
+  onInspectSpectatedPlayer,
+  onToggleFollowLeader,
   onCollectLoot,
   onOpenVending,
   onToggleVehicle,
@@ -554,7 +574,7 @@ export const GameHud: React.FC<GameHudProps> = ({
     // Draw Duo / Squad teammate dots on Minimap
     for (let i = 0; i < hud.teamMembers.length; i++) {
       const m = hud.teamMembers[i];
-      if (m.slotNumber <= 1 || m.eliminated || m.worldX === undefined || m.worldZ === undefined) {
+      if (m.id === 'player' || m.eliminated || m.worldX === undefined || m.worldZ === undefined) {
         continue;
       }
       const mp = toPx(m.worldX, m.worldZ);
@@ -655,6 +675,7 @@ export const GameHud: React.FC<GameHudProps> = ({
   const canAimWeapon =
     hud.activeSlot !== 4 &&
     Boolean(activeWeaponDef && activeWeaponDef.category !== 'HG');
+  const hideGameplayHud = Boolean(hud.isSpectating || hud.isDead);
 
   // Virtual Joystick Handlers
   const handleJoyStart = (e: React.TouchEvent) => {
@@ -816,7 +837,7 @@ export const GameHud: React.FC<GameHudProps> = ({
 
   return (
     <div className="fixed inset-0 z-30 pointer-events-none select-none text-white">
-      {/* Optical Scope Overlay (1x Red Dot, 2x, 4x, Sniper 8x) */}
+      {/* Optical Scope Overlay or Spectated Player Aiming Overlay */}
       {showOpticalOverlay && (
         <ScopeOverlay
           scope={hud.activeScope}
@@ -824,6 +845,30 @@ export const GameHud: React.FC<GameHudProps> = ({
           aimAssistActive={hud.aimAssistActive}
           headshotFlashActive={hud.headshotFlashActive}
         />
+      )}
+      {hud.isSpectating && hud.spectatingTarget && !showOpticalOverlay && (
+        <>
+          {hud.spectatingTarget.isAiming ? (
+            <ScopeOverlay
+              scope="1x"
+              aimLockedTarget={true}
+              aimAssistActive={true}
+              headshotFlashActive={false}
+            />
+          ) : (
+            <div className="fixed inset-0 z-10 pointer-events-none flex items-center justify-center">
+              <div className="relative w-8 h-8 flex items-center justify-center">
+                <div
+                  className="w-3.5 h-3.5 rounded-full transition-colors duration-75"
+                  style={{
+                    backgroundColor: '#38bdf8',
+                    boxShadow: '0 0 8px 2px rgba(56,189,248,0.85)',
+                  }}
+                />
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Damage Vignette Flash */}
@@ -837,7 +882,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       )}
 
       {/* Right Half Touch Camera Pad (when mobile HUD enabled) */}
-      {showTouchHud && !isPaused && (
+      {showTouchHud && !isPaused && !hideGameplayHud && (
         <div
           onTouchStart={handleLookStart}
           onTouchMove={handleLookMove}
@@ -885,7 +930,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       {/* OVERHEAD 3D-PROJECTED TEAMMATE TAGS (#2 JOGADOR + ▼) & OFF-SCREEN DIRECTIONAL ARROWS */}
       {!isPaused &&
         hud.teamMembers.map((m) => {
-          if (m.slotNumber <= 1 || m.eliminated) return null;
+          if (m.id === 'player' || m.eliminated) return null;
           const color = getSlotColor(m.slotNumber, m.isDowned);
           if (m.onScreen && m.screenXPct !== undefined && m.screenYPct !== undefined) {
             return (
@@ -1000,7 +1045,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                   </span>
                   {m.isDowned ? (
                     <span className="text-[8px] font-black text-red-400 shrink-0">CAÍDO</span>
-                  ) : m.distance !== undefined && m.slotNumber > 1 && !m.eliminated ? (
+                  ) : m.distance !== undefined && m.id !== 'player' && !m.eliminated ? (
                     <span className="text-[8px] font-mono text-white/65 shrink-0">{m.distance}m</span>
                   ) : null}
                 </div>
@@ -1035,7 +1080,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       )}
 
       {/* CUSTOMIZABLE UTILITY BUTTONS (MOCHILA %, KIT, GRANADA, GELO) */}
-      {isGroundCombat && !hud.isDead && !hud.isPlayerDowned && !isPaused && (
+      {isGroundCombat && !hideGameplayHud && !hud.isPlayerDowned && !isPaused && (
         <>
           {/* Mochila (% lotação) */}
           <button
@@ -1071,14 +1116,22 @@ export const GameHud: React.FC<GameHudProps> = ({
                   e.preventDefault();
                   onUseMedkit();
                 }}
-                disabled={hud.medkitCount <= 0 || hud.hp >= hud.maxHp || hud.usingMedkit}
+                disabled={
+                  (hud.medkitCount <= 0 && hud.smallkitCount <= 0) ||
+                  hud.hp >= hud.maxHp ||
+                  hud.usingMedkit
+                }
                 style={layoutStyle(hudLayout.medkitBtn)}
                 className="pointer-events-auto touch-none absolute z-20 w-11 h-11 sm:w-12 sm:h-12 bg-black/50 hover:bg-black/65 border border-white/25 flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:brightness-50 disabled:grayscale"
                 title="Usar Kit Médico (H)"
               >
-                <IconMedkitSvg className="w-6 h-6 sm:w-7 sm:h-7 text-white drop-shadow" />
+                <img
+                  src={hud.medkitCount > 0 ? '/icons/kit-grande.png' : '/icons/kit.png'}
+                  alt="Kit Médico"
+                  className="w-7 h-7 sm:w-8 sm:h-8 object-contain drop-shadow"
+                />
                 <span className="absolute top-0 right-0.5 text-[10px] font-mono font-black text-white drop-shadow">
-                  {hud.medkitCount}
+                  {hud.medkitCount > 0 ? hud.medkitCount : hud.smallkitCount}
                 </span>
                 {!showTouchHud && (
                   <span className="absolute bottom-0 left-0.5 text-[7px] font-mono text-white/75">
@@ -1086,6 +1139,36 @@ export const GameHud: React.FC<GameHudProps> = ({
                   </span>
                 )}
               </button>
+
+              {/* Kit Pequeno (rápido +35 HP) ao lado do Kit Médico quando disponível */}
+              {hud.smallkitCount > 0 && hud.medkitCount > 0 && (
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    onUseSmallKit?.();
+                  }}
+                  disabled={hud.hp >= hud.maxHp || hud.usingMedkit}
+                  style={{
+                    left: `calc(${hudLayout.medkitBtn.xPct}% + 52px)`,
+                    top: `${hudLayout.medkitBtn.yPct}%`,
+                    opacity: hudLayout.medkitBtn.opacity,
+                    transform: `translate(-50%, -50%) scale(${hudLayout.medkitBtn.scale})`,
+                  }}
+                  className="pointer-events-auto touch-none absolute z-20 w-10 h-10 bg-black/55 hover:bg-emerald-950/65 border border-emerald-400/50 flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:brightness-50 disabled:grayscale"
+                  title="Kit Pequeno (+35 HP · Rápido)"
+                >
+                  <img
+                    src="/icons/kit.png"
+                    alt="Kit Pequeno"
+                    className="w-6 h-6 object-contain drop-shadow"
+                  />
+                  <span className="absolute top-0 right-0.5 text-[9px] font-mono font-black text-emerald-300 drop-shadow">
+                    {hud.smallkitCount}
+                  </span>
+                </button>
+              )}
 
               {!hud.inVehicle && (
                 <>
@@ -1295,46 +1378,87 @@ export const GameHud: React.FC<GameHudProps> = ({
         )}
       </div>
 
-      {/* TOP-RIGHT (customizable): FF Coins + Ranked Badge + Cyan Vivo / Red-Orange Matou + Settings Gear */}
+      {/* TOP-RIGHT (customizable): FF Coins + Ranked Badge + Cyan Vivo / Red-Orange Matou + Settings Gear + Ping ms */}
       <div
         style={layoutStyle(hudLayout.aliveBox)}
-        className="pointer-events-auto absolute z-20 flex items-center gap-1.5"
+        className="pointer-events-auto absolute z-20 flex flex-col items-end gap-1"
       >
-        {hud.isRanked && (
-          <div className="bg-red-700/90 border border-amber-300/80 px-1.5 py-1 text-[9px] font-black tracking-wider uppercase text-amber-200 whitespace-nowrap">
-            RANK
+        <div className="flex items-center gap-1.5">
+          {hud.isRanked && (
+            <div className="bg-red-700/90 border border-amber-300/80 px-1.5 py-1 text-[9px] font-black tracking-wider uppercase text-amber-200 whitespace-nowrap">
+              RANK
+            </div>
+          )}
+          {!hideGameplayHud && (
+            <div className="flex items-center gap-1 bg-black/75 border border-amber-400/55 px-2 py-1 text-[11px] font-mono font-black text-amber-300 tabular-nums whitespace-nowrap">
+              <IconCoinSvg className="w-3.5 h-3.5 shrink-0" />
+              <span>{hud.ffCoins}</span>
+            </div>
+          )}
+          <div className="flex items-center text-[11px] sm:text-xs font-bold shadow-md overflow-hidden rounded-[2px]">
+            <div className="bg-gradient-to-r from-cyan-500/85 to-teal-400/85 px-2.5 py-1 flex items-center gap-1 text-white">
+              <span>Vivo</span>
+              <span className="font-mono font-black tabular-nums">{hud.aliveCount}</span>
+            </div>
+            <div className="bg-gradient-to-r from-orange-500/85 to-red-600/85 px-2.5 py-1 flex items-center gap-1 text-white">
+              <span>Matou</span>
+              <span className="font-mono font-black tabular-nums">
+                {hud.spectatingTarget ? hud.spectatingTarget.kills : hud.kills}
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onTogglePause();
+            }}
+            className="pointer-events-auto touch-none bg-black/50 hover:bg-black/75 border border-white/25 p-1.5 rounded-[2px] cursor-pointer"
+            title="Menu / Configurações (Esc)"
+          >
+            <Settings className="w-4 h-4 text-white" />
+          </button>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {!hideGameplayHud && hud.spectatorCount > 0 && (
+            <div
+              className="flex items-center gap-1 bg-black/70 border border-white/30 px-2 py-0.5 text-[11px] font-mono font-black text-white shadow"
+              title="Espectadores assistindo você"
+            >
+              <img
+                src="/assets/aistudio/159604_d43d3e53.png"
+                alt="Telando"
+                className="w-3.5 h-3.5 object-contain brightness-0 invert"
+              />
+              <span className="tabular-nums">{hud.spectatorCount}</span>
+            </div>
+          )}
+          {!hideGameplayHud && hud.matchVisualLikes > 0 && (
+            <div
+              className="flex items-center gap-1 bg-amber-500/20 border border-amber-400/60 px-1.5 py-0.5 text-[10px] font-mono font-black text-amber-300 shadow"
+              title="Likes nesta partida"
+            >
+              <ThumbsUp className="w-3 h-3 fill-amber-400 text-amber-300" />
+              <span className="tabular-nums">{hud.matchVisualLikes}</span>
+            </div>
+          )}
+          <NetworkPingBadge
+            pingMs={hud.pingMs}
+            disconnected={hud.isNetworkDisconnected}
+            compact
+          />
+        </div>
+        {hud.likeToast && (
+          <div className="flex items-center gap-1.5 bg-black/80 border border-amber-400/80 px-2.5 py-1 text-[10px] font-bold text-amber-200 shadow-lg animate-pulse">
+            <ThumbsUp className="w-3.5 h-3.5 fill-amber-400 text-amber-300 shrink-0" />
+            <span>{hud.likeToast.nick}</span>
           </div>
         )}
-        <div className="flex items-center gap-1 bg-black/75 border border-amber-400/55 px-2 py-1 text-[11px] font-mono font-black text-amber-300 tabular-nums whitespace-nowrap">
-          <IconCoinSvg className="w-3.5 h-3.5 shrink-0" />
-          <span>{hud.ffCoins}</span>
-        </div>
-        <div className="flex items-center text-[11px] sm:text-xs font-bold shadow-md overflow-hidden rounded-[2px]">
-          <div className="bg-gradient-to-r from-cyan-500/85 to-teal-400/85 px-2.5 py-1 flex items-center gap-1 text-white">
-            <span>Vivo</span>
-            <span className="font-mono font-black tabular-nums">{hud.aliveCount}</span>
-          </div>
-          <div className="bg-gradient-to-r from-orange-500/85 to-red-600/85 px-2.5 py-1 flex items-center gap-1 text-white">
-            <span>Matou</span>
-            <span className="font-mono font-black tabular-nums">{hud.kills}</span>
-          </div>
-        </div>
-        <button
-          type="button"
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            onTogglePause();
-          }}
-          className="pointer-events-auto touch-none bg-black/50 hover:bg-black/75 border border-white/25 p-1.5 rounded-[2px] cursor-pointer"
-          title="Menu / Configurações (Esc)"
-        >
-          <Settings className="w-4 h-4 text-white" />
-        </button>
       </div>
 
       {/* CUSTOMIZABLE CLASSIC FREE FIRE TOP-RIGHT WEAPON BOX (MATCHES SCREENSHOTS 1 & 3) */}
-      {isGroundCombat && !hud.isPlayerDowned && (
+      {isGroundCombat && !hud.isPlayerDowned && !hideGameplayHud && (
         <div
           style={layoutStyle(hudLayout.weapons)}
           className="pointer-events-auto absolute z-20 flex flex-col items-end gap-1 w-[184px] sm:w-[214px]"
@@ -1566,7 +1690,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       )}
 
       {/* DIRECTIONAL DAMAGE INDICATOR ARROWS */}
-      {isGroundCombat && !hud.isDead && !isPaused && hud.damageIndicators.length > 0 && (
+      {isGroundCombat && !hideGameplayHud && !isPaused && hud.damageIndicators.length > 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
           {hud.damageIndicators.map((di) => {
             const opacity = Math.max(0, 1 - di.age / 1.45);
@@ -1597,7 +1721,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       )}
 
       {/* CENTER CROSSHAIR (Compact & Semi-Transparent) */}
-      {isGroundCombat && !hud.isDead && !hud.isPlayerDowned && !isPaused && !showOpticalOverlay && !isBackpackOpen && (
+      {isGroundCombat && !hideGameplayHud && !hud.isPlayerDowned && !isPaused && !showOpticalOverlay && !isBackpackOpen && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="relative flex items-center justify-center">
             <div
@@ -1665,6 +1789,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       {/* Floating Damage Numbers (Peito = Branco/Dourado, Capa = Vermelho Vivo estilo 4x) */}
       {isGroundCombat &&
         !isPaused &&
+        !hideGameplayHud &&
         hud.damagePopups.map((d) => {
           const opacity = Math.max(0, 1 - d.age / 0.78);
           const liftPx = d.age * 46;
@@ -1702,7 +1827,7 @@ export const GameHud: React.FC<GameHudProps> = ({
         })}
 
       {/* Tactical Gloo Wall / Grenade Active Mode Banner */}
-      {isGroundCombat && !hud.isDead && !hud.isPlayerDowned && !isPaused && (hud.isPlacingGloo || hud.isHoldingGrenade) && (
+      {isGroundCombat && !hideGameplayHud && !hud.isPlayerDowned && !isPaused && (hud.isPlacingGloo || hud.isHoldingGrenade) && (
         <div
           className={`absolute top-[36%] left-1/2 -translate-x-1/2 z-20 pointer-events-none px-3 py-1 border font-mono font-bold text-[10px] uppercase tracking-wider ${
             hud.isPlacingGloo
@@ -1717,10 +1842,34 @@ export const GameHud: React.FC<GameHudProps> = ({
       )}
 
       {/* AIRPLANE / DROPPING / WINDOW VAULT / MEDKIT / LOOT / REVIVE ACTION PROMPTS (customizable) */}
+      {!hideGameplayHud && (
       <div
         style={layoutStyle(hudLayout.actionPrompt)}
         className="pointer-events-none absolute z-20 flex flex-col items-center gap-1.5 w-[320px] max-w-[92vw]"
       >
+        {hud.showFollowLeaderToggle && onToggleFollowLeader && (
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onToggleFollowLeader();
+            }}
+            className={`pointer-events-auto touch-none px-4 py-2 border-2 text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-xl cursor-pointer transition-colors ${
+              hud.isFollowingLeader
+                ? 'bg-emerald-600/95 hover:bg-emerald-500 border-emerald-200 text-white'
+                : 'bg-black/85 hover:bg-neutral-900 border-white/40 text-neutral-200'
+            }`}
+          >
+            <Users className="w-4 h-4 shrink-0" />
+            <span>
+              {hud.isFollowingLeader
+                ? `SEGUINDO LÍDER (${hud.leaderNick ?? 'LÍDER'}) · DESATIVAR`
+                : `SEGUIR LÍDER (${hud.leaderNick ?? 'LÍDER'}) · ATIVAR`}
+            </span>
+          </button>
+        )}
+
         {hud.canJumpFromPlane && (
           <button
             type="button"
@@ -1987,8 +2136,10 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
         )}
       </div>
+      )}
 
       {/* CUSTOMIZABLE SLEEK FREE FIRE BOTTOM-CENTER HP / ARMOR BAR */}
+      {!hideGameplayHud && (
       <div
         style={layoutStyle(hudLayout.hpBar)}
         className="absolute z-20 flex items-end gap-2.5 w-[270px] sm:w-[320px] max-w-[82vw]"
@@ -2082,10 +2233,11 @@ export const GameHud: React.FC<GameHudProps> = ({
           </button>
         )}
       </div>
+      )}
 
       {/* FREE FIRE LOOT STRIP / INDIVIDUAL DEATHBOX LIST DIRECTLY UNDER TOP-RIGHT WEAPON BOX */}
       {isGroundCombat &&
-        !hud.isDead &&
+        !hideGameplayHud &&
         !hud.isPlayerDowned &&
         !isPaused &&
         !isBackpackOpen &&
@@ -2112,13 +2264,48 @@ export const GameHud: React.FC<GameHudProps> = ({
                       );
                     }
                     if (slot.kind === 'ammo') {
-                      return <IconAmmoSvg className="w-8 h-7 shrink-0 drop-shadow" />;
+                      const lbl = slot.label.toLowerCase();
+                      const ammoImg = lbl.includes('awm')
+                        ? '/icons/rifle.png'
+                        : lbl.includes('sg') || lbl.includes('doze') || lbl.includes('12')
+                          ? '/icons/doze.png'
+                          : lbl.includes('smg')
+                            ? '/icons/smg.png'
+                            : '/icons/ar.png';
+                      return (
+                        <img
+                          src={ammoImg}
+                          alt={slot.label}
+                          className="w-8 h-8 object-contain shrink-0 drop-shadow"
+                        />
+                      );
                     }
                     if (slot.kind === 'coin') {
-                      return <IconCoinSvg className="w-6 h-6 shrink-0" />;
+                      return (
+                        <img
+                          src="/icons/moedas.png"
+                          alt="Moedas FF"
+                          className="w-7 h-7 object-contain shrink-0 drop-shadow"
+                        />
+                      );
                     }
                     if (slot.kind === 'medkit') {
-                      return <IconMedkitSvg className="w-7 h-7 text-emerald-400 shrink-0" />;
+                      return (
+                        <img
+                          src="/icons/kit-grande.png"
+                          alt="Kit Médico"
+                          className="w-8 h-8 object-contain shrink-0 drop-shadow"
+                        />
+                      );
+                    }
+                    if (slot.kind === 'smallkit') {
+                      return (
+                        <img
+                          src="/icons/kit.png"
+                          alt="Kit Pequeno"
+                          className="w-7 h-7 object-contain shrink-0 drop-shadow"
+                        />
+                      );
                     }
                     if (slot.kind === 'gloo') {
                       return <IconGlooSvg className="w-7 h-7 text-cyan-300 shrink-0" />;
@@ -2133,9 +2320,22 @@ export const GameHud: React.FC<GameHudProps> = ({
                       return <IconHelmetSvg className="w-7 h-7 text-sky-300 shrink-0" />;
                     }
                     if (slot.kind === 'backpack') {
-                      return <IconBackpackSvg className="w-7 h-7 text-amber-300 shrink-0" />;
+                      const lv = slot.level ?? 1;
+                      return (
+                        <img
+                          src={`/icons/mochila-nv${lv}.png`}
+                          alt={`Mochila Nv${lv}`}
+                          className="w-8 h-8 object-contain shrink-0 drop-shadow"
+                        />
+                      );
                     }
                     if (slot.kind === 'scope') {
+                      if (slot.scopeType === '2x') {
+                        return <img src="/icons/mira-2x.png" alt="Mira 2x" className="w-7 h-7 object-contain shrink-0" />;
+                      }
+                      if (slot.scopeType === '4x') {
+                        return <img src="/icons/mira-4x.png" alt="Mira 4x" className="w-7 h-7 object-contain shrink-0" />;
+                      }
                       return <IconScopeSvg className="w-7 h-7 text-emerald-300 shrink-0" />;
                     }
                     if (slot.kind === 'attachment') {
@@ -2202,7 +2402,7 @@ export const GameHud: React.FC<GameHudProps> = ({
         })()}
 
       {/* MOBILE VEHICLE TOUCH PEDALS & STEERING WHEN DRIVING */}
-      {showTouchHud && isGroundCombat && !isPaused && hud.inVehicle && (
+      {showTouchHud && isGroundCombat && !hideGameplayHud && !isPaused && hud.inVehicle && (
         <>
           <div className="pointer-events-auto absolute left-4 bottom-8 z-20 flex items-center gap-2">
             <button
@@ -2264,7 +2464,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       )}
 
       {/* CUSTOMIZABLE MOBILE VIRTUAL JOYSTICK, SPRINT, LEFT-FIRE & RIGHT BUTTON CLUSTER */}
-      {showTouchHud && (isGroundCombat || isAirborneDrop) && !isPaused && !hud.inVehicle && (
+      {showTouchHud && (isGroundCombat || isAirborneDrop) && !hideGameplayHud && !isPaused && !hud.inVehicle && (
         <>
           {/* Left Virtual Joystick (usable on ground, while downed, and while skydiving/parachuting) */}
           <div
@@ -2538,6 +2738,152 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
         </div>
       )}
+      {/* SPECTATOR OVERLAY (Bottom-left arrows + Free Fire Player Profile Banner + Spectator Eye + Like, gameplay HUD hidden) */}
+      {isGroundCombat && hud.spectatingTarget && !isPaused && (() => {
+        const sp = hud.spectatingTarget;
+        const rk = getRankInfo(sp.rankPoints);
+        const spHpPct = Math.max(0, Math.min(100, (sp.hp / Math.max(1, sp.maxHp)) * 100));
+        return (
+          <>
+            <div className="pointer-events-auto fixed bottom-3 left-3 z-40 flex items-end gap-2 select-none">
+              {/* Two cycling arrows on bottom-left */}
+              <div className="flex items-center gap-1 bg-black/85 border border-white/25 p-1 shadow-xl">
+                <button
+                  type="button"
+                  onClick={() => onCycleSpectate?.(-1)}
+                  title="Jogador Anterior"
+                  className="w-8 h-9 bg-[#1a2230] hover:bg-amber-400 hover:text-black text-white flex items-center justify-center cursor-pointer transition-colors"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onCycleSpectate?.(1)}
+                  title="Próximo Jogador"
+                  className="w-8 h-9 bg-[#1a2230] hover:bg-amber-400 hover:text-black text-white flex items-center justify-center cursor-pointer transition-colors"
+                >
+                  <ChevronRight className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Player Banner Card with Avatar, Nick, Level, Patente & Spectator Eye */}
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  if (!sp.isBot && sp.accountId > 0 && onInspectSpectatedPlayer) {
+                    onInspectSpectatedPlayer(sp.accountId);
+                  }
+                }}
+                className={`flex items-stretch bg-gradient-to-r from-[#7f1d1d] via-[#991b1b] to-[#111827] border-2 border-amber-400/80 shadow-2xl overflow-hidden min-w-[260px] max-w-[360px] text-left ${
+                  !sp.isBot && sp.accountId > 0 ? 'cursor-pointer hover:ring-2 hover:ring-amber-300' : ''
+                }`}
+                title={!sp.isBot && sp.accountId > 0 ? 'Clique para ver Perfil / Adicionar Amigo' : undefined}
+              >
+                {/* Yellow Left Strip with Avatar & Level */}
+                <div className="w-16 shrink-0 bg-gradient-to-b from-yellow-300 via-amber-400 to-amber-500 p-1 flex flex-col items-center justify-between text-black">
+                  <div className="w-12 h-12 border-2 border-white bg-neutral-900 overflow-hidden shadow">
+                    <img
+                      src={getCharacterAvatar(sp.modelId)}
+                      alt={sp.nick}
+                      className="w-full h-full object-cover object-top"
+                    />
+                  </div>
+                  <span className="text-[9px] font-black leading-none mt-0.5">
+                    Nvl. {sp.level}
+                  </span>
+                </div>
+
+                {/* Crimson/Dark Banner Details */}
+                <div className="flex-1 p-2 flex flex-col justify-between min-w-0">
+                  <div className="flex items-center justify-between gap-1.5">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse shrink-0" />
+                        <span className="text-xs font-black text-white truncate">
+                          {sp.nick}
+                        </span>
+                        {sp.teamLabel && (
+                          <span className="bg-black/60 border border-amber-300/40 px-1 py-[0.5px] text-[7.5px] font-mono text-amber-300 whitespace-nowrap">
+                            {sp.teamLabel}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 mt-0.5 text-[10px] font-bold text-amber-200">
+                        <RankEmblemSvg
+                          color={rk.color}
+                          accent={rk.accent}
+                          className="w-4 h-4 shrink-0"
+                        />
+                        <span className="truncate">{rk.name}</span>
+                        {!sp.isBot && sp.accountId > 0 && (
+                          <span className="text-[8px] font-mono text-amber-300 underline ml-1">
+                            Ver Perfil
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      <div
+                        className="flex items-center gap-1 px-1.5 py-0.5 bg-black/50 border border-white/15 text-[10px] font-mono font-bold text-white"
+                        title="Espectadores"
+                      >
+                        <img
+                          src="/assets/aistudio/159604_d43d3e53.png"
+                          alt="Telando"
+                          className="w-3 h-3 object-contain brightness-0 invert"
+                        />
+                        <span>{sp.spectatorCount}</span>
+                      </div>
+                      <div className="flex items-center gap-1 px-1.5 py-0.5 bg-black/50 border border-white/15 text-[10px] font-mono font-bold text-amber-300">
+                        <Crosshair className="w-3 h-3" />
+                        <span>{sp.kills}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* HP Bar */}
+                  <div className="mt-1.5">
+                    <div className="w-full h-1.5 bg-black/70 overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-400 transition-all"
+                        style={{ width: `${spHpPct}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Visual Like Button */}
+              <button
+                type="button"
+                onClick={() => onSendSpectateLike?.()}
+                disabled={Boolean(sp.likedByMe)}
+                title={sp.likedByMe ? 'Like enviado' : 'Dar Like'}
+                className={`h-10 px-2.5 border flex items-center gap-1 text-[11px] font-black uppercase shadow-xl transition-colors ${
+                  sp.likedByMe
+                    ? 'bg-amber-400 text-black border-amber-200 cursor-default'
+                    : 'bg-black/85 hover:bg-amber-400 hover:text-black border-amber-400/70 text-amber-300 cursor-pointer'
+                }`}
+              >
+                <ThumbsUp className={`w-4 h-4 ${sp.likedByMe ? 'fill-black' : ''}`} />
+                <span className="hidden sm:inline">{sp.likedByMe ? 'CURTIDO' : 'LIKE'}</span>
+              </button>
+            </div>
+
+            {/* Quit / Kitar Match Button (does not penalize alive teammates) */}
+            <button
+              type="button"
+              onClick={() => (onExitSpectate ? onExitSpectate() : onReturnLobby())}
+              className="pointer-events-auto fixed bottom-3 right-3 z-40 px-3.5 py-2 bg-red-950/90 hover:bg-red-800 border border-red-400/70 text-red-100 font-black text-[11px] uppercase tracking-wider flex items-center gap-1.5 shadow-xl cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>SAIR DA PARTIDA</span>
+            </button>
+          </>
+        );
+      })()}
     </div>
   );
 };

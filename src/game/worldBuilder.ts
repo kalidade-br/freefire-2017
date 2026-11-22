@@ -77,6 +77,7 @@ export interface TargetDummy {
   knockedByPlayer: boolean;
   downTimer: number;
   eliminated: boolean;
+  kills: number;
   hitFlash: number;
   chestOffsetY: number;
   headOffsetY: number;
@@ -1181,6 +1182,7 @@ function createBotEntity(
     knockedByPlayer: false,
     downTimer: 0,
     eliminated: false,
+    kills: 0,
     hitFlash: 0,
     chestOffsetY: 1.18,
     headOffsetY: 1.69,
@@ -3216,12 +3218,13 @@ export function createIslandWorld(
     // 3. Medkit or Attachment or Scope inside the house
     const p3 = toWorld(hw * 0.18, hd * 0.18);
     if (idx % 2 === 0) {
+      const isSmallKit = idx % 4 === 2;
       lootDefs.push({
         x: p3.x,
         z: p3.z,
         yOverride: houseBaseY,
-        kind: 'medkit',
-        label: 'Kit Médico (+75 HP)',
+        kind: isSmallKit ? 'smallkit' : 'medkit',
+        label: isSmallKit ? 'Kit Pequeno (+35 HP)' : 'Kit Médico (+75 HP)',
       });
     } else {
       const att = interiorAttachments[idx % interiorAttachments.length];
@@ -3410,9 +3413,14 @@ export function createIslandWorld(
         x: lp.x,
         z: lp.z,
         yOverride: lp.y,
-        kind: idx % 2 === 0 ? 'medkit' : 'gloo',
+        kind: idx % 4 === 2 ? 'smallkit' : idx % 2 === 0 ? 'medkit' : 'gloo',
         glooAmount: 2,
-        label: idx % 2 === 0 ? 'Kit Médico (+75 HP)' : 'Parede de Gelo x2',
+        label:
+          idx % 4 === 2
+            ? 'Kit Pequeno (+35 HP)'
+            : idx % 2 === 0
+              ? 'Kit Médico (+75 HP)'
+              : 'Parede de Gelo x2',
       });
     } else if (mod === 3) {
       const sc = interiorScopes[(idx + (lp.floor === 2 ? 1 : 0)) % interiorScopes.length];
@@ -3461,8 +3469,8 @@ export function createIslandWorld(
     lootDefs.push({
       x: poi.x + 4,
       z: poi.z + 3,
-      kind: 'medkit',
-      label: 'Kit Médico (+75 HP)',
+      kind: idx % 2 === 0 ? 'medkit' : 'smallkit',
+      label: idx % 2 === 0 ? 'Kit Médico (+75 HP)' : 'Kit Pequeno (+35 HP)',
     });
     lootDefs.push({
       x: poi.x - 4,
@@ -3502,13 +3510,43 @@ export function createIslandWorld(
     });
   });
 
-  // Shared pooled geometries, prototypes & clean realistic materials for ALL ground loot assets (zero glow/ring/beam effects)
-  const ammoCrateGeo = new THREE.BoxGeometry(0.46, 0.22, 0.28);
-  const ammoStripGeo = new THREE.BoxGeometry(0.34, 0.06, 0.12);
-  const medCaseGeo = new THREE.BoxGeometry(0.44, 0.18, 0.32);
-  const medCrossHGeo = new THREE.BoxGeometry(0.18, 0.04, 0.06);
-  const medCrossVGeo = new THREE.BoxGeometry(0.06, 0.04, 0.18);
-  const medHandleGeo = new THREE.BoxGeometry(0.16, 0.05, 0.05);
+  // Shared pooled geometries, prototypes & clean realistic materials + faint white floor glow disc
+  const lootGlowTex = (() => {
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 64;
+    const g = c.getContext('2d');
+    if (g) {
+      const grad = g.createRadialGradient(32, 32, 2, 32, 32, 31);
+      grad.addColorStop(0, 'rgba(255,255,255,0.75)');
+      grad.addColorStop(0.5, 'rgba(255,255,255,0.22)');
+      grad.addColorStop(1, 'rgba(255,255,255,0.0)');
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 64, 64);
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.needsUpdate = true;
+    return tex;
+  })();
+  const lootGlowGeo = new THREE.CircleGeometry(0.52, 14);
+  lootGlowGeo.rotateX(-Math.PI / 2);
+  const lootGlowMat = new THREE.MeshBasicMaterial({
+    map: lootGlowTex,
+    transparent: true,
+    opacity: 0.24,
+    depthWrite: false,
+    color: 0xffffff,
+  });
+
+  const ammoCrateGeo = new THREE.BoxGeometry(0.32, 0.11, 0.22);
+  const ammoStripGeo = new THREE.BoxGeometry(0.11, 0.116, 0.224);
+  const medCaseGeo = new THREE.BoxGeometry(0.46, 0.18, 0.31);
+  const medPadGeo = new THREE.BoxGeometry(0.24, 0.024, 0.18);
+  const medCrossHGeo = new THREE.BoxGeometry(0.13, 0.03, 0.045);
+  const medCrossVGeo = new THREE.BoxGeometry(0.045, 0.03, 0.13);
+  const medHandleGeo = new THREE.BoxGeometry(0.14, 0.06, 0.05);
+  const smallKitGeo = new THREE.BoxGeometry(0.24, 0.10, 0.19);
+  const smallKitBandGeo = new THREE.BoxGeometry(0.075, 0.106, 0.194);
   const helmDomeGeo = new THREE.SphereGeometry(0.21, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.58);
   const helmRimGeo = new THREE.TorusGeometry(0.205, 0.024, 6, 14);
   const scopeTubeGeo = new THREE.CylinderGeometry(0.055, 0.055, 0.34, 10);
@@ -3522,22 +3560,24 @@ export function createIslandWorld(
   const attStockGeo = new THREE.BoxGeometry(0.07, 0.16, 0.30);
   const glooCanGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.42, 10);
   const glooBandGeo = new THREE.TorusGeometry(0.145, 0.02, 6, 12);
-  const fragBodyGeo = new THREE.SphereGeometry(0.15, 10, 8);
-  fragBodyGeo.scale(0.9, 1.18, 0.9);
-  const fragCapGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.08, 8);
+  const fragBodyGeo = new THREE.BoxGeometry(0.19, 0.20, 0.19);
+  const fragCapGeo = new THREE.BoxGeometry(0.04, 0.09, 0.04);
   const lootCoinGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.08, 12);
   lootCoinGeo.rotateZ(Math.PI / 2);
   const lootDeathGeo = new THREE.BoxGeometry(0.76, 0.42, 0.52);
 
-  // Clean realistic PBR materials (zero emissive glow/bloom overhead)
-  const matAmmoOlive = new THREE.MeshStandardMaterial({ color: 0x3b442b, roughness: 0.68, metalness: 0.2 });
+  // Clean realistic PBR materials matching reference loot items
+  const matAmmoOlive = new THREE.MeshStandardMaterial({ color: 0x3b6345, roughness: 0.68, metalness: 0.15 });
+  const matAmmoRed = new THREE.MeshStandardMaterial({ color: 0xa62626, roughness: 0.62, metalness: 0.15 });
+  const matBeigeTan = new THREE.MeshStandardMaterial({ color: 0xcabca6, roughness: 0.64, metalness: 0.06 });
   const matGoldTrim = new THREE.MeshStandardMaterial({ color: 0xeab308, roughness: 0.34, metalness: 0.72 });
+  const matMedOlive = new THREE.MeshStandardMaterial({ color: 0x525946, roughness: 0.62, metalness: 0.14 });
   const matMedWhite = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.48, metalness: 0.05 });
-  const matMedRed = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.42 });
+  const matMedRed = new THREE.MeshStandardMaterial({ color: 0xc81e1e, roughness: 0.42 });
   const matDarkMetal = new THREE.MeshStandardMaterial({ color: 0x20242a, roughness: 0.38, metalness: 0.78 });
   const matLensBlue = new THREE.MeshStandardMaterial({ color: 0x0ea5e9, roughness: 0.18, metalness: 0.85 });
   const matGlooCyan = new THREE.MeshStandardMaterial({ color: 0x0891b2, roughness: 0.38, metalness: 0.28 });
-  const matGrenadeOlive = new THREE.MeshStandardMaterial({ color: 0x4d5d33, roughness: 0.55, metalness: 0.25 });
+  const matGrenadeOlive = new THREE.MeshStandardMaterial({ color: 0x4b5346, roughness: 0.55, metalness: 0.25 });
   const matDeathCrate = new THREE.MeshStandardMaterial({ color: 0x6b4728, roughness: 0.72, metalness: 0.12 });
   const armorMatByLevel: Record<number, THREE.MeshStandardMaterial> = {
     1: new THREE.MeshStandardMaterial({ color: 0x4b5842, roughness: 0.58, metalness: 0.22 }),
@@ -3608,22 +3648,35 @@ export function createIslandWorld(
       gun.rotation.set(0, 0, 0.14);
       itemRoot.add(gun);
     } else if (ld.kind === 'ammo') {
-      const crate = new THREE.Mesh(ammoCrateGeo, matAmmoOlive);
-      const strip = new THREE.Mesh(ammoStripGeo, matGoldTrim);
-      strip.position.y = 0.125;
+      const isShotgunAmmo = (ld.ammoAmount ?? 30) <= 20;
+      const crate = new THREE.Mesh(ammoCrateGeo, isShotgunAmmo ? matAmmoRed : matAmmoOlive);
+      const strip = new THREE.Mesh(ammoStripGeo, matBeigeTan);
+      strip.position.x = 0.095;
       itemRoot.add(crate, strip);
     } else if (ld.kind === 'coin') {
       const coin = new THREE.Mesh(lootCoinGeo, matGoldTrim);
       itemRoot.add(coin);
     } else if (ld.kind === 'medkit') {
-      const box = new THREE.Mesh(medCaseGeo, matMedWhite);
-      const crossH = new THREE.Mesh(medCrossHGeo, matMedRed);
-      crossH.position.y = 0.1;
-      const crossV = new THREE.Mesh(medCrossVGeo, matMedRed);
-      crossV.position.y = 0.1;
-      const handle = new THREE.Mesh(medHandleGeo, matMedRed);
-      handle.position.set(0, 0.04, 0.17);
-      itemRoot.add(box, crossH, crossV, handle);
+      const box = new THREE.Mesh(medCaseGeo, matMedOlive);
+      const strap = new THREE.Mesh(medHandleGeo, matDarkMetal);
+      strap.scale.set(3.4, 0.45, 6.4);
+      const latch = new THREE.Mesh(medHandleGeo, matDarkMetal);
+      latch.position.set(0, 0, 0.155);
+      latch.scale.set(0.6, 1.3, 0.4);
+      const redPad = new THREE.Mesh(medPadGeo, matMedRed);
+      redPad.position.y = 0.088;
+      const crossH = new THREE.Mesh(medCrossHGeo, matMedWhite);
+      crossH.position.y = 0.096;
+      const crossV = new THREE.Mesh(medCrossVGeo, matMedWhite);
+      crossV.position.y = 0.096;
+      itemRoot.add(box, strap, latch, redPad, crossH, crossV);
+    } else if (ld.kind === 'smallkit') {
+      const pouch = new THREE.Mesh(smallKitGeo, matBeigeTan);
+      const band = new THREE.Mesh(smallKitBandGeo, matMedRed);
+      const crossH = new THREE.Mesh(medCrossHGeo, matMedWhite);
+      crossH.scale.set(0.45, 0.7, 0.45);
+      crossH.position.y = 0.048;
+      itemRoot.add(pouch, band, crossH);
     } else if (ld.kind === 'vest') {
       const armorMat = armorMatByLevel[ld.level ?? 1] ?? armorMatByLevel[1];
       const vestAsset = createVestGeometryGroup(armorMat);
@@ -3702,8 +3755,11 @@ export function createIslandWorld(
       itemRoot.add(crate, trim);
     }
 
-    // Only the clean asset itself (no rings, no floor glow, no light beams)
-    g.add(itemRoot);
+    // Stationary ground item with subtle, lightweight faint white glow disc underneath
+    const glowSpot = new THREE.Mesh(lootGlowGeo, lootGlowMat);
+    glowSpot.position.y = -yLift + 0.03;
+    glowSpot.renderOrder = 1;
+    g.add(glowSpot, itemRoot);
     scene.add(g);
 
     return {
