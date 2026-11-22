@@ -38,6 +38,7 @@ import {
 } from '../shared/multiplayerTypes';
 import { IconCoinSvg, RankEmblemSvg } from './HudIcons';
 import { NetworkPingBadge } from './NetworkPingBadge';
+import { VoiceChatHudWidget } from './VoiceChatHudWidget';
 
 interface LobbyScreenProps {
   profile: PlayerProfile;
@@ -302,6 +303,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             pingMs={pingInfo.pingMs}
             disconnected={pingInfo.disconnected}
           />
+
+          <VoiceChatHudWidget compact />
 
           <button
             type="button"

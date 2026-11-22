@@ -10,6 +10,7 @@ import {
   getAccountProfileById,
   listFriendsAndRequests,
   loginAccount,
+  loginOrRegisterFirebaseAccount,
   logoutSession,
   registerAccount,
   respondFriendRequest,
@@ -17,6 +18,7 @@ import {
   sendFriendRequest,
   updateAccountStatsAndProfile,
 } from './src/db/accounts.ts';
+import { adminAuth } from './src/lib/firebase-admin.ts';
 import type {
   AirplaneRouteSync,
   ClientMatchStatePush,
@@ -624,6 +626,35 @@ async function startServer(): Promise<void> {
     }
   });
 
+  app.post('/api/auth/firebase', async (req, res) => {
+    try {
+      const { idToken, nickname, character } = req.body ?? {};
+      const tokenStr = String(idToken ?? '').trim();
+      if (!tokenStr) {
+        return res.status(400).json({ error: 'Token Firebase ausente.' });
+      }
+      const decoded = await adminAuth.verifyIdToken(tokenStr);
+      const out = await loginOrRegisterFirebaseAccount({
+        firebaseUid: decoded.uid,
+        nickname: nickname
+          ? String(nickname)
+          : decoded.name
+            ? String(decoded.name)
+            : decoded.email
+              ? String(decoded.email).split('@')[0]
+              : 'Sobrevivente',
+        character,
+      });
+      lastHeartbeatMs.set(out.account.id, Date.now());
+      const party = ensurePartyForAccount(out.account);
+      const invites = partyInvites.get(String(out.account.id)) ?? [];
+      return res.json({ ...out, party, invites });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro ao autenticar com Firebase.';
+      return res.status(401).json({ error: msg });
+    }
+  });
+
   app.post('/api/auth/logout', requireSession, async (req: AuthenticatedRequest, res) => {
     const acc = req.account!;
     removeHumanFromRoom(acc.id);
@@ -1111,6 +1142,36 @@ async function startServer(): Promise<void> {
 
       const roomId = accountMatchMap.get(accountId);
       const room = roomId ? rooms.get(roomId) : undefined;
+
+      if (msg.type === 'webrtc_signal') {
+        const targetId = Number(msg.targetAccountId);
+        if (!targetId || targetId === accountId) return;
+
+        // Allow WebRTC voice call signaling between teammates in the same match team OR same lobby party
+        const senderInRoom = room ? room.humans.get(accountId) : undefined;
+        const targetInRoom = room ? room.humans.get(targetId) : undefined;
+        const sameMatchTeam = Boolean(
+          senderInRoom && targetInRoom && senderInRoom.teamId === targetInRoom.teamId,
+        );
+
+        const senderPartyId = accountPartyMap.get(accountId);
+        const targetPartyId = accountPartyMap.get(targetId);
+        const sameParty = Boolean(
+          senderPartyId &&
+            senderPartyId === targetPartyId &&
+            parties.get(senderPartyId)?.members.some((m) => m.accountId === targetId),
+        );
+
+        if (sameMatchTeam || sameParty) {
+          sendWs(targetId, {
+            type: 'webrtc_signal',
+            fromAccountId: accountId,
+            signal: msg.signal,
+          });
+        }
+        return;
+      }
+
       if (!room) {
         if (msg.type === 'sync_state' || msg.type === 'room_action') {
           ws.send(
@@ -1137,17 +1198,6 @@ async function startServer(): Promise<void> {
 
       if (msg.type === 'room_action' && msg.action) {
         handleRoomAction(room, accountId, msg.action as MatchRoomAction);
-      }
-
-      if (msg.type === 'webrtc_signal') {
-        const targetId = Number(msg.targetAccountId);
-        if (room && targetId && room.humans.has(targetId)) {
-          sendWs(targetId, {
-            type: 'webrtc_signal',
-            fromAccountId: accountId,
-            signal: msg.signal,
-          });
-        }
       }
     });
 

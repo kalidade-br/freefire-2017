@@ -6,7 +6,15 @@ declare global {
   var _postgresPool: Pool | undefined;
 }
 
-export const createPool = () => {
+export const isDatabaseConfigured = Boolean(
+  process.env.SQL_HOST &&
+    process.env.SQL_DB_NAME &&
+    process.env.SQL_USER &&
+    process.env.SQL_PASSWORD,
+);
+
+export const createPool = (): Pool | null => {
+  if (!isDatabaseConfigured) return null;
   if (!global._postgresPool) {
     global._postgresPool = new Pool({
       host: process.env.SQL_HOST,
@@ -24,6 +32,29 @@ export const createPool = () => {
   return global._postgresPool;
 };
 
-const pool = createPool();
+let db: ReturnType<typeof drizzle<typeof schema>>;
+try {
+  const pool = createPool();
+  if (!pool) {
+    throw new Error('SQL environment variables not configured');
+  }
+  db = drizzle(pool, { schema });
+} catch {
+  console.warn('[AI Studio] Database not connected — using in-memory mock');
+  const noOp = {
+    findMany: async () => [],
+    findFirst: async () => null,
+    findUnique: async () => null,
+    create: async (d?: { data?: unknown }) => d?.data ?? {},
+    update: async (d?: { data?: unknown }) => d?.data ?? {},
+    delete: async () => ({}),
+  };
+  db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
+    get: (_target, prop) =>
+      prop === 'query'
+        ? new Proxy({}, { get: () => noOp })
+        : async () => [],
+  });
+}
 
-export const db = drizzle(pool, { schema });
+export { db };

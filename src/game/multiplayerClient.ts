@@ -460,6 +460,46 @@ class MultiplayerClient {
     return res;
   }
 
+  private inFlightFirebaseLogin: Promise<{
+    token: string;
+    account: PublicPlayerAccount;
+    party: PartyState;
+    invites: PartyInvitePayload[];
+  }> | null = null;
+
+  public async loginWithFirebase(params: {
+    idToken: string;
+    nickname?: string;
+    character?: Partial<CharacterConfig>;
+  }): Promise<{
+    token: string;
+    account: PublicPlayerAccount;
+    party: PartyState;
+    invites: PartyInvitePayload[];
+  }> {
+    if (this.inFlightFirebaseLogin) {
+      return this.inFlightFirebaseLogin;
+    }
+    this.inFlightFirebaseLogin = (async () => {
+      try {
+        const res = await this.request<{
+          token: string;
+          account: PublicPlayerAccount;
+          party: PartyState;
+          invites: PartyInvitePayload[];
+        }>('/api/auth/firebase', {
+          method: 'POST',
+          body: JSON.stringify(params),
+        });
+        this.setToken(res.token);
+        return res;
+      } finally {
+        this.inFlightFirebaseLogin = null;
+      }
+    })();
+    return this.inFlightFirebaseLogin;
+  }
+
   public async logout(): Promise<void> {
     if (this.token) {
       await this.request('/api/auth/logout', { method: 'POST' }).catch(() => undefined);

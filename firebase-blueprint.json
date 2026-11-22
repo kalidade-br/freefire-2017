@@ -1,0 +1,133 @@
+{
+  "entities": {
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Public Battle Royale player profile, rank, currency, and character selection stored in Firestore without PII.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the player.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "publicId": {
+          "type": "string",
+          "description": "8-digit numeric display ID for friend lookup.",
+          "maxLength": 16,
+          "pattern": "^[0-9]{4,16}$"
+        },
+        "nickname": {
+          "type": "string",
+          "description": "In-game display nickname.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "level": {
+          "type": "integer",
+          "description": "Player account level."
+        },
+        "gold": {
+          "type": "integer",
+          "description": "Gold coins balance."
+        },
+        "gems": {
+          "type": "integer",
+          "description": "Diamonds balance."
+        },
+        "matchesPlayed": {
+          "type": "integer",
+          "description": "Total matches played."
+        },
+        "wins": {
+          "type": "integer",
+          "description": "Total Booyah victories."
+        },
+        "rankPoints": {
+          "type": "integer",
+          "description": "Ranked points score."
+        },
+        "rankedMatches": {
+          "type": "integer",
+          "description": "Total ranked matches played."
+        },
+        "rankedWins": {
+          "type": "integer",
+          "description": "Total ranked Booyah victories."
+        },
+        "totalKills": {
+          "type": "integer",
+          "description": "Lifetime eliminations."
+        },
+        "characterModelId": {
+          "type": "string",
+          "description": "Selected character model ID.",
+          "enum": ["adam", "eva"],
+          "maxLength": 16
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was last updated."
+        }
+      },
+      "required": [
+        "uid",
+        "publicId",
+        "nickname",
+        "level",
+        "gold",
+        "gems",
+        "matchesPlayed",
+        "wins",
+        "rankPoints",
+        "rankedMatches",
+        "rankedWins",
+        "totalKills",
+        "characterModelId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated private PII document for the authenticated player.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified account email address.",
+          "maxLength": 254
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when private info was updated."
+        }
+      },
+      "required": ["uid", "email", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Public player progression and character configuration."
+    },
+    "/users/{uid}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Owner-only PII document storing player email."
+    }
+  }
+}

@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { soundEngine } from './game/audio';
 import { BattleRoyaleEngine } from './game/gameEngine';
 import { multiplayerClient } from './game/multiplayerClient';
 import { voiceChatManager } from './game/voiceChat';
+import { auth } from './lib/firebase';
+import { loadOrCreateFirestoreProfile, saveFirestoreProfile } from './lib/firestoreProfile';
 import {
   loadCharacterConfig,
   loadProfile,
@@ -231,9 +234,11 @@ export default function App() {
 
   const prevBackpackOpenRef = useRef(false);
   const activeLaunchedRoomIdRef = useRef<string | null>(null);
+  const firebaseUserRef = useRef<FirebaseUser | null>(null);
 
   const applyServerAccount = useCallback((acc: PublicPlayerAccount) => {
     setAccount(acc);
+    voiceChatManager.setLocalAccountId(acc.id);
     const mergedProfile: PlayerProfile = {
       nickname: acc.nickname,
       level: acc.level,
@@ -304,6 +309,80 @@ export default function App() {
         });
     }
 
+    const unsubAuth = onAuthStateChanged(auth, (fbUser) => {
+      firebaseUserRef.current = fbUser;
+      if (!fbUser) return;
+
+      void (async () => {
+        try {
+          if (!multiplayerClient.isAuthenticated()) {
+            const idToken = await fbUser.getIdToken();
+            const res = await multiplayerClient.loginWithFirebase({
+              idToken,
+              nickname: fbUser.displayName || profileRef.current.nickname,
+              character: characterRef.current,
+            });
+            const fsProf = await loadOrCreateFirestoreProfile(
+              fbUser,
+              profileRef.current,
+              characterRef.current,
+              res.account.publicId,
+            ).catch(() => null);
+            const merged = fsProf
+              ? {
+                  ...res.account,
+                  nickname: fsProf.nickname,
+                  level: fsProf.level,
+                  gold: fsProf.gold,
+                  gems: fsProf.gems,
+                  matchesPlayed: fsProf.matchesPlayed,
+                  wins: fsProf.wins,
+                  rankPoints: fsProf.rankPoints,
+                  rankedMatches: fsProf.rankedMatches,
+                  rankedWins: fsProf.rankedWins,
+                  totalKills: fsProf.totalKills,
+                  character: {
+                    ...res.account.character,
+                    modelId: fsProf.characterModelId,
+                  },
+                }
+              : res.account;
+            applyServerAccount(merged);
+            syncPartyConfigState(res.party);
+            setInvites(res.invites);
+          } else {
+            const fsProf = await loadOrCreateFirestoreProfile(
+              fbUser,
+              profileRef.current,
+              characterRef.current,
+              accountRef.current?.publicId,
+            ).catch(() => null);
+            if (fsProf && accountRef.current) {
+              applyServerAccount({
+                ...accountRef.current,
+                nickname: fsProf.nickname,
+                level: fsProf.level,
+                gold: fsProf.gold,
+                gems: fsProf.gems,
+                matchesPlayed: fsProf.matchesPlayed,
+                wins: fsProf.wins,
+                rankPoints: fsProf.rankPoints,
+                rankedMatches: fsProf.rankedMatches,
+                rankedWins: fsProf.rankedWins,
+                totalKills: fsProf.totalKills,
+                character: {
+                  ...accountRef.current.character,
+                  modelId: fsProf.characterModelId,
+                },
+              });
+            }
+          }
+        } catch {
+          // Ignore transient auth sync errors
+        }
+      })();
+    });
+
     const unsub = multiplayerClient.subscribe((ev) => {
       if (ev.type === 'party_update') {
         syncPartyConfigState(ev.party);
@@ -316,7 +395,10 @@ export default function App() {
         launchOnlineRoom(ev.joinInfo);
       }
     });
-    return () => unsub();
+    return () => {
+      unsub();
+      unsubAuth();
+    };
   }, [applyServerAccount, launchOnlineRoom, syncPartyConfigState]);
 
   // Keep 3D Lobby Squad characters synced side-by-side with current party & mode
@@ -495,6 +577,18 @@ export default function App() {
             .then((res) => setAccount(res.account))
             .catch(() => undefined);
         }
+
+        if (firebaseUserRef.current) {
+          void saveFirestoreProfile(firebaseUserRef.current, {
+            matchesPlayed: updated.matchesPlayed,
+            wins: updated.wins,
+            gold: updated.gold,
+            rankPoints: updated.rankPoints,
+            rankedMatches: updated.rankedMatches,
+            rankedWins: updated.rankedWins,
+            totalKills: updated.totalKills,
+          }).catch(() => undefined);
+        }
       }
     });
 
@@ -534,6 +628,11 @@ export default function App() {
         .then((res) => setAccount(res.account))
         .catch(() => undefined);
     }
+    if (firebaseUserRef.current) {
+      void saveFirestoreProfile(firebaseUserRef.current, {
+        characterModelId: next.modelId === 'eva' ? 'eva' : 'adam',
+      }).catch(() => undefined);
+    }
   };
 
   const handleUpdateNickname = (name: string) => {
@@ -547,6 +646,11 @@ export default function App() {
         .updateProfile({ nickname: clean })
         .then((res) => setAccount(res.account))
         .catch(() => undefined);
+    }
+    if (firebaseUserRef.current) {
+      void saveFirestoreProfile(firebaseUserRef.current, {
+        nickname: clean,
+      }).catch(() => undefined);
     }
   };
 
@@ -947,6 +1051,8 @@ export default function App() {
             }).catch(() => undefined);
           }}
           onLoggedOut={() => {
+            firebaseUserRef.current = null;
+            voiceChatManager.setLocalAccountId(null);
             setAccount(null);
             setParty(null);
             setInvites([]);
