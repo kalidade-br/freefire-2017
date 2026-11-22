@@ -4,6 +4,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { ensureDatabaseSchema } from './src/db/index.ts';
 import {
   findAccountByPublicIdOrNick,
   getAccountByToken,
@@ -532,7 +533,7 @@ function handleRoomAction(
 }
 
 // Periodic cleanup of stale empty rooms & expired party invites
-setInterval(() => {
+const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [roomId, room] of rooms.entries()) {
     if (now > room.waitingEndsAtMs) {
@@ -548,14 +549,43 @@ setInterval(() => {
     else partyInvites.set(k, fresh);
   }
 }, 2500);
+cleanupTimer.unref?.();
 
 // ============================================================================
 // EXPRESS SERVER + API ROUTES + WEBSOCKET SERVER ON PORT 3000
 // ============================================================================
 
-async function startServer(): Promise<void> {
+let cachedServerlessApp: express.Express | null = null;
+
+export async function createExpressApp(
+  options: { attachFrontend?: boolean } = {},
+): Promise<express.Express> {
+  await ensureDatabaseSchema();
+
   const app = express();
+  app.set('trust proxy', true);
   app.use(express.json({ limit: '512kb' }));
+
+  const allowedOrigins = (process.env.CORS_ORIGIN || '*')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  app.use('/api', (req, res, next) => {
+    const reqOrigin = req.headers.origin;
+    if (allowedOrigins.includes('*')) {
+      res.setHeader('Access-Control-Allow-Origin', reqOrigin || '*');
+    } else if (reqOrigin && allowedOrigins.includes(reqOrigin)) {
+      res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+      res.setHeader('Vary', 'Origin');
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+    next();
+  });
 
   const requireSession = async (
     req: AuthenticatedRequest,
@@ -1072,21 +1102,35 @@ async function startServer(): Promise<void> {
   });
 
   // --- VITE / STATIC ASSET SERVING ---
-  if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distDir = path.resolve(__dirname, 'dist');
-    app.use(express.static(distDir));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distDir, 'index.html'));
-    });
+  if (options.attachFrontend !== false) {
+    if (process.env.NODE_ENV !== 'production') {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distDir = path.resolve(__dirname, 'dist');
+      app.use(express.static(distDir));
+      app.get('*', (_req, res) => {
+        res.sendFile(path.join(distDir, 'index.html'));
+      });
+    }
   }
 
+  return app;
+}
+
+export async function getServerlessApp(): Promise<express.Express> {
+  if (!cachedServerlessApp) {
+    cachedServerlessApp = await createExpressApp({ attachFrontend: false });
+  }
+  return cachedServerlessApp;
+}
+
+export async function startServer(): Promise<void> {
+  const app = await createExpressApp({ attachFrontend: true });
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true });
 
@@ -1212,7 +1256,7 @@ async function startServer(): Promise<void> {
 
   // 4-minute offline / no-request auto-kick from active match rooms (only removes the inactive player)
   const OFFLINE_MATCH_KICK_MS = 4 * 60 * 1000;
-  setInterval(() => {
+  const kickTimer = setInterval(() => {
     const now = Date.now();
     for (const room of Array.from(rooms.values())) {
       for (const accId of Array.from(room.humans.keys())) {
@@ -1253,10 +1297,19 @@ async function startServer(): Promise<void> {
       }
     }
   }, 10_000);
+  kickTimer.unref?.();
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server listening on http://0.0.0.0:${PORT}`);
   });
 }
 
-void startServer();
+const isServerlessRuntime = Boolean(
+  process.env.VERCEL ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.FUNCTION_TARGET,
+);
+
+if (!isServerlessRuntime) {
+  void startServer();
+}

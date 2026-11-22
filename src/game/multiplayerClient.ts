@@ -19,6 +19,27 @@ import type {
 
 const SESSION_TOKEN_KEY = 'zz17_session_token_v1';
 
+const RAW_API_BASE = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
+const RAW_WS_BASE = (import.meta.env.VITE_WS_URL || '').trim().replace(/\/+$/, '');
+
+function buildApiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  return RAW_API_BASE ? `${RAW_API_BASE}${path}` : path;
+}
+
+function buildWsUrl(token: string): string {
+  const encoded = encodeURIComponent(token);
+  if (RAW_WS_BASE) {
+    return `${RAW_WS_BASE}/ws?token=${encoded}`;
+  }
+  if (RAW_API_BASE) {
+    const wsBase = RAW_API_BASE.replace(/^https:/i, 'wss:').replace(/^http:/i, 'ws:');
+    return `${wsBase}/ws?token=${encoded}`;
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}/ws?token=${encoded}`;
+}
+
 export interface PingStatus {
   pingMs: number;
   disconnected: boolean;
@@ -87,6 +108,9 @@ class MultiplayerClient {
   private token: string | null = null;
   private ws: WebSocket | null = null;
   private wsConnecting = false;
+  private wsEverOpened = false;
+  private wsFailedWithoutOpenCount = 0;
+  private wsUnsupported = false;
   private reconnectTimer: number | null = null;
   private listeners = new Set<EventListener>();
   private lastRoomSnapshot: MatchRoomSnapshot | null = null;
@@ -172,7 +196,7 @@ class MultiplayerClient {
     const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timeoutId = window.setTimeout(() => ctrl?.abort(), 2200);
     try {
-      const res = await fetch('/api/ping', {
+      const res = await fetch(buildApiUrl('/api/ping'), {
         method: 'GET',
         cache: 'no-store',
         signal: ctrl?.signal,
@@ -276,20 +300,24 @@ class MultiplayerClient {
 
   public connectWs(): void {
     if (typeof window === 'undefined' || !this.token) return;
+    if (this.wsUnsupported) return;
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
     if (this.wsConnecting) return;
 
     this.wsConnecting = true;
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${proto}//${window.location.host}/ws?token=${encodeURIComponent(this.token)}`;
+    const url = buildWsUrl(this.token);
 
     try {
       const socket = new WebSocket(url);
       this.ws = socket;
+      let openedThisSocket = false;
 
       socket.onopen = () => {
+        openedThisSocket = true;
+        this.wsEverOpened = true;
+        this.wsFailedWithoutOpenCount = 0;
         this.wsConnecting = false;
         this.connectionLost = false;
         void this.probePing();
@@ -319,7 +347,7 @@ class MultiplayerClient {
 
       socket.onerror = () => {
         this.wsConnecting = false;
-        if (this.token) {
+        if (this.token && this.wsEverOpened) {
           this.markConnectionFailed();
         }
       };
@@ -334,10 +362,17 @@ class MultiplayerClient {
           this.setToken(null);
           return;
         }
-        if (this.token) {
+        if (!openedThisSocket && !this.wsEverOpened) {
+          this.wsFailedWithoutOpenCount += 1;
+          if (this.wsFailedWithoutOpenCount >= 2 && !RAW_WS_BASE && !RAW_API_BASE) {
+            // Serverless hosts (e.g. Vercel) do not support WebSocket upgrades; fall back cleanly to HTTP polling
+            this.wsUnsupported = true;
+            return;
+          }
+        } else if (this.token) {
           this.markConnectionFailed();
         }
-        if (this.token && this.reconnectTimer === null) {
+        if (this.token && !this.wsUnsupported && this.reconnectTimer === null) {
           this.reconnectTimer = window.setTimeout(() => {
             this.reconnectTimer = null;
             this.connectWs();
@@ -380,7 +415,7 @@ class MultiplayerClient {
     const t0 = this.markRequestStarted();
     let res: Response;
     try {
-      res = await fetch(url, {
+      res = await fetch(buildApiUrl(url), {
         ...options,
         headers,
       });
