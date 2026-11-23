@@ -235,6 +235,7 @@ export function loadCharacterConfig(): CharacterConfig {
     if (!raw) return { ...CHARACTER_PRESETS[0] };
     const parsed = JSON.parse(raw) as Partial<CharacterConfig>;
     const modelId = parsed.modelId === 'eva' ? 'eva' : 'adam';
+    const glooSkin = parsed.glooSkin === 'ffwc' ? 'ffwc' : 'classic';
     const base = modelId === 'eva' ? CHARACTER_PRESETS[1] : CHARACTER_PRESETS[0];
     return {
       ...base,
@@ -242,6 +243,7 @@ export function loadCharacterConfig(): CharacterConfig {
       vestEnabled: false,
       hairStyle: modelId === 'eva' ? 'spiky' : 'buzz',
       modelId,
+      glooSkin,
     };
   } catch {
     return { ...CHARACTER_PRESETS[0] };

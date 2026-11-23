@@ -495,8 +495,9 @@ function handleRoomAction(
       y: action.y,
       z: action.z,
       rotY: action.rotY,
-      hp: 360,
+      hp: 450,
       ownerAccountId: actorAccountId,
+      skin: action.skin === 'ffwc' ? 'ffwc' : 'classic',
     };
     room.glooWalls.set(wall.id, wall);
     broadcastRoom(room, { type: 'gloo_spawned', wall }, actorAccountId);

@@ -137,7 +137,7 @@ export class InputManager {
 
   public triggerCrouch(): void {
     const now = performance.now();
-    if (now - this.lastCrouchMs < 65) return;
+    if (now - this.lastCrouchMs < 30) return;
     this.lastCrouchMs = now;
     this.crouchPressed = true;
   }

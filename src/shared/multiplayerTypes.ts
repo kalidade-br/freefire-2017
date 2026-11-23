@@ -1,4 +1,4 @@
-import type { CharacterConfig, MatchMode, WeaponId } from '../game/types.ts';
+import type { CharacterConfig, GlooSkinId, MatchMode, WeaponId } from '../game/types.ts';
 
 export type PresenceStatus = 'offline' | 'lobby' | 'matchmaking' | 'in_match';
 
@@ -196,6 +196,7 @@ export interface RemoteGlooWallSync {
   rotY: number;
   hp: number;
   ownerAccountId: number;
+  skin?: GlooSkinId;
 }
 
 export interface RemoteKillFeedEvent {
@@ -304,6 +305,7 @@ export type MatchRoomAction =
       y: number;
       z: number;
       rotY: number;
+      skin?: GlooSkinId;
     }
   | {
       type: 'damage_gloo';

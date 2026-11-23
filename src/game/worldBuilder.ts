@@ -18,8 +18,11 @@ import {
   createGuarita,
   createSobradoHouse,
 } from './buildingPrefabs';
+import { CharacterAnimator } from './characterAnimator';
 import {
+  CharacterRig,
   createBackpackGeometryGroup,
+  createBandageMeshes,
   createVestGeometryGroup,
   createWeaponModel,
 } from './characterBuilder';
@@ -47,11 +50,16 @@ export interface TargetDummy {
   isAdam?: boolean;
   modelId?: FFModelId;
   group: THREE.Group;
+  rig?: CharacterRig;
+  animator?: CharacterAnimator;
   visualRoot?: THREE.Group;
   mixer?: THREE.AnimationMixer;
   actions?: Record<string, THREE.AnimationAction>;
   activeClipName?: string;
   animAccum?: number;
+  lastSyncX?: number;
+  lastSyncZ?: number;
+  netAnimSpeed?: number;
   upperAimBones?: Array<{ name: string; bone: THREE.Object3D }>;
   bodyMat?: THREE.MeshStandardMaterial;
   torsoGroup?: THREE.Group;
@@ -1015,6 +1023,16 @@ const BOT_PANTS_PALETTE = [
   0xc9b396, 0x2c333f, 0x3b424d, 0x4b4234, 0x222730,
 ];
 
+const BOT_EMPTY_WEAPON_RECORD = {} as Record<WeaponId, THREE.Group>;
+const BOT_SHARED_MUZZLE_GEO = new THREE.ConeGeometry(0.085, 0.24, 6);
+const BOT_SHARED_MUZZLE_MAT = new THREE.MeshBasicMaterial({
+  color: 0xffc845,
+  transparent: true,
+  opacity: 0.92,
+});
+const BOT_SHARED_SHADOW_GEO = new THREE.PlaneGeometry(0.01, 0.01);
+const BOT_SHARED_SHADOW_MAT = new THREE.MeshBasicMaterial({ visible: false });
+
 function createBotEntity(
   id: string,
   nick: string,
@@ -1046,93 +1064,142 @@ function createBotEntity(
     roughness: 0.58,
   });
 
-  // Hip leg pivots (standing at y=0.78 -> legs extend down to y=0)
-  const legLPivot = new THREE.Group();
-  legLPivot.position.set(-0.1, 0.78, 0);
-  const legL = new THREE.Mesh(new THREE.CylinderGeometry(0.082, 0.064, 0.78, 8), pantsMat);
-  legL.position.set(0, -0.39, 0);
-  legL.castShadow = true;
-  legLPivot.add(legL);
+  const pelvis = new THREE.Group();
+  pelvis.position.set(0, 0.92, 0);
+  group.add(pelvis);
 
-  const legRPivot = new THREE.Group();
-  legRPivot.position.set(0.1, 0.78, 0);
-  const legR = new THREE.Mesh(new THREE.CylinderGeometry(0.082, 0.064, 0.78, 8), pantsMat);
-  legR.position.set(0, -0.39, 0);
-  legR.castShadow = true;
-  legRPivot.add(legR);
-  group.add(legLPivot, legRPivot);
+  const torso = new THREE.Group();
+  torso.position.set(0, 0.08, 0);
+  pelvis.add(torso);
 
-  // Articulated torso group at waist y=0.78 (allows natural leaning/all-fours crawling pose!)
-  const torsoGroup = new THREE.Group();
-  torsoGroup.position.set(0, 0.78, 0);
-  group.add(torsoGroup);
-
-  const chest = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.18, 0.68, 10), bodyMat);
-  chest.scale.set(1.08, 1, 0.68);
-  chest.position.y = 0.40;
+  const chest = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.17, 0.48, 10), bodyMat);
+  chest.scale.set(1.06, 1, 0.68);
+  chest.position.y = 0.24;
   chest.castShadow = true;
-
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.145, 12, 10), headMat);
-  head.scale.set(0.95, 1.06, 0.98);
-  head.position.y = 0.91;
-  head.castShadow = true;
-
   chest.userData.targetId = id;
+  torso.add(chest);
+
+  const headGroup = new THREE.Group();
+  headGroup.position.set(0, 0.48, 0);
+  torso.add(headGroup);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 10), headMat);
+  head.scale.set(0.94, 1.06, 0.98);
+  head.position.y = 0.18;
+  head.castShadow = true;
   head.userData.targetId = id;
   head.userData.isHeadshot = true;
+  headGroup.add(head);
 
-  torsoGroup.add(chest, head);
+  // Articulated legs with knees matching createProceduralCharacterRig
+  const legLPivot = new THREE.Group();
+  legLPivot.position.set(-0.095, -0.05, 0);
+  pelvis.add(legLPivot);
+  const legL = new THREE.Mesh(new THREE.CylinderGeometry(0.078, 0.064, 0.42, 8), pantsMat);
+  legL.position.y = -0.21;
+  legL.castShadow = true;
+  legLPivot.add(legL);
+  const leftKnee = new THREE.Group();
+  leftKnee.position.set(0, -0.42, 0);
+  legLPivot.add(leftKnee);
+  const shinL = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.046, 0.42, 8), pantsMat);
+  shinL.position.y = -0.21;
+  shinL.castShadow = true;
+  leftKnee.add(shinL);
 
-  // Vest (always created so bot can visibly equip vest if it loots one!)
+  const legRPivot = new THREE.Group();
+  legRPivot.position.set(0.095, -0.05, 0);
+  pelvis.add(legRPivot);
+  const legR = new THREE.Mesh(new THREE.CylinderGeometry(0.078, 0.064, 0.42, 8), pantsMat);
+  legR.position.y = -0.21;
+  legR.castShadow = true;
+  legRPivot.add(legR);
+  const rightKnee = new THREE.Group();
+  rightKnee.position.set(0, -0.42, 0);
+  legRPivot.add(rightKnee);
+  const shinR = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.046, 0.42, 8), pantsMat);
+  shinR.position.y = -0.21;
+  shinR.castShadow = true;
+  rightKnee.add(shinR);
+
+  // Vest & Helmet (hidden visuals — compatibility proxies)
   const vestMat = new THREE.MeshStandardMaterial({
     color: vestLevel === 3 ? 0x1c1f26 : vestLevel === 2 ? 0x2f3842 : 0x4d5d3d,
     roughness: 0.55,
     metalness: vestLevel === 3 ? 0.45 : 0.15,
   });
-  const vestMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.2, 0.5, 10), vestMat);
-  vestMesh.scale.set(1.08, 1, 0.74);
-  vestMesh.position.y = 0.43;
+  const vestMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.18, 0.36, 10), vestMat);
+  vestMesh.scale.set(1.06, 1, 0.72);
+  vestMesh.position.y = 0.24;
   vestMesh.visible = false;
-  torsoGroup.add(vestMesh);
+  torso.add(vestMesh);
 
-  // Helmet (hidden visuals — clean character + backpack only)
   const helmMat = new THREE.MeshStandardMaterial({
     color: helmetLevel === 3 ? 0x181a1f : helmetLevel === 2 ? 0x2c343d : 0x566444,
     roughness: 0.45,
     metalness: helmetLevel === 3 ? 0.55 : 0.2,
   });
   const helmetMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(0.172, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.58),
+    new THREE.SphereGeometry(0.165, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.58),
     helmMat,
   );
-  helmetMesh.position.y = 0.93;
+  helmetMesh.position.y = 0.2;
   helmetMesh.visible = false;
-  torsoGroup.add(helmetMesh);
+  headGroup.add(helmetMesh);
 
+  // Articulated arms with elbows matching createProceduralCharacterRig
   const armLPivot = new THREE.Group();
-  armLPivot.position.set(-0.27, 0.65, 0);
-  const armL = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.045, 0.54, 8), bodyMat);
-  armL.position.set(0, -0.25, 0);
+  armLPivot.position.set(-0.24, 0.42, 0);
+  torso.add(armLPivot);
+  const armL = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.044, 0.25, 8), bodyMat);
+  armL.position.set(0, -0.125, 0);
   armLPivot.add(armL);
+  const leftElbow = new THREE.Group();
+  leftElbow.position.set(0, -0.25, 0);
+  armLPivot.add(leftElbow);
+  const forearmL = new THREE.Mesh(new THREE.CylinderGeometry(0.043, 0.036, 0.24, 8), headMat);
+  forearmL.position.set(0, -0.12, 0);
+  leftElbow.add(forearmL);
 
   const armRPivot = new THREE.Group();
-  armRPivot.position.set(0.27, 0.65, 0);
-  const armR = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.045, 0.54, 8), bodyMat);
-  armR.position.set(0, -0.25, 0.04);
+  armRPivot.position.set(0.24, 0.42, 0);
+  torso.add(armRPivot);
+  const armR = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.044, 0.25, 8), bodyMat);
+  armR.position.set(0, -0.125, 0);
+  armRPivot.add(armR);
+  const rightElbow = new THREE.Group();
+  rightElbow.position.set(0, -0.25, 0);
+  armRPivot.add(rightElbow);
+  const forearmR = new THREE.Mesh(new THREE.CylinderGeometry(0.043, 0.036, 0.24, 8), headMat);
+  forearmR.position.set(0, -0.12, 0);
+  rightElbow.add(forearmR);
+
+  const bandage = createBandageMeshes();
+  bandage.rollGroup.position.set(0, -0.25, 0.03);
+  rightElbow.add(bandage.rollGroup);
+  bandage.wrapGroup.position.set(0, -0.12, 0);
+  leftElbow.add(bandage.wrapGroup);
 
   const gunPivot = new THREE.Group();
-  gunPivot.position.set(0, -0.46, 0.04);
-  gunPivot.rotation.x = 0.95;
-  armRPivot.add(armR, gunPivot);
+  gunPivot.position.set(0, -0.25, 0.04);
+  gunPivot.rotation.x = Math.PI / 2;
+  rightElbow.add(gunPivot);
 
-  // Diagonal slung weapon on bot's back (visible when carrying another primary weapon)
+  const muzzleFlash = new THREE.Mesh(BOT_SHARED_MUZZLE_GEO, BOT_SHARED_MUZZLE_MAT);
+  muzzleFlash.position.set(0, -0.25, 0.6);
+  muzzleFlash.rotation.x = Math.PI / 2;
+  muzzleFlash.visible = false;
+  rightElbow.add(muzzleFlash);
+
+  // Diagonal slung weapon on bot's back
   const backGunPivot = new THREE.Group();
-  backGunPivot.position.set(0.095, 0.41, -0.125);
+  backGunPivot.position.set(0.095, 0.28, -0.125);
   backGunPivot.rotation.set(-Math.PI * 0.44, 0.06, -0.18);
   backGunPivot.visible = false;
-  torsoGroup.add(backGunPivot);
+  torso.add(backGunPivot);
 
-  // Bot Camo Parachute Canopy (visible during parachute descent across the map)
+  // Bot Camo Parachute Canopy
+  const parachuteGroup = new THREE.Group();
   const parachuteMesh = new THREE.Mesh(
     new THREE.CylinderGeometry(1.45, 1.7, 1.0, 8, 1, true, 0, Math.PI),
     new THREE.MeshStandardMaterial({
@@ -1143,12 +1210,64 @@ function createBotEntity(
   );
   parachuteMesh.rotation.z = Math.PI / 2;
   parachuteMesh.rotation.y = Math.PI / 2;
-  parachuteMesh.position.set(0, 3.3, 0);
+  parachuteMesh.position.set(0, 1.8, 0);
   parachuteMesh.scale.set(0.55, 1.3, 0.95);
-  parachuteMesh.visible = false;
+  parachuteGroup.add(parachuteMesh);
+  parachuteGroup.position.set(0, 1.45, 0);
+  parachuteGroup.visible = false;
+  torso.add(parachuteGroup);
 
-  torsoGroup.add(armLPivot, armRPivot);
-  group.add(parachuteMesh);
+  const dummyBackMount1 = new THREE.Group();
+  const dummyBackMount2 = new THREE.Group();
+  const surfboardGroup = new THREE.Group();
+  surfboardGroup.visible = false;
+  const contactShadow = new THREE.Mesh(BOT_SHARED_SHADOW_GEO, BOT_SHARED_SHADOW_MAT);
+  contactShadow.visible = false;
+
+  const setBandageVisible = (visible: boolean) => {
+    bandage.rollGroup.visible = visible;
+    bandage.wrapGroup.visible = visible;
+  };
+
+  const rig: CharacterRig = {
+    isAdam: false,
+    root: group,
+    pelvis,
+    torso,
+    headGroup,
+    leftShoulder: armLPivot,
+    leftElbow,
+    rightShoulder: armRPivot,
+    rightElbow,
+    leftHip: legLPivot,
+    leftKnee,
+    rightHip: legRPivot,
+    rightKnee,
+    weaponMount: gunPivot,
+    backMount1: dummyBackMount1,
+    backMount2: dummyBackMount2,
+    muzzleFlash,
+    parachuteGroup,
+    surfboardGroup,
+    contactShadow,
+    weaponMeshes: BOT_EMPTY_WEAPON_RECORD,
+    bodyMeshes: [],
+    setWeapon: () => {},
+    setBackWeapons: () => {},
+    setParachuteVisible: (visible: boolean) => {
+      parachuteGroup.visible = visible;
+      parachuteMesh.visible = visible;
+    },
+    setSurfboardVisible: (visible: boolean) => {
+      surfboardGroup.visible = visible;
+    },
+    setBandageVisible,
+    setHitFlash: () => {},
+    applyConfig: () => {},
+    dispose: () => {
+      bandage.dispose();
+    },
+  };
 
   const vestMaxHp = vestLevel === 0 ? 0 : vestLevel === 1 ? 100 : vestLevel === 2 ? 160 : 220;
   const helmetMaxHp =
@@ -1159,7 +1278,9 @@ function createBotEntity(
     nick,
     isBot: true,
     group,
-    torsoGroup,
+    rig,
+    animator: new CharacterAnimator(),
+    torsoGroup: torso,
     headMesh: head,
     legLPivot,
     legRPivot,
@@ -1324,29 +1445,6 @@ const BOT_PACK_MAT = new THREE.MeshStandardMaterial({
   metalness: 0.1,
 });
 
-export function setBotAdamClip(
-  bot: TargetDummy,
-  clipName: string,
-  timeScale = 1.0,
-  fadeSec = 0.18,
-): void {
-  const actions = bot.actions;
-  if (!actions) return;
-  const next = actions[clipName] ?? actions.Idle_Loop;
-  if (!next) return;
-  const resolved = next.getClip().name;
-  next.timeScale = timeScale;
-  if (bot.activeClipName === resolved) return;
-  const prev = bot.activeClipName ? actions[bot.activeClipName] : undefined;
-  next.enabled = true;
-  next.reset();
-  next.play();
-  if (prev && prev !== next) {
-    prev.crossFadeTo(next, fadeSec, true);
-  }
-  bot.activeClipName = resolved;
-}
-
 export function upgradeBotsToAdam(
   targets: TargetDummy[],
   camoTexture: THREE.Texture,
@@ -1369,12 +1467,14 @@ export function upgradeBotsToAdam(
     roughness: 0.85,
     side: THREE.DoubleSide,
   });
+  const armUpVec = new THREE.Vector3(0, 1, 0);
 
   for (let i = 0; i < targets.length; i++) {
     const bot = targets[i];
     if (bot.isAdam) continue;
 
     // Clean up initial procedural children & geometries
+    bot.rig?.dispose();
     bot.group.traverse((obj) => {
       if ((obj as THREE.Mesh).isMesh && !obj.userData?.sharedWeaponAsset) {
         (obj as THREE.Mesh).geometry?.dispose();
@@ -1410,9 +1510,20 @@ export function upgradeBotsToAdam(
       }
     });
 
-    const spineBone = cloned.getObjectByName('mixamorigSpine2') ?? cloned;
+    const adamPelvisBone = cloned.getObjectByName('mixamorigHips') ?? null;
+    const adamSpineBone = cloned.getObjectByName('mixamorigSpine1') ?? adamPelvisBone;
+    const spineBone = cloned.getObjectByName('mixamorigSpine2') ?? adamSpineBone ?? cloned;
     const headBone = cloned.getObjectByName('mixamorigHead') ?? spineBone;
     const handRBone = cloned.getObjectByName('mixamorigRightHand') ?? spineBone;
+    const adamThighLBone = cloned.getObjectByName('mixamorigLeftUpLeg') ?? null;
+    const adamThighRBone = cloned.getObjectByName('mixamorigRightUpLeg') ?? null;
+    const adamShinLBone = cloned.getObjectByName('mixamorigLeftLeg') ?? null;
+    const adamShinRBone = cloned.getObjectByName('mixamorigRightLeg') ?? null;
+    const adamUpperArmLBone = cloned.getObjectByName('mixamorigLeftArm') ?? null;
+    const adamUpperArmRBone = cloned.getObjectByName('mixamorigRightArm') ?? null;
+    const adamLowerArmLBone = cloned.getObjectByName('mixamorigLeftForeArm') ?? null;
+    const adamHandLBone = cloned.getObjectByName('mixamorigLeftHand') ?? null;
+    const adamLowerArmRBone = cloned.getObjectByName('mixamorigRightForeArm') ?? null;
     const upperAimBones: Array<{ name: string; bone: THREE.Object3D }> = [];
     for (let b = 0; b < UPPER_AIM_BONE_NAMES.length; b++) {
       const bName = UPPER_AIM_BONE_NAMES[b];
@@ -1472,19 +1583,50 @@ export function upgradeBotsToAdam(
     gunPivot.scale.setScalar(invScale);
     handRBone.add(gunPivot);
 
+    const muzzleFlash = new THREE.Mesh(BOT_SHARED_MUZZLE_GEO, BOT_SHARED_MUZZLE_MAT);
+    muzzleFlash.position.set(0, 0.02, 0.41);
+    muzzleFlash.rotation.x = Math.PI / 2;
+    muzzleFlash.visible = false;
+    gunPivot.add(muzzleFlash);
+
+    // White bandage healing meshes (identical to player rig)
+    const bandage = createBandageMeshes();
+    const bandageHandMount = new THREE.Group();
+    bandageHandMount.quaternion.copy(pack.weaponMountQuat);
+    bandageHandMount.scale.setScalar(invScale);
+    bandageHandMount.position.set(0, 0.04, 0.02);
+    handRBone.add(bandageHandMount);
+    bandageHandMount.add(bandage.rollGroup);
+
+    const bandageArmMount = new THREE.Group();
+    bandageArmMount.scale.setScalar(invScale);
+    if (adamLowerArmLBone) {
+      if (adamHandLBone && adamHandLBone.position.lengthSq() > 1e-4) {
+        bandageArmMount.position.copy(adamHandLBone.position).multiplyScalar(0.52);
+        const armDir = adamHandLBone.position.clone().normalize();
+        bandageArmMount.quaternion.setFromUnitVectors(armUpVec, armDir);
+      } else {
+        bandageArmMount.position.set(0, 0.12, 0);
+      }
+      adamLowerArmLBone.add(bandageArmMount);
+    }
+    bandageArmMount.add(bandage.wrapGroup);
+
     const backGunPivot = new THREE.Group();
     backGunPivot.position.set(-0.095, 0.05, -0.105);
     backGunPivot.rotation.set(-Math.PI * 0.44, 0.06, -0.18);
     backGunPivot.visible = false;
     spineMount.add(backGunPivot);
 
+    const parachuteGroup = new THREE.Group();
     const parachuteMesh = new THREE.Mesh(sharedParachuteGeo, sharedParachuteMat);
     parachuteMesh.rotation.z = Math.PI / 2;
     parachuteMesh.rotation.y = Math.PI / 2;
     parachuteMesh.position.set(0, 3.25, 0);
     parachuteMesh.scale.set(0.55, 1.3, 0.95);
-    parachuteMesh.visible = false;
-    visualRoot.add(parachuteMesh);
+    parachuteGroup.add(parachuteMesh);
+    parachuteGroup.visible = false;
+    visualRoot.add(parachuteGroup);
 
     const mixer = new THREE.AnimationMixer(cloned);
     const actions: Record<string, THREE.AnimationAction> = {};
@@ -1494,6 +1636,8 @@ export function upgradeBotsToAdam(
       if (clip.name === 'Death01') {
         act.setLoop(THREE.LoopOnce, 1);
         act.clampWhenFinished = true;
+      } else if (clip.name === 'Punch_Jab' || clip.name === 'Punch_Cross') {
+        act.setLoop(THREE.LoopOnce, 1);
       } else {
         act.setLoop(THREE.LoopRepeat, Infinity);
       }
@@ -1507,8 +1651,79 @@ export function upgradeBotsToAdam(
       bot.activeClipName = idleAct.getClip().name;
     }
 
+    const dummyGroup = new THREE.Group();
+    const surfboardGroup = new THREE.Group();
+    surfboardGroup.visible = false;
+    const contactShadow = new THREE.Mesh(BOT_SHARED_SHADOW_GEO, BOT_SHARED_SHADOW_MAT);
+    contactShadow.visible = false;
+
+    const rig: CharacterRig = {
+      isAdam: true,
+      modelId,
+      root: bot.group,
+      adamVisualRoot: visualRoot,
+      mixer,
+      actions,
+      activeClipName: bot.activeClipName,
+      adamPelvisBone,
+      adamSpineBone,
+      adamHeadBone: headBone,
+      adamHandRBone: handRBone,
+      adamThighLBone,
+      adamThighRBone,
+      adamShinLBone,
+      adamShinRBone,
+      adamUpperArmLBone,
+      adamUpperArmRBone,
+      adamLowerArmLBone,
+      adamLowerArmRBone,
+      adamUpperBones: upperAimBones,
+      pelvis: dummyGroup,
+      torso: dummyGroup,
+      headGroup: dummyGroup,
+      leftShoulder: dummyGroup,
+      leftElbow: dummyGroup,
+      rightShoulder: dummyGroup,
+      rightElbow: dummyGroup,
+      leftHip: dummyGroup,
+      leftKnee: dummyGroup,
+      rightHip: dummyGroup,
+      rightKnee: dummyGroup,
+      weaponMount: gunPivot,
+      backMount1: dummyGroup,
+      backMount2: dummyGroup,
+      muzzleFlash,
+      parachuteGroup,
+      surfboardGroup,
+      contactShadow,
+      weaponMeshes: BOT_EMPTY_WEAPON_RECORD,
+      bodyMeshes: [],
+      setWeapon: () => {},
+      setBackWeapons: () => {},
+      setParachuteVisible: (visible: boolean) => {
+        parachuteGroup.visible = visible;
+        parachuteMesh.visible = visible;
+      },
+      setSurfboardVisible: (visible: boolean) => {
+        surfboardGroup.visible = visible;
+      },
+      setBandageVisible: (visible: boolean) => {
+        bandage.rollGroup.visible = visible;
+        bandage.wrapGroup.visible = visible;
+      },
+      setHitFlash: () => {},
+      applyConfig: () => {},
+      dispose: () => {
+        mixer.stopAllAction();
+        mixer.uncacheRoot(cloned);
+        bandage.dispose();
+      },
+    };
+
     bot.isAdam = true;
     bot.modelId = modelId;
+    bot.rig = rig;
+    bot.animator = new CharacterAnimator();
     bot.visualRoot = visualRoot;
     bot.mixer = mixer;
     bot.actions = actions;

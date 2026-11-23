@@ -24,6 +24,8 @@ export interface CharacterRig {
   adamHandRBone?: THREE.Object3D | null;
   adamThighLBone?: THREE.Object3D | null;
   adamThighRBone?: THREE.Object3D | null;
+  adamShinLBone?: THREE.Object3D | null;
+  adamShinRBone?: THREE.Object3D | null;
   adamUpperArmLBone?: THREE.Object3D | null;
   adamUpperArmRBone?: THREE.Object3D | null;
   adamLowerArmLBone?: THREE.Object3D | null;
@@ -55,6 +57,7 @@ export interface CharacterRig {
   setPistolBackWeapon?: (weaponId: WeaponId | null) => void;
   setParachuteVisible: (visible: boolean) => void;
   setSurfboardVisible: (visible: boolean) => void;
+  setBandageVisible?: (visible: boolean) => void;
   setHitFlash: (amount: number) => void;
   applyConfig: (config: CharacterConfig) => void;
   dispose: () => void;
@@ -290,6 +293,71 @@ function createSurfboardGroup(): {
   };
 }
 
+export function createBandageMeshes(): {
+  rollGroup: THREE.Group;
+  wrapGroup: THREE.Group;
+  dispose: () => void;
+} {
+  const gauzeMat = new THREE.MeshStandardMaterial({
+    color: 0xf8fafc,
+    roughness: 0.9,
+    metalness: 0.02,
+  });
+  const trimMat = new THREE.MeshStandardMaterial({
+    color: 0xdc2626,
+    roughness: 0.65,
+    metalness: 0.05,
+  });
+
+  // White bandage roll + trailing gauze strip held in right hand
+  const rollGroup = new THREE.Group();
+  const rollGeo = new THREE.CylinderGeometry(0.032, 0.032, 0.072, 12);
+  const rollMesh = new THREE.Mesh(rollGeo, gauzeMat);
+  rollMesh.rotation.z = Math.PI / 2;
+  rollGroup.add(rollMesh);
+
+  const stripGeo = new THREE.BoxGeometry(0.044, 0.009, 0.135);
+  const stripMesh = new THREE.Mesh(stripGeo, gauzeMat);
+  stripMesh.position.set(0, 0.008, 0.072);
+  rollGroup.add(stripMesh);
+
+  const tabGeo = new THREE.BoxGeometry(0.022, 0.011, 0.022);
+  const tabMesh = new THREE.Mesh(tabGeo, trimMat);
+  tabMesh.position.set(0, 0.014, 0.006);
+  rollGroup.add(tabMesh);
+  rollGroup.visible = false;
+
+  // White wrapped gauze cuff around left forearm
+  const wrapGroup = new THREE.Group();
+  const cuffGeo = new THREE.CylinderGeometry(0.052, 0.047, 0.13, 12);
+  const cuffMesh = new THREE.Mesh(cuffGeo, gauzeMat);
+  wrapGroup.add(cuffMesh);
+
+  const ringGeo = new THREE.TorusGeometry(0.051, 0.01, 8, 16);
+  const ring1 = new THREE.Mesh(ringGeo, gauzeMat);
+  ring1.rotation.x = Math.PI / 2 + 0.16;
+  ring1.position.y = 0.028;
+  const ring2 = new THREE.Mesh(ringGeo, gauzeMat);
+  ring2.rotation.x = Math.PI / 2 - 0.16;
+  ring2.position.y = -0.028;
+  wrapGroup.add(ring1, ring2);
+  wrapGroup.visible = false;
+
+  return {
+    rollGroup,
+    wrapGroup,
+    dispose: () => {
+      rollGeo.dispose();
+      stripGeo.dispose();
+      tabGeo.dispose();
+      cuffGeo.dispose();
+      ringGeo.dispose();
+      gauzeMat.dispose();
+      trimMat.dispose();
+    },
+  };
+}
+
 function createAdamCharacterRig(
   initialConfig: CharacterConfig,
   camoTexture: THREE.Texture,
@@ -382,9 +450,12 @@ function createAdamCharacterRig(
   const adamHandRBone = clonedScene.getObjectByName('mixamorigRightHand') ?? adamSpine2Bone;
   const adamThighLBone = clonedScene.getObjectByName('mixamorigLeftUpLeg') ?? null;
   const adamThighRBone = clonedScene.getObjectByName('mixamorigRightUpLeg') ?? null;
+  const adamShinLBone = clonedScene.getObjectByName('mixamorigLeftLeg') ?? null;
+  const adamShinRBone = clonedScene.getObjectByName('mixamorigRightLeg') ?? null;
   const adamUpperArmLBone = clonedScene.getObjectByName('mixamorigLeftArm') ?? null;
   const adamUpperArmRBone = clonedScene.getObjectByName('mixamorigRightArm') ?? null;
   const adamLowerArmLBone = clonedScene.getObjectByName('mixamorigLeftForeArm') ?? null;
+  const adamHandLBone = clonedScene.getObjectByName('mixamorigLeftHand') ?? null;
   const adamLowerArmRBone = clonedScene.getObjectByName('mixamorigRightForeArm') ?? null;
   const adamUpperBones: Array<{ name: string; bone: THREE.Object3D }> = [];
   for (let b = 0; b < UPPER_AIM_BONE_NAMES.length; b++) {
@@ -473,6 +544,31 @@ function createAdamCharacterRig(
   if (adamHandRBone) {
     adamHandRBone.add(weaponMount);
   }
+
+  // White bandage healing meshes (roll in right hand, gauze wrap on left forearm)
+  const bandage = createBandageMeshes();
+  const bandageHandMount = new THREE.Group();
+  bandageHandMount.quaternion.copy(pack.weaponMountQuat);
+  bandageHandMount.scale.setScalar(invScale);
+  bandageHandMount.position.set(0, 0.04, 0.02);
+  if (adamHandRBone) {
+    adamHandRBone.add(bandageHandMount);
+  }
+  bandageHandMount.add(bandage.rollGroup);
+
+  const bandageArmMount = new THREE.Group();
+  bandageArmMount.scale.setScalar(invScale);
+  if (adamLowerArmLBone) {
+    if (adamHandLBone && adamHandLBone.position.lengthSq() > 1e-4) {
+      bandageArmMount.position.copy(adamHandLBone.position).multiplyScalar(0.52);
+      const armDir = adamHandLBone.position.clone().normalize();
+      bandageArmMount.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), armDir);
+    } else {
+      bandageArmMount.position.set(0, 0.12, 0);
+    }
+    adamLowerArmLBone.add(bandageArmMount);
+  }
+  bandageArmMount.add(bandage.wrapGroup);
 
   const weaponMeshes: Record<WeaponId, THREE.Group> = {
     g18: createWeaponModel('g18'),
@@ -577,6 +673,11 @@ function createAdamCharacterRig(
     surfboard.group.visible = visible;
   };
 
+  const setBandageVisible = (visible: boolean) => {
+    bandage.rollGroup.visible = visible;
+    bandage.wrapGroup.visible = visible;
+  };
+
   const setHitFlash = (_amount: number) => {
     for (let m = 0; m < bodyMats.length; m++) {
       bodyMats[m].emissive.setRGB(0, 0, 0);
@@ -588,6 +689,7 @@ function createAdamCharacterRig(
     mixer.stopAllAction();
     mixer.uncacheRoot(clonedScene);
     surfboard.dispose();
+    bandage.dispose();
     vestMat.dispose();
     packMat.dispose();
     hairMat.dispose();
@@ -633,6 +735,8 @@ function createAdamCharacterRig(
     adamHandRBone,
     adamThighLBone,
     adamThighRBone,
+    adamShinLBone,
+    adamShinRBone,
     adamUpperArmLBone,
     adamUpperArmRBone,
     adamLowerArmLBone,
@@ -663,6 +767,7 @@ function createAdamCharacterRig(
     setPistolBackWeapon,
     setParachuteVisible,
     setSurfboardVisible,
+    setBandageVisible,
     setHitFlash,
     applyConfig,
     dispose,
@@ -869,6 +974,12 @@ function createProceduralCharacterRig(
   const leftArm = makeArm(-1);
   const rightArm = makeArm(1);
 
+  const bandage = createBandageMeshes();
+  bandage.rollGroup.position.set(0, -0.25, 0.03);
+  rightArm.elbow.add(bandage.rollGroup);
+  bandage.wrapGroup.position.set(0, -0.12, 0);
+  leftArm.elbow.add(bandage.wrapGroup);
+
   const weaponMount = new THREE.Group();
   weaponMount.position.set(0, -0.25, 0.04);
   rightArm.elbow.add(weaponMount);
@@ -1037,6 +1148,11 @@ function createProceduralCharacterRig(
     surfboard.group.visible = visible;
   };
 
+  const setBandageVisible = (visible: boolean) => {
+    bandage.rollGroup.visible = visible;
+    bandage.wrapGroup.visible = visible;
+  };
+
   const setHitFlash = (_amount: number) => {
     shirtMat.emissive.setRGB(0, 0, 0);
     skinMat.emissive.setRGB(0, 0, 0);
@@ -1045,6 +1161,7 @@ function createProceduralCharacterRig(
 
   const dispose = () => {
     surfboard.dispose();
+    bandage.dispose();
     root.traverse((obj) => {
       if ((obj as THREE.Mesh).isMesh && !obj.userData?.sharedWeaponAsset) {
         (obj as THREE.Mesh).geometry.dispose();
@@ -1088,6 +1205,7 @@ function createProceduralCharacterRig(
     setBackWeapons,
     setParachuteVisible,
     setSurfboardVisible,
+    setBandageVisible,
     setHitFlash,
     applyConfig,
     dispose,

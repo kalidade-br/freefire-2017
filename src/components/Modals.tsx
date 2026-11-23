@@ -5,6 +5,7 @@ import {
   CharacterConfig,
   ControlMode,
   GameSettings,
+  GlooSkinId,
   GraphicsQuality,
   WEAPONS,
 } from '../game/types';
@@ -109,6 +110,74 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({
             <span className="font-bold uppercase">Mochila</span>
             <span>{config.backpackEnabled ? 'ON' : 'OFF'}</span>
           </button>
+
+          {/* Gloo Wall Skin Selector */}
+          <div className="border-t border-neutral-700 pt-3">
+            <div className="font-bold uppercase tracking-wider text-neutral-300 mb-2">
+              SKIN DE PAREDE DE GELO
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              {(
+                [
+                  {
+                    id: 'classic' as GlooSkinId,
+                    title: 'GELO CLÁSSICO',
+                    sub: 'Curvado, espesso e largo nos lados',
+                  },
+                  {
+                    id: 'ffwc' as GlooSkinId,
+                    title: 'FF WORLD CUP 2019',
+                    sub: 'Compacto, inclinado p/ frente (dá pra pular em cima)',
+                  },
+                ]
+              ).map((g) => {
+                const activeGloo = (config.glooSkin === 'ffwc' ? 'ffwc' : 'classic') === g.id;
+                return (
+                  <button
+                    key={g.id}
+                    type="button"
+                    onClick={() => onChange({ ...config, glooSkin: g.id })}
+                    className={`p-2.5 text-left border-2 cursor-pointer transition-colors flex flex-col gap-1.5 ${
+                      activeGloo
+                        ? 'bg-cyan-500/15 border-cyan-400 text-cyan-200'
+                        : 'bg-[#1a2028] border-neutral-700 hover:border-neutral-500 text-neutral-300'
+                    }`}
+                  >
+                    <div className="w-full h-14 bg-black/55 border border-white/10 flex items-center justify-center">
+                      {g.id === 'classic' ? (
+                        <svg viewBox="0 0 80 42" className="w-16 h-10">
+                          <path
+                            d="M8,36 Q8,10 22,6 Q40,3 58,6 Q72,10 72,36 L64,38 Q62,16 40,14 Q18,16 16,38 Z"
+                            fill="#dbeafe"
+                            stroke="#60a5fa"
+                            strokeWidth="2"
+                          />
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 80 42" className="w-16 h-10">
+                          <path
+                            d="M14,34 L18,12 L32,14 L40,9 L48,14 L62,12 L66,34 Z"
+                            fill="#cbd5e1"
+                            stroke="#22d3ee"
+                            strokeWidth="1.5"
+                          />
+                          <path d="M16,26 L64,26 L66,34 L14,34 Z" fill="#090d16" />
+                          <polygon points="40,13 48,21 40,30 32,21" fill="#eab308" stroke="#111827" strokeWidth="1" />
+                          <polygon points="20,21 30,24 27,27 18,24" fill="#fde047" />
+                          <polygon points="60,21 50,24 53,27 62,24" fill="#fde047" />
+                        </svg>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="font-black text-[11px] tracking-wide">{g.title}</span>
+                      {activeGloo && <Check className="w-3.5 h-3.5 text-cyan-300 shrink-0" />}
+                    </div>
+                    <span className="text-[10px] leading-tight text-neutral-400">{g.sub}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
         <div className="px-4 py-3 bg-[#1d232c] border-t border-neutral-700 flex justify-end">

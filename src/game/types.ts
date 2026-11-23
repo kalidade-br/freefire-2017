@@ -80,11 +80,13 @@ export interface WeaponSlotState {
 }
 
 export type CharacterModelId = 'adam' | 'eva';
+export type GlooSkinId = 'classic' | 'ffwc';
 
 export interface CharacterConfig {
   id: string;
   name: string;
   modelId?: CharacterModelId;
+  glooSkin?: GlooSkinId;
   skinColor: string;
   hairStyle: 'buzz' | 'spiky' | 'cap' | 'helmet';
   hairColor: string;
@@ -454,6 +456,8 @@ export interface HudSnapshot {
   ffCoins: number;
   isRanked: boolean;
   isPlacingGloo: boolean;
+  glooSkin: GlooSkinId;
+  glooPlaceDistance: number;
   isHoldingGrenade: boolean;
   usingMedkit: boolean;
   medkitProgress: number; // 0..1
@@ -934,6 +938,7 @@ export const CHARACTER_PRESETS: CharacterConfig[] = [
     id: 'ff_adam_classic',
     name: 'ADAM',
     modelId: 'adam',
+    glooSkin: 'classic',
     skinColor: '#d7a27e',
     hairStyle: 'buzz',
     hairColor: '#2a201b',
@@ -949,6 +954,7 @@ export const CHARACTER_PRESETS: CharacterConfig[] = [
     id: 'ff_eva_classic',
     name: 'EVA',
     modelId: 'eva',
+    glooSkin: 'classic',
     skinColor: '#e2b291',
     hairStyle: 'spiky',
     hairColor: '#2a201b',

@@ -1,14 +1,17 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { getAimPoseQuats, preloadAdamAssets } from './adamAssets';
+import { preloadAdamAssets } from './adamAssets';
 import { soundEngine } from './audio';
 import {
-  applyAdamOverBackDraw,
   CharacterAnimator,
-  computeWeaponDrawWeights,
   WEAPON_DRAW_DURATION,
 } from './characterAnimator';
 import { CharacterRig, createCharacterRig } from './characterBuilder';
+import {
+  buildGlooCollidersAndPlatforms,
+  createGlooVariantAssets,
+  GlooVariantAssets,
+} from './glooBuilder';
 import { InputManager } from './inputManager';
 import { createLobbyScene, LobbySceneHandle } from './lobbyScene';
 import { multiplayerClient, MultiplayerServerEvent } from './multiplayerClient';
@@ -36,6 +39,7 @@ import {
   DeathBoxItemEntry,
   GameSettings,
   GameState,
+  GlooSkinId,
   HudSnapshot,
   KillFeedEntry,
   MatchMode,
@@ -68,7 +72,6 @@ import {
   nearestBridgePos,
   riverCenterZ,
   SENTOSA_CENTER,
-  setBotAdamClip,
   setBotWeaponVisual,
   TargetDummy,
   upgradeBotsToAdam,
@@ -216,6 +219,7 @@ function equipBotWeapon(bot: TargetDummy, nextWid: WeaponId, triggerDraw: boolea
   bot.reloadTimer = 0;
   if (triggerDraw) {
     bot.drawTimer = WEAPON_DRAW_DURATION;
+    bot.animator?.triggerWeaponDraw();
   }
   setBotWeaponVisual(bot, bot.weaponId, getBotBackWeapon(bot));
 }
@@ -229,6 +233,7 @@ function giveBotLootedWeapon(bot: TargetDummy, newWid: WeaponId): boolean {
         bot.ammoInMag = WEAPONS[newWid].magSize;
         bot.reloadTimer = 0;
         bot.drawTimer = WEAPON_DRAW_DURATION;
+        bot.animator?.triggerWeaponDraw();
       }
       setBotWeaponVisual(bot, bot.weaponId, getBotBackWeapon(bot));
       return true;
@@ -245,6 +250,7 @@ function giveBotLootedWeapon(bot: TargetDummy, newWid: WeaponId): boolean {
     bot.ammoInMag = WEAPONS[newWid].magSize;
     bot.reloadTimer = 0;
     bot.drawTimer = WEAPON_DRAW_DURATION;
+    bot.animator?.triggerWeaponDraw();
     setBotWeaponVisual(bot, bot.weaponId, getBotBackWeapon(bot));
     return true;
   }
@@ -260,6 +266,7 @@ function giveBotLootedWeapon(bot: TargetDummy, newWid: WeaponId): boolean {
       bot.ammoInMag = WEAPONS[newWid].magSize;
       bot.reloadTimer = 0;
       bot.drawTimer = WEAPON_DRAW_DURATION;
+      bot.animator?.triggerWeaponDraw();
     } else {
       bot.secondaryWeaponId = newWid;
     }
@@ -292,6 +299,7 @@ function giveBotLootedWeapon(bot: TargetDummy, newWid: WeaponId): boolean {
     bot.ammoInMag = WEAPONS[primary].magSize;
     bot.reloadTimer = 0;
     bot.drawTimer = WEAPON_DRAW_DURATION;
+    bot.animator?.triggerWeaponDraw();
   }
   setBotWeaponVisual(bot, bot.weaponId, getBotBackWeapon(bot));
   return true;
@@ -430,26 +438,15 @@ export class BattleRoyaleEngine {
   private lastSunSnapX = Number.NaN;
   private lastSunSnapZ = Number.NaN;
 
-  private glooWallGeo = new THREE.BoxGeometry(3.4, 2.35, 0.3);
-  private glooPreviewMat = new THREE.MeshBasicMaterial({
-    color: 0x22d3ee,
-    transparent: true,
-    opacity: 0.38,
-  });
-  private glooWallMat = new THREE.MeshStandardMaterial({
-    color: 0x38bdf8,
-    emissive: 0x0891b2,
-    emissiveIntensity: 0.35,
-    roughness: 0.22,
-    metalness: 0.12,
-    transparent: true,
-    opacity: 0.9,
-  });
-  private glooPreviewMesh: THREE.Mesh;
+  private glooAssets!: GlooVariantAssets;
+  private glooPreviewMesh!: THREE.Mesh;
+  private dynamicGlooPlatforms: WalkablePlatform[] = [];
   private deployedGloos: Array<{
     id: string;
+    skin: GlooSkinId;
     mesh: THREE.Mesh;
-    collider: WorldObbCollider;
+    colliders: WorldObbCollider[];
+    platforms: WalkablePlatform[];
     hp: number;
     life: number;
   }> = [];
@@ -563,6 +560,7 @@ export class BattleRoyaleEngine {
   private lobbyLastX = 0;
 
   private stance: PlayerStance = 'stand';
+  private stanceSnapTimer = 0;
   private isGrounded = true;
   private isSprinting = false;
   private inWater = false;
@@ -598,12 +596,14 @@ export class BattleRoyaleEngine {
   private glooCount = 2;
   private grenadeCount = 2;
   private isPlacingGloo = false;
+  private glooSkin: GlooSkinId = 'classic';
+  private glooPlaceDistance = 3.8;
   private isHoldingGrenade = false;
   private usingMedkit = false;
   private healingKind: 'medkit' | 'smallkit' = 'medkit';
   private medkitTimer = 0;
   private readonly medkitDuration = 4.0;
-  private readonly smallkitDuration = 1.4;
+  private readonly smallkitDuration = 4.0;
   private backpackItems: BackpackItem[] = [];
   private nextBackpackItemId = 1;
   private vaultTimer = 0;
@@ -775,6 +775,8 @@ export class BattleRoyaleEngine {
     // 4. Procedural textures & scenes
     const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
     this.textures = createProceduralTextures(maxAniso);
+    this.glooSkin = initialChar.glooSkin === 'ffwc' ? 'ffwc' : 'classic';
+    this.glooAssets = createGlooVariantAssets(maxAniso);
     preloadAllWeaponTextures();
 
     this.lobbyScene = createLobbyScene(this.textures, this.envMap);
@@ -805,7 +807,10 @@ export class BattleRoyaleEngine {
     }
 
     // Tactical Gloo Wall preview + Grenade trajectory line + projectile & explosion pools
-    this.glooPreviewMesh = new THREE.Mesh(this.glooWallGeo, this.glooPreviewMat);
+    this.glooPreviewMesh = new THREE.Mesh(
+      this.glooSkin === 'ffwc' ? this.glooAssets.ffwcGeo : this.glooAssets.classicGeo,
+      this.glooSkin === 'ffwc' ? this.glooAssets.ffwcPreviewMat : this.glooAssets.classicPreviewMat,
+    );
     this.glooPreviewMesh.visible = false;
     this.world.scene.add(this.glooPreviewMesh);
 
@@ -1020,13 +1025,21 @@ export class BattleRoyaleEngine {
   public updateCharacterConfig(config: CharacterConfig): void {
     const prevModelId = this.currentCharConfig.modelId ?? 'adam';
     const nextModelId = config.modelId ?? 'adam';
-    this.currentCharConfig = { ...config, modelId: nextModelId };
+    this.glooSkin = config.glooSkin === 'ffwc' ? 'ffwc' : 'classic';
+    this.currentCharConfig = { ...config, modelId: nextModelId, glooSkin: this.glooSkin };
     if (prevModelId !== nextModelId) {
       this.rebuildPlayerAndLobbyRigs();
     } else {
       this.lobbyRig.applyConfig(this.currentCharConfig);
       this.playerRig.applyConfig(this.currentCharConfig);
     }
+    this.hudDirty = true;
+  }
+
+  public setGlooSkin(skin: GlooSkinId): void {
+    this.glooSkin = skin === 'ffwc' ? 'ffwc' : 'classic';
+    this.currentCharConfig = { ...this.currentCharConfig, glooSkin: this.glooSkin };
+    this.hudDirty = true;
   }
 
   private rebuildPlayerAndLobbyRigs(): void {
@@ -1633,7 +1646,14 @@ export class BattleRoyaleEngine {
     if (ev.type === 'gloo_spawned') {
       if (!this.syncedServerGlooIds.has(ev.wall.id)) {
         this.syncedServerGlooIds.add(ev.wall.id);
-        this.spawnGlooWallAt(ev.wall.x, ev.wall.y, ev.wall.z, ev.wall.rotY, true);
+        this.spawnGlooWallAt(
+          ev.wall.x,
+          ev.wall.y,
+          ev.wall.z,
+          ev.wall.rotY,
+          true,
+          ev.wall.skin === 'ffwc' ? 'ffwc' : 'classic',
+        );
       }
       return;
     }
@@ -1816,6 +1836,7 @@ export class BattleRoyaleEngine {
         if (bot.weaponId !== rb.weaponId) {
           bot.weaponId = rb.weaponId;
           bot.drawTimer = WEAPON_DRAW_DURATION;
+          bot.animator?.triggerWeaponDraw();
           setBotWeaponVisual(bot, bot.weaponId, getBotBackWeapon(bot));
         }
         if (rb.eliminated) {
@@ -1845,6 +1866,22 @@ export class BattleRoyaleEngine {
           kf.weaponShort,
           kf.isHeadshot,
           kf.killerAccountId === this.onlineAccountId,
+        );
+      }
+    }
+
+    // 7. Gloo walls catch-up
+    for (let i = 0; i < snap.glooWalls.length; i++) {
+      const gw = snap.glooWalls[i];
+      if (!this.syncedServerGlooIds.has(gw.id)) {
+        this.syncedServerGlooIds.add(gw.id);
+        this.spawnGlooWallAt(
+          gw.x,
+          gw.y,
+          gw.z,
+          gw.rotY,
+          true,
+          gw.skin === 'ffwc' ? 'ffwc' : 'classic',
         );
       }
     }
@@ -1982,6 +2019,7 @@ export class BattleRoyaleEngine {
       prevPos.lerp(entity.targetPos, smooth);
       entity.rig.root.rotation.y = lerpAngle(entity.rig.root.rotation.y, entity.targetYaw + Math.PI, smooth);
 
+      const remoteDef = st.weaponId ? WEAPONS[st.weaponId] : null;
       entity.animator.update(entity.rig, {
         dt,
         speed: moveSpeed,
@@ -1998,6 +2036,8 @@ export class BattleRoyaleEngine {
         isSwimming: st.isSwimming,
         isOnSurfboard: st.isOnSurfboard,
         hasWeapon: st.weaponId !== null,
+        hasMoveInput: moveSpeed > 0.35,
+        weaponCategory: remoteDef ? remoteDef.category : null,
         pitchRad: st.pitch,
       });
     }
@@ -3077,30 +3117,11 @@ export class BattleRoyaleEngine {
       b.helmetMaxHp = 0;
       if (b.vestMesh) b.vestMesh.visible = false;
       if (b.helmetMesh) b.helmetMesh.visible = false;
-      if (b.torsoGroup) {
-        b.torsoGroup.position.set(0, 0.78, 0);
-        b.torsoGroup.rotation.set(0, 0, 0);
-      }
-      if (b.headMesh) b.headMesh.rotation.set(0, 0, 0);
-      if (b.legLPivot) {
-        b.legLPivot.position.set(-0.1, 0.78, 0);
-        b.legLPivot.rotation.set(0, 0, 0);
-      }
-      if (b.legRPivot) {
-        b.legRPivot.position.set(0.1, 0.78, 0);
-        b.legRPivot.rotation.set(0, 0, 0);
-      }
-      if (b.armLPivot) b.armLPivot.rotation.set(0, 0, 0);
-      if (b.armRPivot) b.armRPivot.rotation.set(0, 0, 0);
-      if (b.armL) b.armL.rotation.set(0, 0, 0);
-      if (b.armR) b.armR.rotation.set(0, 0, 0);
-      if (b.gunMesh) b.gunMesh.visible = true;
-      if (b.visualRoot) {
-        b.visualRoot.position.set(0, 0, 0);
-        b.visualRoot.rotation.set(0, 0, 0);
-      }
-      if (b.isAdam) {
-        setBotAdamClip(b, 'Idle_Loop', 1.0, 0.05);
+      b.animator?.reset();
+      if (b.rig) {
+        b.rig.weaponMount.visible = true;
+        b.rig.setBandageVisible?.(false);
+        b.rig.setParachuteVisible(false);
       }
       b.weaponId = 'g18';
       b.secondaryWeaponId = undefined;
@@ -4561,6 +4582,7 @@ export class BattleRoyaleEngine {
     }
 
     // Stance transitions (including Window Vault on jump near house window sill!)
+    this.stanceSnapTimer = Math.max(0, this.stanceSnapTimer - dt);
     const prevStance = this.stance;
     if (!this.isSwimming) {
       if (edges.crouch) {
@@ -4588,13 +4610,14 @@ export class BattleRoyaleEngine {
         this.isGrounded = false;
         soundEngine.playJump();
       } else {
-        this.vel.y = this.isOnSurfboard ? 7.2 : 7.4;
+        this.vel.y = this.isOnSurfboard ? 7.2 : 7.6;
         this.isGrounded = false;
         soundEngine.playJump();
       }
     }
 
     if (prevStance !== this.stance) {
+      this.stanceSnapTimer = 0.16;
       if (this.stance === 'prone') {
         soundEngine.playProneDown();
       } else if (prevStance === 'prone') {
@@ -5042,28 +5065,11 @@ export class BattleRoyaleEngine {
           revTarget.downTimer = 0;
           revTarget.knockedByPlayer = false;
           revTarget.aiState = revTarget.medkits > 0 ? 'heal' : 'roam';
-          revTarget.healTimer = 1.6;
-          if (revTarget.gunMesh) revTarget.gunMesh.visible = true;
-          if (revTarget.visualRoot) {
-            revTarget.visualRoot.position.set(0, 0, 0);
-            revTarget.visualRoot.rotation.set(0, 0, 0);
+          revTarget.healTimer = 4.0;
+          revTarget.animator?.reset();
+          if (revTarget.rig) {
+            revTarget.rig.weaponMount.visible = true;
           }
-          if (revTarget.isAdam) setBotAdamClip(revTarget, 'Idle_Loop', 1.0, 0.12);
-          if (revTarget.torsoGroup) {
-            revTarget.torsoGroup.position.set(0, 0.78, 0);
-            revTarget.torsoGroup.rotation.set(0, 0, 0);
-          }
-          if (revTarget.headMesh) revTarget.headMesh.rotation.set(0, 0, 0);
-          if (revTarget.legLPivot) {
-            revTarget.legLPivot.position.set(-0.1, 0.78, 0);
-            revTarget.legLPivot.rotation.set(0, 0, 0);
-          }
-          if (revTarget.legRPivot) {
-            revTarget.legRPivot.position.set(0.1, 0.78, 0);
-            revTarget.legRPivot.rotation.set(0, 0, 0);
-          }
-          if (revTarget.armLPivot) revTarget.armLPivot.rotation.set(0, 0, 0);
-          if (revTarget.armRPivot) revTarget.armRPivot.rotation.set(0, 0, 0);
           this.pushKillFeed(this.playerNick, `${revTarget.nick} SALVO`, 'REVIVE', false, true);
           soundEngine.completeMedkitAudio();
           this.revivingBotId = null;
@@ -5148,8 +5154,8 @@ export class BattleRoyaleEngine {
       this.vel.z = THREE.MathUtils.damp(this.vel.z, targetVz, accel, dt);
     }
 
-    // Gravity
-    this.vel.y -= 20.5 * dt;
+    // Gravity (snappy on jump, preserve smooth vault arc)
+    this.vel.y -= (this.vaultTimer > 0 ? 20.5 : 27.5) * dt;
 
     // Integrate XZ together + 2-pass OBB corner sliding so movement never snags
     this.pos.x += this.vel.x * dt;
@@ -5267,7 +5273,8 @@ export class BattleRoyaleEngine {
       isAiming: this.isAiming,
       isFiring: weaponFireDown || this.combatPoseTimer > 0.12,
       isReloading: this.isReloading,
-      isHealing: this.usingMedkit || Boolean(this.revivingBotId),
+      isHealing: this.usingMedkit,
+      isReviving: Boolean(this.revivingBotId),
       isDriving: false,
       isSwimming: this.isSwimming,
       isOnSurfboard: this.isOnSurfboard,
@@ -5276,6 +5283,9 @@ export class BattleRoyaleEngine {
       isParachuting: false,
       isDead: false,
       hasWeapon: this.activeSlot !== 4 && !this.isSwimming,
+      hasMoveInput: hasMove,
+      weaponCategory:
+        this.activeSlot !== 4 && !this.isSwimming && activeDef ? activeDef.category : null,
       pitchRad: this.pitch,
       turnDeltaRad,
     });
@@ -5283,7 +5293,20 @@ export class BattleRoyaleEngine {
     // Update Gloo preview / Grenade curved trajectory line
     if (this.isPlacingGloo && this.glooCount > 0) {
       const gPos = this.computeGlooPlacement();
-      this.glooPreviewMesh.position.set(gPos.x, gPos.y + 1.175, gPos.z);
+      this.glooPlaceDistance = gPos.dist;
+      const targetGeo =
+        this.glooSkin === 'ffwc' ? this.glooAssets.ffwcGeo : this.glooAssets.classicGeo;
+      const targetMat =
+        this.glooSkin === 'ffwc'
+          ? this.glooAssets.ffwcPreviewMat
+          : this.glooAssets.classicPreviewMat;
+      if (this.glooPreviewMesh.geometry !== targetGeo) {
+        this.glooPreviewMesh.geometry = targetGeo;
+      }
+      if (this.glooPreviewMesh.material !== targetMat) {
+        this.glooPreviewMesh.material = targetMat;
+      }
+      this.glooPreviewMesh.position.set(gPos.x, gPos.y, gPos.z);
       this.glooPreviewMesh.rotation.y = this.yaw;
       this.glooPreviewMesh.visible = true;
     } else {
@@ -5370,6 +5393,19 @@ export class BattleRoyaleEngine {
         }
         if (currentY + 0.85 < platY) continue;
         if (platY > floorY) floorY = platY;
+      }
+    }
+    for (let i = 0; i < this.dynamicGlooPlatforms.length; i++) {
+      const p = this.dynamicGlooPlatforms[i];
+      const dx = x - p.cx;
+      const dz = z - p.cz;
+      const cos = Math.cos(p.rotY);
+      const sin = Math.sin(p.rotY);
+      const lx = dx * cos - dz * sin;
+      const lz = dx * sin + dz * cos;
+      if (Math.abs(lx) <= p.halfW + 0.14 && Math.abs(lz) <= p.halfD + 0.14) {
+        if (currentY + 0.34 < p.topY) continue;
+        if (p.topY > floorY) floorY = p.topY;
       }
     }
     return floorY;
@@ -5565,11 +5601,81 @@ export class BattleRoyaleEngine {
     return false;
   }
 
-  private computeGlooPlacement(): { x: number; y: number; z: number } {
-    const x = THREE.MathUtils.clamp(this.pos.x - Math.sin(this.yaw) * 3.8, -BERMUDA_HALF + 12, BERMUDA_HALF - 12);
-    const z = THREE.MathUtils.clamp(this.pos.z - Math.cos(this.yaw) * 3.8, -BERMUDA_HALF + 12, BERMUDA_HALF - 12);
-    const y = Math.max(-0.2, this.resolveFloorHeight(x, z, this.pos.y + 1.2));
-    return { x, y, z };
+  private computeGlooPlacement(): { x: number; y: number; z: number; dist: number } {
+    const fx = -Math.sin(this.yaw);
+    const fz = -Math.cos(this.yaw);
+    const eyeH = this.stance === 'prone' ? 0.65 : this.stance === 'crouch' ? 1.15 : 1.52;
+    const eyeX = this.pos.x;
+    const eyeY = this.pos.y + eyeH;
+    const eyeZ = this.pos.z;
+
+    const cp = Math.cos(this.pitch);
+    const sp = Math.sin(this.pitch);
+    const dirX = fx * cp;
+    const dirY = sp;
+    const dirZ = fz * cp;
+
+    // Camera-dependent Free Fire distance placement:
+    // - Looking down places gloo close (~2.3m - 4m)
+    // - Looking level / forward throws gloo ahead up to 15.5m to rush enemies, stopping before solid walls
+    let maxRayDist = 15.5;
+    _rayOrigin.set(eyeX, eyeY, eyeZ);
+    _rayDir.set(dirX, dirY, dirZ).normalize();
+    this.raycaster.set(_rayOrigin, _rayDir);
+    this.raycaster.far = maxRayDist;
+    const hits = this.raycaster.intersectObjects(this.solidObstaclesActive, false);
+    if (hits.length > 0) {
+      maxRayDist = Math.max(2.25, hits[0].distance - 0.65);
+    }
+
+    let targetHorizDist = maxRayDist;
+    if (this.pitch < -0.03) {
+      const steps = 26;
+      const startDist = 2.25;
+      const endDist = Math.max(startDist, maxRayDist);
+      let prevT = startDist;
+      for (let s = 0; s <= steps; s++) {
+        const t = startDist + ((endDist - startDist) * s) / steps;
+        const rx = eyeX + dirX * t;
+        const ry = eyeY + dirY * t;
+        const rz = eyeZ + dirZ * t;
+        const groundY = this.resolveFloorHeight(
+          rx,
+          rz,
+          Math.max(this.pos.y + 0.5, ry + 0.6),
+        );
+        if (ry <= groundY + 0.05) {
+          const midT = (prevT + t) * 0.5;
+          const mrx = eyeX + dirX * midT;
+          const mry = eyeY + dirY * midT;
+          const mrz = eyeZ + dirZ * midT;
+          const mGroundY = this.resolveFloorHeight(
+            mrx,
+            mrz,
+            Math.max(this.pos.y + 0.5, mry + 0.6),
+          );
+          const hitT = mry <= mGroundY + 0.05 ? midT : t;
+          targetHorizDist = hitT * cp;
+          break;
+        }
+        prevT = t;
+      }
+    }
+
+    targetHorizDist = THREE.MathUtils.clamp(targetHorizDist, 2.25, 15.5);
+    const x = THREE.MathUtils.clamp(
+      this.pos.x + fx * targetHorizDist,
+      -BERMUDA_HALF + 12,
+      BERMUDA_HALF - 12,
+    );
+    const z = THREE.MathUtils.clamp(
+      this.pos.z + fz * targetHorizDist,
+      -BERMUDA_HALF + 12,
+      BERMUDA_HALF - 12,
+    );
+    const y = Math.max(-0.2, this.resolveFloorHeight(x, z, this.pos.y + 1.8));
+    const dist = Math.hypot(x - this.pos.x, z - this.pos.z);
+    return { x, y, z, dist };
   }
 
   private deployGlooWall(): void {
@@ -5579,7 +5685,7 @@ export class BattleRoyaleEngine {
     }
     this.glooCount -= 1;
     const p = this.computeGlooPlacement();
-    this.spawnGlooWallAt(p.x, p.y, p.z, this.yaw);
+    this.spawnGlooWallAt(p.x, p.y, p.z, this.yaw, false, this.glooSkin);
     soundEngine.playGlooDeploy();
     this.isPlacingGloo = false;
   }
@@ -5590,10 +5696,12 @@ export class BattleRoyaleEngine {
     z: number,
     wallYaw: number,
     skipNetEmit = false,
+    skin: GlooSkinId = this.glooSkin,
   ): void {
     if (this.deployedGloos.length >= 28) {
       this.removeGlooWallAt(0);
     }
+    const resolvedSkin: GlooSkinId = skin === 'ffwc' ? 'ffwc' : 'classic';
     const id = `gloo_${this.onlineAccountId || 'l'}_${this.nextGlooId++}`;
     this.syncedServerGlooIds.add(id);
     if (!skipNetEmit && this.onlineRoomId) {
@@ -5604,10 +5712,15 @@ export class BattleRoyaleEngine {
         y,
         z,
         rotY: wallYaw,
+        skin: resolvedSkin,
       });
     }
-    const mesh = new THREE.Mesh(this.glooWallGeo, this.glooWallMat);
-    mesh.position.set(x, y + 1.175, z);
+    const geo =
+      resolvedSkin === 'ffwc' ? this.glooAssets.ffwcGeo : this.glooAssets.classicGeo;
+    const mat =
+      resolvedSkin === 'ffwc' ? this.glooAssets.ffwcMat : this.glooAssets.classicMat;
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, y, z);
     mesh.rotation.y = wallYaw;
     const enableShadow = !this.isSoftwareGl && this.settings.quality === 'high';
     mesh.castShadow = enableShadow;
@@ -5615,20 +5728,30 @@ export class BattleRoyaleEngine {
     mesh.userData.glooId = id;
     this.world.scene.add(mesh);
 
-    const collider: WorldObbCollider = {
-      cx: x,
-      cz: z,
-      halfW: 1.7,
-      halfD: 0.22,
-      rotY: wallYaw,
-      minY: y,
-      maxY: y + 2.35,
-      tag: 'gloo-wall',
-    };
-    this.world.colliders.push(collider);
+    const { colliders, platforms } = buildGlooCollidersAndPlatforms(
+      x,
+      y,
+      z,
+      wallYaw,
+      resolvedSkin,
+    );
+    for (let i = 0; i < colliders.length; i++) {
+      this.world.colliders.push(colliders[i]);
+    }
+    for (let i = 0; i < platforms.length; i++) {
+      this.dynamicGlooPlatforms.push(platforms[i]);
+    }
     this.solidObstaclesNoTerrain.push(mesh);
     this.solidObstaclesActive.push(mesh);
-    this.deployedGloos.push({ id, mesh, collider, hp: 450, life: 55 });
+    this.deployedGloos.push({
+      id,
+      skin: resolvedSkin,
+      mesh,
+      colliders,
+      platforms,
+      hp: 450,
+      life: 55,
+    });
   }
 
   private deployBotGlooWall(bot: TargetDummy, threatX: number, threatZ: number): void {
@@ -5647,7 +5770,8 @@ export class BattleRoyaleEngine {
 
     bot.gloos -= 1;
     bot.glooCooldown = 13.5;
-    this.spawnGlooWallAt(gx, gy, gz, wallYaw);
+    const botSkin: GlooSkinId = Math.random() < 0.35 ? 'ffwc' : 'classic';
+    this.spawnGlooWallAt(gx, gy, gz, wallYaw, false, botSkin);
     if (Math.hypot(gx - this.pos.x, gz - this.pos.z) < 70) {
       soundEngine.playGlooDeploy();
     }
@@ -5656,8 +5780,14 @@ export class BattleRoyaleEngine {
   private removeGlooWallAt(index: number): void {
     const g = this.deployedGloos[index];
     this.world.scene.remove(g.mesh);
-    const cIdx = this.world.colliders.indexOf(g.collider);
-    if (cIdx >= 0) this.world.colliders.splice(cIdx, 1);
+    for (let i = 0; i < g.colliders.length; i++) {
+      const cIdx = this.world.colliders.indexOf(g.colliders[i]);
+      if (cIdx >= 0) this.world.colliders.splice(cIdx, 1);
+    }
+    for (let i = 0; i < g.platforms.length; i++) {
+      const pIdx = this.dynamicGlooPlatforms.indexOf(g.platforms[i]);
+      if (pIdx >= 0) this.dynamicGlooPlatforms.splice(pIdx, 1);
+    }
     const oIdx = this.solidObstaclesNoTerrain.indexOf(g.mesh);
     if (oIdx >= 0) this.solidObstaclesNoTerrain.splice(oIdx, 1);
     const aIdx = this.solidObstaclesActive.indexOf(g.mesh);
@@ -6926,37 +7056,43 @@ export class BattleRoyaleEngine {
       for (let i = 0; i < bots.length; i++) {
         const b = bots[i];
         b.drawTimer = Math.max(0, (b.drawTimer ?? 0) - dt);
-        if (!b.group.visible || b.eliminated) continue;
-        if (b.isAdam && b.mixer) {
-          if (b.isDowned) setBotAdamClip(b, 'Crawl_Loop', 1.0, 0.12);
-          else if (b.airState === 'parachuting') setBotAdamClip(b, 'Jump_Loop', 0.85, 0.12);
-          else setBotAdamClip(b, 'Idle_Loop', 1.0, 0.12);
-          b.mixer.update(dt);
-          let reach = 0;
-          if ((b.drawTimer ?? 0) > 0 && !b.isDowned && b.airState === 'ground' && b.upperAimBones) {
-            reach = applyAdamOverBackDraw(
-              b.visualRoot,
-              b.upperAimBones,
-              b.drawTimer ?? 0,
-              b.modelId ?? 'adam',
-            );
-          }
-          if (b.gunMesh) {
-            if (!b.gunMesh.userData.baseMountQuat) {
-              b.gunMesh.userData.baseMountQuat = b.gunMesh.quaternion.clone();
-            }
-            const baseQ = b.gunMesh.userData.baseMountQuat as THREE.Quaternion;
-            b.gunMesh.quaternion.copy(baseQ);
-            if (reach > 0.005) b.gunMesh.rotateX(0.55 * reach);
-          }
-        } else if (!b.isAdam && b.armRPivot) {
-          const { reachWeight } = computeWeaponDrawWeights(b.drawTimer ?? 0);
-          b.armRPivot.rotation.x = THREE.MathUtils.lerp(0, -2.85, reachWeight);
-          b.armRPivot.rotation.y = THREE.MathUtils.lerp(0, -0.32, reachWeight);
-          b.armRPivot.rotation.z = THREE.MathUtils.lerp(0, -0.44, reachWeight);
-          if (b.torsoGroup) b.torsoGroup.rotation.y = THREE.MathUtils.lerp(0, -0.24, reachWeight);
-          if (b.gunMesh) b.gunMesh.rotation.x = 0.45 * reachWeight;
-        }
+        const moveDist =
+          b.lastSyncX !== undefined && b.lastSyncZ !== undefined
+            ? Math.hypot(b.group.position.x - b.lastSyncX, b.group.position.z - b.lastSyncZ)
+            : 0;
+        b.lastSyncX = b.group.position.x;
+        b.lastSyncZ = b.group.position.z;
+        b.netAnimSpeed = THREE.MathUtils.damp(
+          b.netAnimSpeed ?? 0,
+          Math.min(10, moveDist / Math.max(0.016, dt)),
+          12,
+          dt,
+        );
+        if (!b.group.visible || b.eliminated || !b.rig || !b.animator) continue;
+        const spd = b.netAnimSpeed;
+        const inWater = b.group.position.y < -0.15;
+        const wCat = WEAPONS[b.weaponId]?.category ?? null;
+        b.rig.weaponMount.visible = !b.isDowned && !inWater && b.airState === 'ground';
+        b.animator.update(b.rig, {
+          dt,
+          speed: spd,
+          stance: 'stand',
+          isGrounded: b.airState === 'ground',
+          isSprinting: spd > 3.2 && !b.isDowned && !inWater,
+          isAiming: false,
+          isFiring: false,
+          isLobby: false,
+          isSkydiving: b.airState === 'skydiving',
+          isParachuting: b.airState === 'parachuting',
+          isDead: false,
+          isDowned: b.isDowned,
+          isSwimming: inWater,
+          isOnSurfboard: false,
+          hasWeapon: !b.isDowned && !inWater,
+          hasMoveInput: spd > 0.35,
+          weaponCategory: wCat,
+          pitchRad: 0,
+        });
       }
       return;
     }
@@ -7083,20 +7219,23 @@ export class BattleRoyaleEngine {
 
       if (bot.downTimer > 0) {
         bot.downTimer = Math.max(0, bot.downTimer - dt);
-        if (bot.isAdam && bot.mixer) {
-          if (bot.visualRoot) {
-            bot.visualRoot.position.set(0, 0, 0);
-            bot.visualRoot.rotation.set(0, 0, 0);
-          }
-          setBotAdamClip(bot, 'Death01', 1.1, 0.1);
-          bot.mixer.update(dt);
-        } else {
-          bot.group.rotation.x = THREE.MathUtils.damp(
-            bot.group.rotation.x,
-            -Math.PI * 0.46,
-            12,
+        if (bot.rig && bot.animator) {
+          bot.rig.weaponMount.visible = false;
+          bot.animator.update(bot.rig, {
             dt,
-          );
+            speed: 0,
+            stance: 'stand',
+            isGrounded: true,
+            isSprinting: false,
+            isAiming: false,
+            isFiring: false,
+            isLobby: false,
+            isSkydiving: false,
+            isParachuting: false,
+            isDead: true,
+            hasWeapon: false,
+            pitchRad: 0,
+          });
         }
         if (bot.downTimer === 0) {
           if (isPlaying) {
@@ -7238,11 +7377,11 @@ export class BattleRoyaleEngine {
             if (bot.vestMesh) bot.vestMesh.visible = false;
             if (bot.helmetMesh) bot.helmetMesh.visible = false;
             bot.group.rotation.x = 0;
-            if (bot.visualRoot) {
-              bot.visualRoot.position.set(0, 0, 0);
-              bot.visualRoot.rotation.set(0, 0, 0);
+            bot.animator?.reset();
+            if (bot.rig) {
+              bot.rig.weaponMount.visible = true;
+              bot.rig.setBandageVisible?.(false);
             }
-            if (bot.isAdam) setBotAdamClip(bot, 'Idle_Loop', 1.0, 0.08);
           }
         }
         continue;
@@ -7302,17 +7441,32 @@ export class BattleRoyaleEngine {
             bot.navCheckZ = bot.group.position.z;
             bot.airState = 'ground';
             bot.vy = 0;
-            if (bot.parachuteMesh) bot.parachuteMesh.visible = false;
+            bot.rig?.setParachuteVisible(false);
+            bot.animator?.triggerLanding();
             bot.goalX = targetX;
             bot.goalZ = targetZ;
           }
           if (
-            bot.isAdam &&
-            bot.mixer &&
+            bot.rig &&
+            bot.animator &&
             (bot.group.position.x - this.pos.x) ** 2 + (bot.group.position.z - this.pos.z) ** 2 < 85 * 85
           ) {
-            setBotAdamClip(bot, 'Jump_Loop', 0.85, 0.2);
-            bot.mixer.update(dt);
+            bot.rig.weaponMount.visible = false;
+            bot.animator.update(bot.rig, {
+              dt,
+              speed: 6,
+              stance: 'stand',
+              isGrounded: bot.airState === 'ground',
+              isSprinting: false,
+              isAiming: false,
+              isFiring: false,
+              isLobby: false,
+              isSkydiving: bot.airState === 'skydiving',
+              isParachuting: bot.airState === 'parachuting',
+              isDead: false,
+              hasWeapon: false,
+              pitchRad: 0,
+            });
           }
           continue;
         }
@@ -7345,7 +7499,8 @@ export class BattleRoyaleEngine {
           bot.navCheckZ = bot.group.position.z;
           bot.airState = 'ground';
           bot.vy = 0;
-          if (bot.parachuteMesh) bot.parachuteMesh.visible = false;
+          bot.rig?.setParachuteVisible(false);
+          bot.animator?.triggerLanding();
           bot.goalX = bot.landX;
           bot.goalZ = bot.landZ;
         }
@@ -7355,9 +7510,23 @@ export class BattleRoyaleEngine {
         bot.group.visible = showSky;
         if (showSky) {
           visibleBotCount++;
-          if (bot.isAdam && bot.mixer && skyDistSq < 85 * 85 && animatedBotCount < maxFullAnimBots) {
-            setBotAdamClip(bot, 'Jump_Loop', 0.85, 0.2);
-            bot.mixer.update(dt);
+          if (bot.rig && bot.animator && skyDistSq < 85 * 85 && animatedBotCount < maxFullAnimBots) {
+            bot.rig.weaponMount.visible = false;
+            bot.animator.update(bot.rig, {
+              dt,
+              speed: glideSpeed,
+              stance: 'stand',
+              isGrounded: bot.airState === 'ground',
+              isSprinting: false,
+              isAiming: false,
+              isFiring: false,
+              isLobby: false,
+              isSkydiving: bot.airState === 'skydiving',
+              isParachuting: bot.airState === 'parachuting',
+              isDead: false,
+              hasWeapon: false,
+              pitchRad: 0,
+            });
             animatedBotCount++;
           }
         }
@@ -7525,69 +7694,37 @@ export class BattleRoyaleEngine {
           bot.group.rotation.y = Math.atan2(sdx, sdz);
         }
 
-        if (inRenderRange) {
-          if (bot.gunMesh) bot.gunMesh.visible = false;
-          if (bot.isAdam && bot.mixer && botCamDistSq < 60 * 60) {
-            if (bot.visualRoot) {
-              bot.visualRoot.position.set(0, 0.34, 0.04);
-              bot.visualRoot.rotation.set(
-                Math.PI * 0.32,
-                0,
-                movingCrawl ? Math.sin(this.elapsed * 7 + i) * 0.06 : 0,
-              );
-            }
-            setBotAdamClip(
-              bot,
-              movingCrawl ? 'Crouch_Fwd_Loop' : 'Crouch_Idle_Loop',
-              movingCrawl ? 0.9 : 0.75,
-              0.15,
-            );
-            bot.mixer.update(dt);
-          } else if (!bot.isAdam) {
-            if (movingCrawl) {
-              bot.walkPhase += dt * 4.6;
-            }
-            const sw = movingCrawl ? Math.sin(bot.walkPhase) * 0.24 : 0;
-            if (bot.torsoGroup) {
-              bot.torsoGroup.position.set(0, 0.46, 0.02);
-              bot.torsoGroup.rotation.x = THREE.MathUtils.damp(
-                bot.torsoGroup.rotation.x,
-                Math.PI * 0.38,
-                14,
-                dt,
-              );
-            }
-            if (bot.headMesh) {
-              bot.headMesh.rotation.x = THREE.MathUtils.damp(bot.headMesh.rotation.x, -0.65, 14, dt);
-            }
-            if (bot.armLPivot) bot.armLPivot.rotation.x = -1.10 + sw * 0.45;
-            if (bot.armRPivot) bot.armRPivot.rotation.x = -1.10 - sw * 0.45;
-            if (bot.legLPivot) {
-              bot.legLPivot.position.set(-0.11, 0.42, 0.0);
-              bot.legLPivot.rotation.x = Math.PI * 0.40 + sw * 0.28;
-            }
-            if (bot.legRPivot) {
-              bot.legRPivot.position.set(0.11, 0.42, 0.0);
-              bot.legRPivot.rotation.x = Math.PI * 0.40 - sw * 0.28;
-            }
+        if (inRenderRange && bot.rig && bot.animator) {
+          bot.rig.weaponMount.visible = false;
+          if (bot.isAlly || animatedBotCount < maxFullAnimBots) {
+            const animDt = dt + (bot.animAccum ?? 0);
+            bot.animAccum = 0;
+            bot.animator.update(bot.rig, {
+              dt: animDt,
+              speed: crawlSpeed,
+              stance: 'stand',
+              isGrounded: true,
+              isSprinting: false,
+              isAiming: false,
+              isFiring: false,
+              isLobby: false,
+              isSkydiving: false,
+              isParachuting: false,
+              isDead: false,
+              isDowned: true,
+              hasWeapon: false,
+              hasMoveInput: movingCrawl,
+              pitchRad: 0,
+            });
+            animatedBotCount++;
+          } else {
+            bot.animAccum = (bot.animAccum ?? 0) + dt;
           }
         }
         continue;
       }
 
-      // Restore standing pose cleanly when not downed
-      if (bot.gunMesh) bot.gunMesh.visible = true;
-      if (bot.visualRoot) {
-        bot.visualRoot.position.set(0, 0, 0);
-        bot.visualRoot.rotation.set(0, 0, 0);
-      }
-      if (bot.torsoGroup) {
-        bot.torsoGroup.position.set(0, 0.78, 0);
-        bot.torsoGroup.rotation.x = 0;
-      }
-      if (bot.headMesh) bot.headMesh.rotation.x = 0;
-      if (bot.legLPivot) bot.legLPivot.position.set(-0.1, 0.78, 0);
-      if (bot.legRPivot) bot.legRPivot.position.set(0.1, 0.78, 0);
+      if (bot.rig) bot.rig.weaponMount.visible = true;
 
       if (bot.targetId === 'player' && (bot.isAlly || botCamDistSq > playerSightRangeSq)) {
         bot.targetId = null;
@@ -7713,7 +7850,7 @@ export class BattleRoyaleEngine {
           bot.reviveTimer = 0;
         } else if (bot.hp < 125 && bot.medkits > 0) {
           if (bot.aiState !== 'heal') {
-            bot.healTimer = 3.2;
+            bot.healTimer = 4.0;
           }
           bot.aiState = 'heal';
           bot.revivingMateId = null;
@@ -8105,25 +8242,10 @@ export class BattleRoyaleEngine {
                 mate.downTimer = 0;
                 mate.knockedByPlayer = false;
                 mate.aiState = mate.medkits > 0 ? 'heal' : 'roam';
-                mate.healTimer = 3.0;
-                if (mate.gunMesh) mate.gunMesh.visible = true;
-                if (mate.visualRoot) {
-                  mate.visualRoot.position.set(0, 0, 0);
-                  mate.visualRoot.rotation.set(0, 0, 0);
-                }
-                if (mate.isAdam) setBotAdamClip(mate, 'Idle_Loop', 1.0, 0.12);
-                if (mate.torsoGroup) {
-                  mate.torsoGroup.position.set(0, 0.78, 0);
-                  mate.torsoGroup.rotation.set(0, 0, 0);
-                }
-                if (mate.headMesh) mate.headMesh.rotation.set(0, 0, 0);
-                if (mate.legLPivot) {
-                  mate.legLPivot.position.set(-0.1, 0.78, 0);
-                  mate.legLPivot.rotation.set(0, 0, 0);
-                }
-                if (mate.legRPivot) {
-                  mate.legRPivot.position.set(0.1, 0.78, 0);
-                  mate.legRPivot.rotation.set(0, 0, 0);
+                mate.healTimer = 4.0;
+                mate.animator?.reset();
+                if (mate.rig) {
+                  mate.rig.weaponMount.visible = true;
                 }
                 this.pushKillFeed(bot.nick, `${mate.nick} SALVO`, 'REVIVE', false, bot.isAlly);
                 bot.revivingMateId = null;
@@ -8240,6 +8362,7 @@ export class BattleRoyaleEngine {
               bot.reloadTimer = def.reloadTimeSec;
             } else {
               bot.ammoInMag -= 1;
+              bot.animator?.triggerFire();
               bot.fireCooldown = Math.max(
                 0.11,
                 (def.fireRateMs / 1000) * (def.automatic ? 1.45 : 1.15),
@@ -8439,11 +8562,14 @@ export class BattleRoyaleEngine {
 
       // 3. Apply intelligent whisker-steered locomotion + OBB collision + smooth stairs/water
       const animateLimbs = isSpectatedBot || (inRenderRange && botCamDistSq < 48 * 48);
+      let botGroundedNow = true;
+      let botActualSpeed = 0;
 
       if (isMoving && !isCrouchingAction) {
         const curSurf = botSurfaceHeightAt(bx, bz);
         const speedMul = curSurf.inWater ? 0.78 : bot.aiState === 'combat' ? 0.88 : 1.0;
-        const stepDist = bot.moveSpeed * speedMul * dt;
+        botActualSpeed = bot.moveSpeed * speedMul;
+        const stepDist = botActualSpeed * dt;
 
         // Multi-ray OBB obstacle avoidance (all bots & allies steer cleanly around walls/rocks/props)
         const hitSill = this.steerBotDirection(
@@ -8548,10 +8674,15 @@ export class BattleRoyaleEngine {
           if (bot.group.position.y <= floorY) {
             bot.group.position.y = floorY;
             bot.vy = 0;
+            botGroundedNow = true;
+            bot.animator?.triggerLanding();
+          } else {
+            botGroundedNow = false;
           }
         } else {
           bot.group.position.y = floorY;
           bot.vy = 0;
+          botGroundedNow = true;
         }
 
         // Rolling progress monitor + fast unstuck recovery ("cola" fix across bots and allies)
@@ -8603,6 +8734,7 @@ export class BattleRoyaleEngine {
             if (hitSill && bot.vaultTimer <= 0 && bot.vy === 0) {
               bot.vaultTimer = 0.52;
               bot.vy = 6.8;
+              botGroundedNow = false;
             } else if (stuckBldg && stuckBldg.doors.length > 0 && bot.escapeTimer <= 0) {
               let bestD = stuckBldg.doors[0];
               let bestDist = Infinity;
@@ -8729,143 +8861,61 @@ export class BattleRoyaleEngine {
             : Math.max(-0.85, botFloorRaw);
         bot.group.position.y = floorY;
         bot.vy = 0;
+        botGroundedNow = true;
       }
 
       const botSurfNow = botSurfaceHeightAt(bot.group.position.x, bot.group.position.z);
       const botInWater = botSurfNow.inWater && !botSurfNow.onBridge;
 
-      if (bot.isAdam && bot.mixer) {
-        if (animateLimbs) {
-          if (bot.gunMesh) bot.gunMesh.visible = !isCrouchingAction && !botInWater;
-          if (botInWater) {
-            if (bot.visualRoot) {
-              bot.visualRoot.position.set(0, isMoving ? 0.34 : -0.08, isMoving ? -0.58 : 0);
-              bot.visualRoot.rotation.set(isMoving ? 1.4 : 0.08, 0, 0);
-            }
-            setBotAdamClip(bot, 'Idle_Loop', 0.85, 0.14);
-          } else {
-            if (bot.visualRoot) {
-              bot.visualRoot.position.set(0, 0, 0);
-              bot.visualRoot.rotation.set(0, 0, 0);
-            }
-            if (isCrouchingAction) {
-              setBotAdamClip(bot, 'Fixing_Kneeling', 1.1, 0.14);
-            } else if (isMoving) {
-              setBotAdamClip(
-                bot,
-                bot.aiState === 'combat' ? 'Jog_Fwd_Loop' : 'Sprint_Loop',
-                THREE.MathUtils.clamp(bot.moveSpeed / 5.4, 0.8, 1.2),
-                0.16,
-              );
-            } else if (bot.aiState === 'combat') {
-              setBotAdamClip(bot, bot.fireCooldown > 0.18 ? 'Pistol_Shoot' : 'Pistol_Aim_Neutral', 1.0, 0.12);
-            } else {
-              setBotAdamClip(bot, 'Idle_Loop', 1.0, 0.18);
-            }
-          }
-          if (bot.isAlly || animatedBotCount < maxFullAnimBots) {
-            bot.mixer.update(dt);
-            animatedBotCount++;
-          } else {
-            bot.animAccum = (bot.animAccum ?? 0) + dt;
-            if (bot.animAccum >= 0.11) {
-              bot.mixer.update(bot.animAccum);
-              bot.animAccum = 0;
-            }
-          }
-          if (bot.aiState === 'combat' && !isCrouchingAction && !botInWater && bot.upperAimBones) {
-            const aimQuats = getAimPoseQuats(bot.modelId ?? 'adam');
-            if (aimQuats) {
-              for (let b = 0; b < bot.upperAimBones.length; b++) {
-                const entry = bot.upperAimBones[b];
-                const q = aimQuats[entry.name];
-                if (q) entry.bone.quaternion.slerp(q, 0.9);
-              }
-            }
-          }
-          let botDrawReach = 0;
-          if ((bot.drawTimer ?? 0) > 0 && !isCrouchingAction && !botInWater && bot.upperAimBones) {
-            botDrawReach = applyAdamOverBackDraw(
-              bot.visualRoot,
-              bot.upperAimBones,
-              bot.drawTimer ?? 0,
-              bot.modelId ?? 'adam',
-            );
-          }
-          if (bot.gunMesh) {
-            if (!bot.gunMesh.userData.baseMountQuat) {
-              bot.gunMesh.userData.baseMountQuat = bot.gunMesh.quaternion.clone();
-            }
-            const baseQ = bot.gunMesh.userData.baseMountQuat as THREE.Quaternion;
-            bot.gunMesh.quaternion.copy(baseQ);
-            if (botDrawReach > 0.005) {
-              bot.gunMesh.rotateX(0.55 * botDrawReach);
-            }
-          }
-        }
-      } else if (animateLimbs) {
-        if (bot.gunMesh) bot.gunMesh.visible = !isCrouchingAction;
-        const { reachWeight: botDrawReach } = computeWeaponDrawWeights(bot.drawTimer ?? 0);
-        if (isCrouchingAction) {
-          if (bot.gunMesh) bot.gunMesh.visible = false;
-          if (bot.torsoGroup) {
-            bot.torsoGroup.position.set(0, 0.54, 0.03);
-            bot.torsoGroup.rotation.x = 0.22;
-          }
-          const wrapWave = Math.sin(this.elapsed * 9.5 + i);
-          if (bot.legLPivot) bot.legLPivot.rotation.x = -0.78;
-          if (bot.legRPivot) bot.legRPivot.rotation.x = 0.45;
-          if (bot.armLPivot) bot.armLPivot.rotation.x = -0.82 + wrapWave * 0.22;
-          if (bot.armRPivot) bot.armRPivot.rotation.x = -0.82 - wrapWave * 0.22;
-        } else if (isMoving) {
-          bot.walkPhase += dt * bot.moveSpeed * 2.1;
-          const swing = Math.sin(bot.walkPhase) * 0.62;
-          const bob = Math.abs(Math.sin(bot.walkPhase)) * 0.042;
-          if (bot.torsoGroup) {
-            bot.torsoGroup.position.y = 0.78 + bob;
-            bot.torsoGroup.rotation.x = 0.08;
-            bot.torsoGroup.rotation.y = THREE.MathUtils.lerp(0, -0.24, botDrawReach);
-            bot.torsoGroup.rotation.z = Math.sin(bot.walkPhase) * 0.04;
-          }
-          if (bot.legLPivot) bot.legLPivot.rotation.x = THREE.MathUtils.damp(bot.legLPivot.rotation.x, swing, 16, dt);
-          if (bot.legRPivot) bot.legRPivot.rotation.x = THREE.MathUtils.damp(bot.legRPivot.rotation.x, -swing, 16, dt);
-          if (bot.armLPivot) bot.armLPivot.rotation.x = THREE.MathUtils.damp(bot.armLPivot.rotation.x, -swing * 0.65, 16, dt);
-          if (bot.armRPivot) {
-            const baseArmX = bot.aiState === 'combat' ? -0.95 : swing * 0.45;
-            bot.armRPivot.rotation.x = THREE.MathUtils.damp(
-              bot.armRPivot.rotation.x,
-              THREE.MathUtils.lerp(baseArmX, -2.85, botDrawReach),
-              16,
-              dt,
-            );
-            bot.armRPivot.rotation.y = THREE.MathUtils.lerp(0, -0.32, botDrawReach);
-            bot.armRPivot.rotation.z = THREE.MathUtils.lerp(0, -0.44, botDrawReach);
-          }
+      if (animateLimbs && bot.rig && bot.animator) {
+        const botIsHealing = bot.aiState === 'heal';
+        const botIsReviving = bot.aiState === 'revive' && isCrouchingAction;
+        const botIsReloading = bot.reloadTimer > 0;
+        const botIsAiming =
+          bot.aiState === 'combat' && !botIsHealing && !botIsReviving && !botIsReloading && !botInWater;
+        const botIsSprinting =
+          botActualSpeed > 0.35 && bot.aiState !== 'combat' && !botInWater && !botIsHealing && !botIsReviving;
+        const botWeaponCat = WEAPONS[bot.weaponId]?.category ?? null;
+        bot.rig.weaponMount.visible = !botInWater && !botIsHealing && !botIsReviving;
+
+        const runFullRate =
+          bot.isAlly || isSpectatedBot || animatedBotCount < maxFullAnimBots || botCamDistSq < 28 * 28;
+        let stepDt = dt;
+        if (runFullRate) {
+          stepDt += bot.animAccum ?? 0;
+          bot.animAccum = 0;
+          animatedBotCount++;
         } else {
-          if (bot.torsoGroup) {
-            bot.torsoGroup.position.y = 0.78 + Math.sin(this.elapsed * 2.4 + i) * 0.012;
-            bot.torsoGroup.rotation.x = THREE.MathUtils.damp(bot.torsoGroup.rotation.x, 0, 10, dt);
-            bot.torsoGroup.rotation.y = THREE.MathUtils.lerp(0, -0.24, botDrawReach);
-            bot.torsoGroup.rotation.z = THREE.MathUtils.damp(bot.torsoGroup.rotation.z, 0, 10, dt);
-          }
-          if (bot.legLPivot) bot.legLPivot.rotation.x = THREE.MathUtils.damp(bot.legLPivot.rotation.x, 0, 10, dt);
-          if (bot.legRPivot) bot.legRPivot.rotation.x = THREE.MathUtils.damp(bot.legRPivot.rotation.x, 0, 10, dt);
-          if (bot.armLPivot) bot.armLPivot.rotation.x = THREE.MathUtils.damp(bot.armLPivot.rotation.x, 0, 10, dt);
-          if (bot.armRPivot) {
-            const baseArmX = bot.aiState === 'combat' ? -0.95 : 0;
-            bot.armRPivot.rotation.x = THREE.MathUtils.damp(
-              bot.armRPivot.rotation.x,
-              THREE.MathUtils.lerp(baseArmX, -2.85, botDrawReach),
-              14,
-              dt,
-            );
-            bot.armRPivot.rotation.y = THREE.MathUtils.lerp(0, -0.32, botDrawReach);
-            bot.armRPivot.rotation.z = THREE.MathUtils.lerp(0, -0.44, botDrawReach);
-          }
+          bot.animAccum = (bot.animAccum ?? 0) + dt;
+          if (bot.animAccum < 0.08) continue;
+          stepDt = bot.animAccum;
+          bot.animAccum = 0;
         }
-        if (bot.gunMesh) {
-          bot.gunMesh.rotation.x = 0.45 * botDrawReach;
-        }
+
+        bot.animator.update(bot.rig, {
+          dt: stepDt,
+          speed: botActualSpeed,
+          stance: 'stand',
+          isGrounded: botGroundedNow,
+          isSprinting: botIsSprinting,
+          isAiming: botIsAiming,
+          isFiring: botIsAiming && bot.fireCooldown > 0.12,
+          isReloading: botIsReloading,
+          isHealing: botIsHealing,
+          isReviving: botIsReviving,
+          isDriving: false,
+          isSwimming: botInWater,
+          isOnSurfboard: false,
+          isLobby: false,
+          isSkydiving: false,
+          isParachuting: false,
+          isDead: false,
+          isDowned: false,
+          hasWeapon: !botInWater,
+          hasMoveInput: botActualSpeed > 0.35,
+          weaponCategory: botInWater ? null : botWeaponCat,
+          pitchRad: 0,
+        });
       }
     }
   }
@@ -9790,29 +9840,15 @@ export class BattleRoyaleEngine {
       setBotWeaponVisual(ally, ally.weaponId, getBotBackWeapon(ally));
       ally.airState = 'parachuting';
       ally.vy = -8;
-      if (ally.torsoGroup) {
-        ally.torsoGroup.position.set(0, 0.78, 0);
-        ally.torsoGroup.rotation.set(0, 0, 0);
+      ally.animator?.reset();
+      if (ally.rig) {
+        ally.rig.weaponMount.visible = false;
+        ally.rig.setParachuteVisible(true);
+        ally.rig.setBandageVisible?.(false);
       }
-      if (ally.visualRoot) {
-        ally.visualRoot.position.set(0, 0, 0);
-        ally.visualRoot.rotation.set(0, 0, 0);
-      }
-      if (ally.isAdam) setBotAdamClip(ally, 'Jump_Loop', 0.85, 0.1);
-      if (ally.headMesh) ally.headMesh.rotation.set(0, 0, 0);
-      if (ally.legLPivot) {
-        ally.legLPivot.position.set(-0.1, 0.78, 0);
-        ally.legLPivot.rotation.set(0, 0, 0);
-      }
-      if (ally.legRPivot) {
-        ally.legRPivot.position.set(0.1, 0.78, 0);
-        ally.legRPivot.rotation.set(0, 0, 0);
-      }
-      if (ally.gunMesh) ally.gunMesh.visible = true;
       ally.group.rotation.x = 0;
       ally.group.position.set(this.pos.x + 2.8, this.pos.y + 18, this.pos.z + 2.8);
       ally.group.visible = true;
-      if (ally.parachuteMesh) ally.parachuteMesh.visible = true;
       if (state === GameState.PLAYING) {
         this.aliveCount = Math.min(51, this.aliveCount + 1);
       }
@@ -10329,7 +10365,8 @@ export class BattleRoyaleEngine {
       this.camLookCurrent.copy(_camTarget);
     } else {
       const xzAlpha = 1 - Math.exp(-30 * dt);
-      const yAlpha = 1 - Math.exp(-22 * dt);
+      const yRate = this.stanceSnapTimer > 0 ? 52 : 22;
+      const yAlpha = 1 - Math.exp(-yRate * dt);
       this.camLookCurrent.x = THREE.MathUtils.lerp(this.camLookCurrent.x, _camTarget.x, xzAlpha);
       this.camLookCurrent.z = THREE.MathUtils.lerp(this.camLookCurrent.z, _camTarget.z, xzAlpha);
       this.camLookCurrent.y = THREE.MathUtils.lerp(this.camLookCurrent.y, _camTarget.y, yAlpha);
@@ -10508,6 +10545,8 @@ export class BattleRoyaleEngine {
       ffCoins: this.ffCoins,
       isRanked: this.isRanked,
       isPlacingGloo: this.isPlacingGloo,
+      glooSkin: this.glooSkin,
+      glooPlaceDistance: Math.round(this.glooPlaceDistance),
       isHoldingGrenade: this.isHoldingGrenade,
       usingMedkit: this.usingMedkit,
       medkitProgress: this.usingMedkit
@@ -10973,9 +11012,7 @@ export class BattleRoyaleEngine {
     this.envMap.dispose();
     this.tracerGeo.dispose();
     this.tracerMat.dispose();
-    this.glooWallGeo.dispose();
-    this.glooPreviewMat.dispose();
-    this.glooWallMat.dispose();
+    this.glooAssets.dispose();
     this.grenadeLineGeo.dispose();
     this.grenadeLineMat.dispose();
     this.grenadeTargetGeo.dispose();

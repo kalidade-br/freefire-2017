@@ -20,6 +20,7 @@ import {
   ATTACHMENT_LABELS,
   ControlMode,
   GameState,
+  GlooSkinId,
   HudElementLayout,
   HudLayoutConfig,
   HudSnapshot,
@@ -93,6 +94,7 @@ interface GameHudProps {
   onOpenSettings: () => void;
   onOpenHudEditor: () => void;
   onSelectScope: (scope: ScopeType) => void;
+  onSelectGlooSkin?: (skin: GlooSkinId) => void;
   onSkipWaiting: () => void;
   onJumpFromPlane: () => void;
   onOpenParachute: () => void;
@@ -157,6 +159,7 @@ export const GameHud: React.FC<GameHudProps> = ({
   onOpenSettings,
   onOpenHudEditor,
   onSelectScope,
+  onSelectGlooSkin,
   onSkipWaiting,
   onJumpFromPlane,
   onOpenParachute,
@@ -1134,7 +1137,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                   disabled={hud.hp >= hud.maxHp || hud.usingMedkit}
                   style={layoutStyle(hudLayout.smallMedkitBtn)}
                   className="pointer-events-auto touch-none absolute z-20 w-10 h-10 bg-black/55 hover:bg-emerald-950/65 border border-emerald-400/50 flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:brightness-50 disabled:grayscale"
-                  title="Kit Pequeno (+35 HP · Rápido)"
+                  title="Kit Pequeno (+35 HP · 4s)"
                 >
                   <img
                     src="/icons/kit.png"
@@ -1842,7 +1845,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           }`}
         >
           {hud.isPlacingGloo
-            ? 'GELO: CLIQUE OU BOTÃO PARA POSICIONAR'
+            ? `GELO ${hud.glooSkin === 'ffwc' ? 'CUP 2019' : 'CLÁSSICO'} (${hud.glooPlaceDistance}m): CLIQUE OU BOTÃO`
             : 'GRANADA: CLIQUE OU BOTÃO PARA ARREMESSAR'}
         </div>
       )}
@@ -2079,34 +2082,70 @@ export const GameHud: React.FC<GameHudProps> = ({
         )}
 
         {isGroundCombat && (hud.isPlacingGloo || hud.isHoldingGrenade) && (
-          <div className="pointer-events-auto flex items-center gap-2">
-            <button
-              type="button"
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                input.triggerFireTap();
-              }}
-              className={`touch-none px-4 py-2 font-black text-xs uppercase tracking-wider border-2 shadow-xl cursor-pointer ${
-                hud.isPlacingGloo
-                  ? 'bg-cyan-400 hover:bg-cyan-300 text-black border-white'
-                  : 'bg-red-500 hover:bg-red-400 text-white border-amber-300'
-              }`}
-            >
-              {hud.isPlacingGloo ? 'BOTAR GELO AQUI' : 'ARREMESSAR GRANADA'}
-            </button>
-            <button
-              type="button"
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                if (hud.isPlacingGloo) input.triggerGloo();
-                else input.triggerGrenade();
-              }}
-              className="touch-none px-3 py-2 bg-black/85 hover:bg-neutral-800 border border-neutral-400 text-neutral-200 font-bold text-xs uppercase cursor-pointer"
-            >
-              CANCELAR
-            </button>
+          <div className="pointer-events-auto flex flex-col items-center gap-1.5">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  input.triggerFireTap();
+                }}
+                className={`touch-none px-4 py-2 font-black text-xs uppercase tracking-wider border-2 shadow-xl cursor-pointer ${
+                  hud.isPlacingGloo
+                    ? 'bg-cyan-400 hover:bg-cyan-300 text-black border-white'
+                    : 'bg-red-500 hover:bg-red-400 text-white border-amber-300'
+                }`}
+              >
+                {hud.isPlacingGloo ? `BOTAR GELO (${hud.glooPlaceDistance}m)` : 'ARREMESSAR GRANADA'}
+              </button>
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (hud.isPlacingGloo) input.triggerGloo();
+                  else input.triggerGrenade();
+                }}
+                className="touch-none px-3 py-2 bg-black/85 hover:bg-neutral-800 border border-neutral-400 text-neutral-200 font-bold text-xs uppercase cursor-pointer"
+              >
+                CANCELAR
+              </button>
+            </div>
+            {hud.isPlacingGloo && onSelectGlooSkin && (
+              <div className="flex items-center gap-1 bg-black/85 border border-white/25 p-0.5 text-[10px] font-black uppercase">
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    onSelectGlooSkin('classic');
+                  }}
+                  className={`touch-none px-2.5 py-1 cursor-pointer ${
+                    hud.glooSkin === 'classic'
+                      ? 'bg-cyan-400 text-black'
+                      : 'text-neutral-300 hover:bg-white/10'
+                  }`}
+                >
+                  CLÁSSICO
+                </button>
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    onSelectGlooSkin('ffwc');
+                  }}
+                  className={`touch-none px-2.5 py-1 cursor-pointer ${
+                    hud.glooSkin === 'ffwc'
+                      ? 'bg-amber-400 text-black'
+                      : 'text-neutral-300 hover:bg-white/10'
+                  }`}
+                >
+                  CUP 2019
+                </button>
+              </div>
+            )}
           </div>
         )}
 

@@ -77,6 +77,8 @@ const INITIAL_HUD: HudSnapshot = {
   ffCoins: 100,
   isRanked: false,
   isPlacingGloo: false,
+  glooSkin: 'classic',
+  glooPlaceDistance: 4,
   isHoldingGrenade: false,
   usingMedkit: false,
   medkitProgress: 0,
@@ -963,6 +965,11 @@ export default function App() {
             setShowHudEditor(true);
           }}
           onSelectScope={(sc) => engineRef.current?.setActiveWeaponScope(sc)}
+          onSelectGlooSkin={(skin) => {
+            const nextChar: CharacterConfig = { ...character, glooSkin: skin };
+            handleUpdateCharacter(nextChar);
+            engineRef.current?.setGlooSkin(skin);
+          }}
           onSkipWaiting={() => engineRef.current?.skipWaitingToPlane()}
           onJumpFromPlane={() => engineRef.current?.jumpFromPlane()}
           onOpenParachute={() => engineRef.current?.openParachute()}

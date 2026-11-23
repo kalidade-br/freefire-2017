@@ -6,9 +6,13 @@ import { PlayerStance } from './types';
 const _vAxis = new THREE.Vector3();
 const _qDeltaW = new THREE.Quaternion();
 const _qVisW = new THREE.Quaternion();
+const _qInvVisW = new THREE.Quaternion();
 const _qParentW = new THREE.Quaternion();
 const _qInvParentW = new THREE.Quaternion();
 const _qLocalDelta = new THREE.Quaternion();
+const _pBaseW = new THREE.Vector3();
+const _pTopW = new THREE.Vector3();
+const _dChar = new THREE.Vector3();
 
 function rotateBoneCharAxis(
   visW: THREE.Quaternion,
@@ -42,11 +46,14 @@ export interface CharacterAnimInput {
   isDead: boolean;
   isDowned?: boolean;
   isHealing?: boolean;
+  isReviving?: boolean;
   isReloading?: boolean;
   isDriving?: boolean;
   isSwimming?: boolean;
   isOnSurfboard?: boolean;
   hasWeapon?: boolean;
+  hasMoveInput?: boolean;
+  weaponCategory?: 'HG' | 'AR' | 'SMG' | 'SG' | 'SR' | null;
   turnDeltaRad?: number;
   pitchRad: number;
 }
@@ -153,7 +160,20 @@ export class CharacterAnimator {
   private reloadPhase = 0;
   private fireHold = 0;
   private combatUpperBlend = 0;
+  private tacCarryBlend = 0;
+  private crouchLowBlend = 0;
+  private bandageBlend = 0;
+  private bandagePhase = 0;
+  private jumpPoseBlend = 0;
+  private runSwayPhase = 0;
   private drawTimer = 0;
+  private wasGrounded = true;
+  private airTime = 0;
+  private jumpCancelled = false;
+  private jumpStartMoving = false;
+  private wasCrouch = false;
+  private crouchFast = false;
+  private spineFwdTarget = 0.21;
 
   public triggerFire(): void {
     this.recoil = 1.0;
@@ -189,7 +209,20 @@ export class CharacterAnimator {
     this.reloadPhase = 0;
     this.fireHold = 0;
     this.combatUpperBlend = 0;
+    this.tacCarryBlend = 0;
+    this.crouchLowBlend = 0;
+    this.bandageBlend = 0;
+    this.bandagePhase = 0;
+    this.jumpPoseBlend = 0;
+    this.runSwayPhase = 0;
     this.drawTimer = 0;
+    this.wasGrounded = true;
+    this.airTime = 0;
+    this.jumpCancelled = false;
+    this.jumpStartMoving = false;
+    this.wasCrouch = false;
+    this.crouchFast = false;
+    this.spineFwdTarget = 0.21;
   }
 
   private playAdamClip(
@@ -408,46 +441,131 @@ export class CharacterAnimator {
       rig.surfboardGroup.rotation.set(isMoving ? -0.055 : 0.015, 0, -this.turnBank * 0.85);
     }
 
-    vis.position.set(0, (input.isOnSurfboard ? 0.08 + waveBob : 0) - this.landingDip * 0.08, 0);
-    vis.rotation.set(
-      this.hitStagger * -0.14 + (input.isOnSurfboard && isMoving ? -0.04 : 0),
+    vis.position.set(
       0,
-      isMoving ? -this.turnBank * (input.isOnSurfboard ? 0.68 : 0.42) : 0,
+      input.isOnSurfboard ? 0.08 + waveBob : -this.landingDip * 0.045,
+      0,
+    );
+    vis.rotation.set(
+      input.isOnSurfboard && isMoving ? -0.04 : 0,
+      0,
+      input.isOnSurfboard && isMoving
+        ? -this.turnBank * 0.68
+        : isMoving && !input.isOnSurfboard
+          ? -this.turnBank * 0.14
+          : 0,
     );
 
-    const combatStance =
+    const isCombatActive =
       hasWeapon &&
       !input.isHealing &&
+      !input.isReviving &&
       !input.isReloading &&
-      (input.isAiming || input.isFiring || this.fireHold > 0 || this.recoil > 0.05);
+      (input.isAiming || input.isFiring || this.fireHold > 0.08 || this.recoil > 0.05);
+
+    const curMove = isMoving || Boolean(input.hasMoveInput);
+
+    const isAirborne =
+      !input.isGrounded && !input.isOnSurfboard && !input.isHealing && !input.isReviving;
+    const isAirborneWeaponHold =
+      isAirborne && hasWeapon && !input.isReloading;
+
+    // While crouched with a weapon:
+    // - stationary & not aiming/shooting -> hold weapon clearly lowered ("arma baixada")
+    // - pulling analog stick / moving -> raise weapon pointing forward ("apontando para frente")
+    const crouchAimForward =
+      input.stance === 'crouch' &&
+      hasWeapon &&
+      curMove &&
+      !input.isHealing &&
+      !input.isReviving &&
+      !input.isReloading;
+    const wantsCrouchLow =
+      input.stance === 'crouch' &&
+      hasWeapon &&
+      !curMove &&
+      !isCombatActive &&
+      !input.isHealing &&
+      !input.isReviving &&
+      !input.isReloading &&
+      !input.isOnSurfboard;
+
+    const isLargeWeapon =
+      hasWeapon && Boolean(input.weaponCategory && input.weaponCategory !== 'HG');
+    const wantsTacCarry =
+      isLargeWeapon &&
+      isMoving &&
+      !isCombatActive &&
+      !isAirborne &&
+      !input.isHealing &&
+      !input.isReviving &&
+      !input.isReloading &&
+      !input.isOnSurfboard &&
+      input.stance === 'stand';
+
+    const lockCombatUpper = isCombatActive || isAirborneWeaponHold || crouchAimForward;
     this.combatUpperBlend = THREE.MathUtils.damp(
       this.combatUpperBlend,
-      combatStance ? 1 : 0,
-      combatStance ? 42 : 14,
+      lockCombatUpper ? 1 : 0,
+      isAirborneWeaponHold ? 34 : lockCombatUpper ? 28 : 18,
+      dt,
+    );
+    this.tacCarryBlend = THREE.MathUtils.damp(
+      this.tacCarryBlend,
+      wantsTacCarry ? 1 : 0,
+      wantsTacCarry ? 16 : 18,
+      dt,
+    );
+    this.crouchLowBlend = THREE.MathUtils.damp(
+      this.crouchLowBlend,
+      wantsCrouchLow ? 1 : 0,
+      24,
+      dt,
+    );
+    const targetJumpPose = isAirborne
+      ? isCombatActive || this.jumpCancelled
+        ? 0.0
+        : 1.0
+      : 0;
+    this.jumpPoseBlend = THREE.MathUtils.damp(
+      this.jumpPoseBlend,
+      targetJumpPose,
+      isAirborne ? 18 : 22,
       dt,
     );
 
-    if (input.isHealing) {
-      this.playAdamClip(rig, 'Fixing_Kneeling', 0.15, 1.1);
-    } else if (!hasWeapon && this.punchTimer > 0) {
+    const fastCrouchFade = this.crouchFast ? 0.035 : 0.14;
+    const fastJumpExitFade = !input.isGrounded ? 0.11 : fastCrouchFade;
+
+    if (input.isReviving) {
+      this.playAdamClip(rig, 'Fixing_Kneeling', 0.14, 1.1);
+    } else if (!hasWeapon && this.punchTimer > 0 && !input.isHealing) {
       const punchClip = this.punchSide > 0 ? 'Punch_Jab' : 'Punch_Cross';
       this.playAdamClip(rig, punchClip, 0.06, 1.45, this.punchTimer > 0.31);
     } else if (input.stance === 'crouch') {
       this.playAdamClip(
         rig,
         isMoving ? 'Crouch_Fwd_Loop' : 'Crouch_Idle_Loop',
-        0.14,
-        isMoving ? THREE.MathUtils.clamp(input.speed / 3.2, 0.75, 1.35) : 1.0,
+        0.035,
+        isMoving ? THREE.MathUtils.clamp(input.speed / 2.8, 0.85, 1.45) : 1.15,
       );
-    } else if (!input.isGrounded && !input.isOnSurfboard) {
-      this.playAdamClip(rig, 'Jump_Loop', 0.12, 1.0);
+    } else if (input.isHealing) {
+      this.playAdamClip(
+        rig,
+        isMoving ? 'Jog_Fwd_Loop' : 'Idle_Loop',
+        Math.min(0.08, fastCrouchFade),
+        isMoving ? THREE.MathUtils.clamp(input.speed / 5.2, 0.72, 1.28) : 1.0,
+      );
+    } else if (isAirborne) {
+      // Keep erect Idle_Loop base in the air (never run Sprint_Loop/Jog_Fwd_Loop in the sky!)
+      this.playAdamClip(rig, 'Idle_Loop', 0.07, 1.0);
     } else if (input.isReloading && hasWeapon) {
       this.playAdamClip(rig, 'Pistol_Reload', 0.12, 1.35);
     } else if (input.isOnSurfboard) {
       if (hasWeapon) {
         if (input.isFiring || this.recoil > 0.25 || this.fireHold > 0.22) {
           this.playAdamClip(rig, 'Pistol_Shoot', 0.06, 1.35);
-        } else if (input.isAiming || combatStance) {
+        } else if (input.isAiming || isCombatActive) {
           this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.1, 1.0);
         } else {
           this.playAdamClip(rig, 'Pistol_Idle_Loop', 0.14, 1.0);
@@ -456,38 +574,38 @@ export class CharacterAnimator {
         this.playAdamClip(rig, 'Idle_Loop', 0.14, 1.0);
       }
     } else if (isMoving) {
-      if (input.isSprinting && !combatStance) {
+      if (input.isSprinting && !isCombatActive) {
         this.playAdamClip(
           rig,
           'Sprint_Loop',
-          0.14,
+          Math.min(0.11, fastJumpExitFade),
           THREE.MathUtils.clamp(input.speed / 7.2, 0.85, 1.35),
         );
-      } else if (combatStance && input.speed < 1.6) {
-        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.1, 1.0);
+      } else if (isCombatActive && input.speed < 1.6) {
+        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.07, 1.0);
       } else {
         this.playAdamClip(
           rig,
           'Jog_Fwd_Loop',
-          0.14,
+          Math.min(0.11, fastJumpExitFade),
           THREE.MathUtils.clamp(input.speed / 5.2, 0.72, 1.28),
         );
       }
     } else if (hasWeapon) {
       if (input.isFiring || this.recoil > 0.25 || this.fireHold > 0.22) {
-        this.playAdamClip(rig, 'Pistol_Shoot', 0.06, 1.35);
-      } else if (input.isAiming || combatStance) {
-        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.1, 1.0);
+        this.playAdamClip(rig, 'Pistol_Shoot', 0.05, 1.35);
+      } else if (input.isAiming || isCombatActive) {
+        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.06, 1.0);
       } else {
-        this.playAdamClip(rig, 'Pistol_Idle_Loop', 0.16, 1.0);
+        this.playAdamClip(rig, 'Pistol_Idle_Loop', fastJumpExitFade, 1.0);
       }
     } else {
-      this.playAdamClip(rig, 'Idle_Loop', 0.18, 1.0);
+      this.playAdamClip(rig, 'Idle_Loop', fastJumpExitFade, 1.0);
     }
 
     mixer.update(dt);
 
-    // Lock upper body & gun forward toward target while firing/aiming even during movement
+    // 1. Lock upper body & gun in two-handed aiming pose while firing/aiming, crouching+moving, OR jumping with weapon
     const aimQuats = getAimPoseQuats(rig.modelId ?? 'adam');
     if (this.combatUpperBlend > 0.01 && rig.adamUpperBones && aimQuats) {
       for (let i = 0; i < rig.adamUpperBones.length; i++) {
@@ -499,9 +617,169 @@ export class CharacterAnimator {
       }
     }
 
-    // Subtle additive bone pitch & recoil kick on spine/head while standing/aiming
-    const pitchTilt = (combatStance || this.combatUpperBlend > 0.05) ? -input.pitchRad * 0.44 - this.recoil * 0.12 : 0;
-    const headTilt = -input.pitchRad * 0.24;
+    // 1b. Crouched stationary: keep weapon held clearly lowered ("arma baixada") until pulling analog stick
+    const crouchLowW =
+      this.crouchLowBlend * (1 - this.combatUpperBlend) * (1 - this.bandageBlend);
+    if (crouchLowW > 0.01 && rig.adamUpperBones && aimQuats) {
+      for (let i = 0; i < rig.adamUpperBones.length; i++) {
+        const entry = rig.adamUpperBones[i];
+        if (entry.name === 'mixamorigHead' || entry.name === 'mixamorigNeck' || entry.name.startsWith('mixamorigSpine')) {
+          continue;
+        }
+        const targetQ = aimQuats[entry.name];
+        if (targetQ) {
+          entry.bone.quaternion.slerp(targetQ, 0.88 * crouchLowW);
+        }
+      }
+      vis.updateMatrixWorld(true);
+      vis.getWorldQuaternion(_qVisW);
+      if (rig.adamUpperArmRBone) {
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, 0.62 * crouchLowW);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 1, 0, 0.14 * crouchLowW);
+      }
+      if (rig.adamUpperArmLBone) {
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 1, 0, 0, 0.56 * crouchLowW);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 0, 1, 0, 0.12 * crouchLowW);
+      }
+    }
+
+    // 2. Running with a large weapon (AR/SMG/SG/SR): realistic military two-handed tactical carry with gentle side-to-side sway
+    const tacWeight = this.tacCarryBlend * (1 - this.combatUpperBlend) * (1 - this.bandageBlend);
+    if (tacWeight > 0.01 && rig.adamUpperBones && aimQuats) {
+      for (let i = 0; i < rig.adamUpperBones.length; i++) {
+        const entry = rig.adamUpperBones[i];
+        const targetQ = aimQuats[entry.name];
+        if (!targetQ) continue;
+        const isHeadOrNeck = entry.name === 'mixamorigHead' || entry.name === 'mixamorigNeck';
+        const isSpine = entry.name.startsWith('mixamorigSpine');
+        const boneBlend = isHeadOrNeck ? 0.14 : isSpine ? 0.56 : 0.92;
+        entry.bone.quaternion.slerp(targetQ, boneBlend * tacWeight);
+      }
+
+      const sway = Math.sin(this.runSwayPhase);
+      const stepBounce = Math.sin(this.runSwayPhase * 2);
+      vis.updateMatrixWorld(true);
+      vis.getWorldQuaternion(_qVisW);
+
+      if (rig.adamSpineBone) {
+        rotateBoneCharAxis(_qVisW, rig.adamSpineBone, 0, 1, 0, (0.20 + sway * 0.105) * tacWeight);
+      }
+      const armCarryDrop = (0.32 + stepBounce * 0.042) * tacWeight;
+      if (rig.adamUpperArmRBone) {
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, armCarryDrop);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 1, 0, sway * 0.065 * tacWeight);
+      }
+      if (rig.adamUpperArmLBone) {
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 1, 0, 0, armCarryDrop * 0.94);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 0, 1, 0, sway * 0.065 * tacWeight);
+      }
+    }
+
+    // 3. Medkit / Bandage wrapping animation ("colocando faixa branca"): continuous hand wrapping motion while allowing crouching/standing/walking
+    const bW = this.bandageBlend;
+    if (bW > 0.01 && rig.adamUpperBones && aimQuats) {
+      for (let i = 0; i < rig.adamUpperBones.length; i++) {
+        const entry = rig.adamUpperBones[i];
+        const targetQ = aimQuats[entry.name];
+        if (!targetQ) continue;
+        const isHeadOrNeck = entry.name === 'mixamorigHead' || entry.name === 'mixamorigNeck';
+        const isSpine = entry.name.startsWith('mixamorigSpine');
+        const boneBlend = isHeadOrNeck ? 0.25 : isSpine ? 0.35 : 0.85;
+        entry.bone.quaternion.slerp(targetQ, boneBlend * bW);
+      }
+
+      const wrapSin = Math.sin(this.bandagePhase);
+      const wrapCos = Math.cos(this.bandagePhase);
+      vis.updateMatrixWorld(true);
+      vis.getWorldQuaternion(_qVisW);
+
+      if (rig.adamSpineBone) {
+        rotateBoneCharAxis(_qVisW, rig.adamSpineBone, 0, 1, 0, (0.14 + wrapCos * 0.04) * bW);
+      }
+      if (rig.adamHeadBone) {
+        rotateBoneCharAxis(_qVisW, rig.adamHeadBone, 1, 0, 0, (0.22 + wrapSin * 0.03) * bW);
+      }
+      // Left forearm held across chest receiving the white bandage
+      if (rig.adamUpperArmLBone) {
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 1, 0, 0, 0.42 * bW);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 0, 1, 0, -0.22 * bW);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 0, 0, 1, -0.18 * bW);
+      }
+      if (rig.adamLowerArmLBone) {
+        rotateBoneCharAxis(_qVisW, rig.adamLowerArmLBone, 0, 1, 0, (0.34 + wrapSin * 0.11) * bW);
+        rotateBoneCharAxis(_qVisW, rig.adamLowerArmLBone, 1, 0, 0, (-0.18 + wrapCos * 0.06) * bW);
+      }
+      // Right arm & hand orbiting around the left forearm to wrap the white gauze roll
+      if (rig.adamUpperArmRBone) {
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, (0.34 - wrapCos * 0.28) * bW);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 1, 0, (0.28 + wrapSin * 0.24) * bW);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, (0.12 + wrapCos * 0.14) * bW);
+      }
+      if (rig.adamLowerArmRBone) {
+        rotateBoneCharAxis(_qVisW, rig.adamLowerArmRBone, 1, 0, 0, (-0.28 + wrapCos * 0.42) * bW);
+        rotateBoneCharAxis(_qVisW, rig.adamLowerArmRBone, 0, 1, 0, (-0.18 + wrapSin * 0.36) * bW);
+      }
+      if (rig.adamHandRBone) {
+        rotateBoneCharAxis(_qVisW, rig.adamHandRBone, 0, 0, 1, wrapSin * 0.45 * bW);
+        rotateBoneCharAxis(_qVisW, rig.adamHandRBone, 1, 0, 0, wrapCos * 0.22 * bW);
+      }
+    }
+
+    // 4. Smooth athletic airborne leg tuck (never snaps dryly, never runs in mid-air, arms stay tucked if unarmed)
+    if (this.jumpPoseBlend > 0.01) {
+      vis.updateMatrixWorld(true);
+      vis.getWorldQuaternion(_qVisW);
+      const jW = this.jumpPoseBlend;
+      if (rig.adamThighLBone) rotateBoneCharAxis(_qVisW, rig.adamThighLBone, 1, 0, 0, -0.46 * jW);
+      if (rig.adamShinLBone) rotateBoneCharAxis(_qVisW, rig.adamShinLBone, 1, 0, 0, 0.78 * jW);
+      if (rig.adamThighRBone) rotateBoneCharAxis(_qVisW, rig.adamThighRBone, 1, 0, 0, 0.12 * jW);
+      if (rig.adamShinRBone) rotateBoneCharAxis(_qVisW, rig.adamShinRBone, 1, 0, 0, 0.38 * jW);
+      if (!hasWeapon && isAirborne) {
+        if (rig.adamUpperArmLBone) {
+          rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 0, 0, 1, -0.18 * jW);
+          rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 1, 0, 0, -0.18 * jW);
+        }
+        if (rig.adamUpperArmRBone) {
+          rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, 0.18 * jW);
+          rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, -0.18 * jW);
+        }
+      }
+    }
+
+    // 5. Soft athletic posture: slightly upright (never hunched 52-78deg, never rigid 0deg) with natural slightly lowered FF lean & fluid sway
+    const desiredFwdLean =
+      input.stance === 'crouch'
+        ? 0.38
+        : isAirborne
+          ? 0.24
+          : isMoving
+            ? input.isSprinting
+              ? 0.30
+              : 0.25
+            : 0.20;
+    this.spineFwdTarget = THREE.MathUtils.damp(this.spineFwdTarget, desiredFwdLean, 14, dt);
+    const spineBaseBone = rig.adamUpperBones?.[0]?.bone ?? rig.adamSpineBone;
+    const torsoTopBone = rig.adamUpperBones?.[3]?.bone ?? rig.adamHeadBone;
+    if (spineBaseBone && torsoTopBone && !input.isReviving) {
+      vis.updateMatrixWorld(true);
+      vis.getWorldQuaternion(_qVisW);
+      _qInvVisW.copy(_qVisW).invert();
+      spineBaseBone.getWorldPosition(_pBaseW);
+      torsoTopBone.getWorldPosition(_pTopW);
+      _dChar.copy(_pTopW).sub(_pBaseW).applyQuaternion(_qInvVisW);
+      if (_dChar.lengthSq() > 1e-4) {
+        const fwdLean = Math.atan2(_dChar.z, Math.max(0.05, _dChar.y));
+        const sideLean = Math.atan2(_dChar.x, Math.max(0.05, _dChar.y));
+        const leanDiff = fwdLean - this.spineFwdTarget;
+        const leanCorrFactor = leanDiff > 0 ? 0.88 : 0.45;
+        rotateBoneCharAxis(_qVisW, spineBaseBone, 1, 0, 0, -leanDiff * leanCorrFactor);
+        rotateBoneCharAxis(_qVisW, spineBaseBone, 0, 0, 1, sideLean * 0.25);
+      }
+    }
+
+    // Subtle additive bone pitch & recoil kick on spine/head only while aiming/firing
+    const pitchTilt = isCombatActive && !input.isHealing ? -input.pitchRad * 0.35 - this.recoil * 0.1 : 0;
+    const headTilt = input.isHealing ? 0 : -input.pitchRad * 0.2;
     if (Math.abs(pitchTilt) > 1e-4 || Math.abs(headTilt) > 1e-4) {
       vis.updateMatrixWorld(true);
       vis.getWorldQuaternion(_qVisW);
@@ -515,7 +793,7 @@ export class CharacterAnimator {
 
     // Over-the-shoulder "pegando flecha nas costas" weapon draw pose
     const drawReach =
-      hasWeapon && this.drawTimer > 0 && !input.isHealing && !input.isReloading
+      hasWeapon && this.drawTimer > 0 && !input.isHealing && !input.isReviving && !input.isReloading
         ? applyAdamOverBackDraw(vis, rig.adamUpperBones, this.drawTimer, rig.modelId ?? 'adam')
         : 0;
     // Reset weaponMount tilt cleanly when draw completes; while reaching back, angle gun into draw arc
@@ -540,6 +818,42 @@ export class CharacterAnimator {
     this.hitStagger = THREE.MathUtils.damp(this.hitStagger, 0, 12, dt);
     this.landingDip = THREE.MathUtils.damp(this.landingDip, 0, 11, dt);
 
+    const isMovingNow = input.speed > 0.35;
+    if (isMovingNow && input.isGrounded) {
+      this.runSwayPhase += dt * (input.isSprinting ? 10.8 : 8.2);
+    } else {
+      const restSway = Math.round(this.runSwayPhase / Math.PI) * Math.PI;
+      this.runSwayPhase = THREE.MathUtils.damp(this.runSwayPhase, restSway, 12, dt);
+    }
+
+    const curMoveInput = Boolean(input.hasMoveInput ?? isMovingNow);
+    const hasWeaponNow = input.hasWeapon ?? true;
+    const isCombatNow =
+      hasWeaponNow &&
+      !input.isHealing &&
+      !input.isReloading &&
+      (input.isAiming || input.isFiring || this.fireHold > 0.08 || this.recoil > 0.05);
+
+    if (!input.isGrounded && !input.isOnSurfboard && !input.isSkydiving && !input.isParachuting && !input.isSwimming) {
+      if (this.wasGrounded) {
+        this.airTime = 0;
+        this.jumpStartMoving = curMoveInput;
+        this.jumpCancelled = isCombatNow;
+      } else {
+        this.airTime += dt;
+        if (isCombatNow || curMoveInput !== this.jumpStartMoving) {
+          this.jumpCancelled = true;
+        }
+      }
+    } else {
+      this.airTime = 0;
+      this.jumpCancelled = false;
+    }
+    this.wasGrounded = input.isGrounded;
+    const isCrouchInput = input.stance === 'crouch';
+    this.crouchFast = isCrouchInput || this.wasCrouch;
+    this.wasCrouch = isCrouchInput;
+
     const turnRate = input.turnDeltaRad ?? 0;
     this.turnBank = THREE.MathUtils.damp(
       this.turnBank,
@@ -553,6 +867,25 @@ export class CharacterAnimator {
     } else {
       this.reloadPhase = THREE.MathUtils.damp(this.reloadPhase, 0, 14, dt);
     }
+
+    if (input.isHealing) {
+      this.bandagePhase += dt * 7.2;
+    }
+    this.bandageBlend = THREE.MathUtils.damp(
+      this.bandageBlend,
+      input.isHealing ? 1 : 0,
+      input.isHealing ? 22 : 18,
+      dt,
+    );
+    const showBandage =
+      Boolean(input.isHealing) &&
+      !input.isDead &&
+      !input.isDriving &&
+      !input.isSkydiving &&
+      !input.isParachuting &&
+      !input.isDowned &&
+      !(input.isSwimming && !input.isOnSurfboard);
+    rig.setBandageVisible?.(showBandage);
 
     rig.setHitFlash(this.hitFlash);
 
@@ -762,7 +1095,8 @@ export class CharacterAnimator {
     }
 
     const isCrouch = input.stance === 'crouch';
-    const healDip = input.isHealing && !isCrouch ? -0.18 : 0;
+    const crouchRate = this.crouchFast ? 44 : 16;
+    const healDip = 0;
     const landCompression = this.landingDip * (isCrouch ? 0.08 : 0.16);
     const bobAmp = input.isSprinting ? 0.058 : isCrouch ? 0.028 : 0.032;
     const targetPelvisY = isCrouch
@@ -771,107 +1105,99 @@ export class CharacterAnimator {
         ? 0.96
         : 0.92 + healDip + doubleHarmonic * bobAmp + (1 - strideBlend) * breath * 0.008 - landCompression;
 
-    rig.pelvis.position.y = THREE.MathUtils.damp(rig.pelvis.position.y, targetPelvisY, 16, dt);
-    rig.pelvis.rotation.x = THREE.MathUtils.damp(
-      rig.pelvis.rotation.x,
-      (isCrouch ? 0.14 : input.isHealing ? 0.12 : 0) + this.landingDip * 0.18,
-      14,
-      dt,
-    );
+    rig.pelvis.position.y = THREE.MathUtils.damp(rig.pelvis.position.y, targetPelvisY, crouchRate, dt);
+    rig.pelvis.rotation.x = THREE.MathUtils.damp(rig.pelvis.rotation.x, 0, crouchRate, dt);
     rig.pelvis.rotation.y = THREE.MathUtils.damp(
       rig.pelvis.rotation.y,
-      isMoving && !input.isAiming ? swing * (input.isSprinting ? 0.12 : 0.065) : 0,
+      isMoving && !input.isAiming ? swing * (input.isSprinting ? 0.08 : 0.05) : 0,
       14,
       dt,
     );
-    rig.pelvis.rotation.z = THREE.MathUtils.damp(
-      rig.pelvis.rotation.z,
-      (isMoving && input.isSprinting ? swing * 0.04 : 0) - this.turnBank * 0.45,
-      14,
-      dt,
-    );
+    rig.pelvis.rotation.z = THREE.MathUtils.damp(rig.pelvis.rotation.z, 0, 14, dt);
 
-    const leanForward = input.isHealing
-      ? 0.28
-      : input.isSprinting
-        ? 0.24
-        : isCrouch
-          ? 0.3
-          : 0.04 + breath * 0.012;
-    const hitTilt = this.hitStagger * -0.24;
-    rig.torso.rotation.x = THREE.MathUtils.damp(
-      rig.torso.rotation.x,
-      leanForward + hitTilt - this.recoil * 0.08 + this.landingDip * 0.16,
-      16,
-      dt,
-    );
+    // Relaxed, slightly lowered athletic forward lean (matching original Free Fire)
+    const procTorsoLean =
+      (isCrouch ? 0.28 : input.isSprinting ? 0.20 : isMoving ? 0.14 : 0.08) +
+      this.landingDip * 0.06;
+    rig.torso.rotation.x = THREE.MathUtils.damp(rig.torso.rotation.x, procTorsoLean, crouchRate, dt);
     rig.torso.rotation.y = THREE.MathUtils.damp(
       rig.torso.rotation.y,
       input.isHealing
-        ? Math.sin(this.idleTime * 5.2) * 0.12
-        : input.isAiming
-          ? -0.18
-          : isMoving && input.isSprinting
-            ? -swing * 0.13
-            : 0,
+        ? Math.cos(this.bandagePhase) * 0.06
+        : input.isReviving
+          ? Math.sin(this.idleTime * 5.2) * 0.12
+          : input.isAiming
+            ? -0.18
+            : isMoving && input.isSprinting
+              ? -swing * 0.1
+              : 0,
       16,
       dt,
     );
-    rig.torso.rotation.z = THREE.MathUtils.damp(rig.torso.rotation.z, -this.turnBank * 0.5, 14, dt);
+    rig.torso.rotation.z = THREE.MathUtils.damp(
+      rig.torso.rotation.z,
+      isMoving ? -this.turnBank * 0.18 : 0,
+      14,
+      dt,
+    );
     rig.headGroup.rotation.x = THREE.MathUtils.damp(
       rig.headGroup.rotation.x,
-      input.isHealing ? 0.32 : -leanForward * 0.52 + input.pitchRad * 0.45,
-      16,
+      input.isHealing || input.isReviving ? 0.2 : input.pitchRad * 0.35,
+      crouchRate,
       dt,
     );
-    rig.headGroup.rotation.y = THREE.MathUtils.damp(rig.headGroup.rotation.y, this.turnBank * 0.45, 12, dt);
+    rig.headGroup.rotation.y = THREE.MathUtils.damp(rig.headGroup.rotation.y, 0, 12, dt);
 
-    if (!input.isGrounded) {
-      rig.leftHip.rotation.x = THREE.MathUtils.damp(rig.leftHip.rotation.x, -0.68, 13, dt);
-      rig.leftKnee.rotation.x = THREE.MathUtils.damp(rig.leftKnee.rotation.x, 1.12, 13, dt);
-      rig.rightHip.rotation.x = THREE.MathUtils.damp(rig.rightHip.rotation.x, -0.22, 13, dt);
-      rig.rightKnee.rotation.x = THREE.MathUtils.damp(rig.rightKnee.rotation.x, 0.56, 13, dt);
-    } else if (isCrouch || (input.isHealing && !isMoving)) {
+    const procAirborne =
+      !input.isGrounded && !input.isOnSurfboard && !input.isHealing && !input.isReviving;
+
+    if (procAirborne) {
+      const airBend = isCombatNow || this.jumpCancelled ? 0.3 : 1.0;
+      rig.leftHip.rotation.x = THREE.MathUtils.damp(rig.leftHip.rotation.x, -0.46 * airBend, 18, dt);
+      rig.leftKnee.rotation.x = THREE.MathUtils.damp(rig.leftKnee.rotation.x, 0.78 * airBend, 18, dt);
+      rig.rightHip.rotation.x = THREE.MathUtils.damp(rig.rightHip.rotation.x, 0.12 * airBend, 18, dt);
+      rig.rightKnee.rotation.x = THREE.MathUtils.damp(rig.rightKnee.rotation.x, 0.38 * airBend, 18, dt);
+    } else if (isCrouch || (input.isReviving && !isMoving)) {
       const stride = swing * 0.48;
-      rig.leftHip.rotation.x = THREE.MathUtils.damp(rig.leftHip.rotation.x, -0.82 + stride, 16, dt);
-      rig.leftKnee.rotation.x = THREE.MathUtils.damp(rig.leftKnee.rotation.x, 1.32 - stride * 0.3, 16, dt);
-      rig.rightHip.rotation.x = THREE.MathUtils.damp(rig.rightHip.rotation.x, -0.82 - stride, 16, dt);
-      rig.rightKnee.rotation.x = THREE.MathUtils.damp(rig.rightKnee.rotation.x, 1.32 + stride * 0.3, 16, dt);
+      rig.leftHip.rotation.x = THREE.MathUtils.damp(rig.leftHip.rotation.x, -0.82 + stride, crouchRate, dt);
+      rig.leftKnee.rotation.x = THREE.MathUtils.damp(rig.leftKnee.rotation.x, 1.32 - stride * 0.3, crouchRate, dt);
+      rig.rightHip.rotation.x = THREE.MathUtils.damp(rig.rightHip.rotation.x, -0.82 - stride, crouchRate, dt);
+      rig.rightKnee.rotation.x = THREE.MathUtils.damp(rig.rightKnee.rotation.x, 1.32 + stride * 0.3, crouchRate, dt);
     } else {
       const legAmp = input.isSprinting ? 0.94 : 0.56;
       const lAngle = swing * legAmp - this.landingDip * 0.42;
       const rAngle = -swing * legAmp - this.landingDip * 0.42;
-      rig.leftHip.rotation.x = THREE.MathUtils.damp(rig.leftHip.rotation.x, lAngle, 18, dt);
-      rig.rightHip.rotation.x = THREE.MathUtils.damp(rig.rightHip.rotation.x, rAngle, 18, dt);
+      rig.leftHip.rotation.x = THREE.MathUtils.damp(rig.leftHip.rotation.x, lAngle, crouchRate, dt);
+      rig.rightHip.rotation.x = THREE.MathUtils.damp(rig.rightHip.rotation.x, rAngle, crouchRate, dt);
 
       const lKneeFlex = lAngle > 0 ? lAngle * 1.05 + 0.14 : Math.max(0.08, -lAngle * 0.45 + 0.12);
       const rKneeFlex = rAngle > 0 ? rAngle * 1.05 + 0.14 : Math.max(0.08, -rAngle * 0.45 + 0.12);
       rig.leftKnee.rotation.x = THREE.MathUtils.damp(
         rig.leftKnee.rotation.x,
         lKneeFlex + this.landingDip * 0.75,
-        18,
+        crouchRate,
         dt,
       );
       rig.rightKnee.rotation.x = THREE.MathUtils.damp(
         rig.rightKnee.rotation.x,
         rKneeFlex + this.landingDip * 0.75,
-        18,
+        crouchRate,
         dt,
       );
     }
 
-    if (input.isHealing) {
-      const wrapS = Math.sin(this.idleTime * 7.2);
-      const wrapC = Math.cos(this.idleTime * 7.2);
-      rig.rightShoulder.rotation.x = THREE.MathUtils.damp(rig.rightShoulder.rotation.x, -1.15 + wrapS * 0.24, 16, dt);
-      rig.rightShoulder.rotation.y = THREE.MathUtils.damp(rig.rightShoulder.rotation.y, 0.55 + wrapC * 0.22, 16, dt);
-      rig.rightShoulder.rotation.z = THREE.MathUtils.damp(rig.rightShoulder.rotation.z, -0.35, 16, dt);
-      rig.rightElbow.rotation.x = THREE.MathUtils.damp(rig.rightElbow.rotation.x, -1.35 + wrapC * 0.18, 16, dt);
+    if (input.isHealing || input.isReviving) {
+      const wrapS = Math.sin(this.bandagePhase);
+      const wrapC = Math.cos(this.bandagePhase);
+      rig.rightShoulder.rotation.x = THREE.MathUtils.damp(rig.rightShoulder.rotation.x, -0.92 + wrapC * 0.28, 22, dt);
+      rig.rightShoulder.rotation.y = THREE.MathUtils.damp(rig.rightShoulder.rotation.y, 0.48 + wrapS * 0.26, 22, dt);
+      rig.rightShoulder.rotation.z = THREE.MathUtils.damp(rig.rightShoulder.rotation.z, -0.22 - wrapC * 0.12, 22, dt);
+      rig.rightElbow.rotation.x = THREE.MathUtils.damp(rig.rightElbow.rotation.x, -1.25 + wrapC * 0.34, 22, dt);
 
-      rig.leftShoulder.rotation.x = THREE.MathUtils.damp(rig.leftShoulder.rotation.x, -1.12 - wrapS * 0.22, 16, dt);
-      rig.leftShoulder.rotation.y = THREE.MathUtils.damp(rig.leftShoulder.rotation.y, -0.58 + wrapC * 0.2, 16, dt);
-      rig.leftShoulder.rotation.z = THREE.MathUtils.damp(rig.leftShoulder.rotation.z, 0.35, 16, dt);
-      rig.leftElbow.rotation.x = THREE.MathUtils.damp(rig.leftElbow.rotation.x, -1.28 - wrapC * 0.18, 16, dt);
+      rig.leftShoulder.rotation.x = THREE.MathUtils.damp(rig.leftShoulder.rotation.x, -0.82, 20, dt);
+      rig.leftShoulder.rotation.y = THREE.MathUtils.damp(rig.leftShoulder.rotation.y, -0.58 - wrapS * 0.08, 20, dt);
+      rig.leftShoulder.rotation.z = THREE.MathUtils.damp(rig.leftShoulder.rotation.z, 0.24, 20, dt);
+      rig.leftElbow.rotation.x = THREE.MathUtils.damp(rig.leftElbow.rotation.x, -1.18 + wrapS * 0.08, 20, dt);
       return;
     }
 
@@ -935,38 +1261,68 @@ export class CharacterAnimator {
       return;
     }
 
-    const aimRaise = input.isAiming || this.recoil > 0.05 ? -1.42 : -1.05;
-    if (input.isSprinting && !input.isAiming && this.recoil < 0.05) {
-      rig.rightShoulder.rotation.x = THREE.MathUtils.damp(rig.rightShoulder.rotation.x, -0.84 + swing * 0.22, 16, dt);
-      rig.rightShoulder.rotation.y = THREE.MathUtils.damp(rig.rightShoulder.rotation.y, 0.45, 16, dt);
-      rig.rightShoulder.rotation.z = THREE.MathUtils.damp(rig.rightShoulder.rotation.z, -0.18, 16, dt);
-      rig.rightElbow.rotation.x = THREE.MathUtils.damp(rig.rightElbow.rotation.x, -1.05, 16, dt);
+    const isLargeWeapon =
+      hasWeapon && Boolean(input.weaponCategory && input.weaponCategory !== 'HG');
+    const isAirborneWeaponHold = !input.isGrounded && !input.isOnSurfboard && hasWeapon;
+    const isCrouchPointForward = isCrouch && curMoveInput;
+    const isCrouchWeaponDown = isCrouch && !curMoveInput && !input.isAiming && this.recoil < 0.05;
+    const aimRaise = isCrouchWeaponDown
+      ? -0.48
+      : input.isAiming || isAirborneWeaponHold || isCrouchPointForward || this.recoil > 0.05
+        ? -1.42
+        : -1.05;
 
-      rig.leftShoulder.rotation.x = THREE.MathUtils.damp(rig.leftShoulder.rotation.x, -0.7 - swing * 0.4, 16, dt);
-      rig.leftShoulder.rotation.y = THREE.MathUtils.damp(rig.leftShoulder.rotation.y, -0.35, 16, dt);
-      rig.leftShoulder.rotation.z = THREE.MathUtils.damp(rig.leftShoulder.rotation.z, 0.18, 16, dt);
-      rig.leftElbow.rotation.x = THREE.MathUtils.damp(rig.leftElbow.rotation.x, -0.95, 16, dt);
+    if (input.isSprinting && !input.isAiming && !isAirborneWeaponHold && this.recoil < 0.05) {
+      if (isLargeWeapon) {
+        // Large weapon two-handed military low-ready carry with smooth side-to-side sway
+        const sway = Math.sin(this.runSwayPhase);
+        const bounce = Math.sin(this.runSwayPhase * 2);
+        rig.torso.rotation.y += sway * 0.09 + 0.16;
+        rig.rightShoulder.rotation.x = THREE.MathUtils.damp(rig.rightShoulder.rotation.x, -0.96 + bounce * 0.05, 18, dt);
+        rig.rightShoulder.rotation.y = THREE.MathUtils.damp(rig.rightShoulder.rotation.y, 0.24 + sway * 0.06, 18, dt);
+        rig.rightShoulder.rotation.z = THREE.MathUtils.damp(rig.rightShoulder.rotation.z, -0.08, 18, dt);
+        rig.rightElbow.rotation.x = THREE.MathUtils.damp(rig.rightElbow.rotation.x, -0.58, 18, dt);
+
+        rig.leftShoulder.rotation.x = THREE.MathUtils.damp(rig.leftShoulder.rotation.x, -0.92 + bounce * 0.05, 18, dt);
+        rig.leftShoulder.rotation.y = THREE.MathUtils.damp(rig.leftShoulder.rotation.y, -0.50 + sway * 0.06, 18, dt);
+        rig.leftShoulder.rotation.z = THREE.MathUtils.damp(rig.leftShoulder.rotation.z, 0.14, 18, dt);
+        rig.leftElbow.rotation.x = THREE.MathUtils.damp(rig.leftElbow.rotation.x, -0.68, 18, dt);
+      } else {
+        // Pistol: keep normal arm swing
+        rig.rightShoulder.rotation.x = THREE.MathUtils.damp(rig.rightShoulder.rotation.x, -0.84 + swing * 0.22, 16, dt);
+        rig.rightShoulder.rotation.y = THREE.MathUtils.damp(rig.rightShoulder.rotation.y, 0.45, 16, dt);
+        rig.rightShoulder.rotation.z = THREE.MathUtils.damp(rig.rightShoulder.rotation.z, -0.18, 16, dt);
+        rig.rightElbow.rotation.x = THREE.MathUtils.damp(rig.rightElbow.rotation.x, -1.05, 16, dt);
+
+        rig.leftShoulder.rotation.x = THREE.MathUtils.damp(rig.leftShoulder.rotation.x, -0.7 - swing * 0.4, 16, dt);
+        rig.leftShoulder.rotation.y = THREE.MathUtils.damp(rig.leftShoulder.rotation.y, -0.35, 16, dt);
+        rig.leftShoulder.rotation.z = THREE.MathUtils.damp(rig.leftShoulder.rotation.z, 0.18, 16, dt);
+        rig.leftElbow.rotation.x = THREE.MathUtils.damp(rig.leftElbow.rotation.x, -0.95, 16, dt);
+      }
     } else {
       const idleSway = (1 - strideBlend) * breath * 0.025 + swing * 0.06;
+      const twoHandJumpDamp = isAirborneWeaponHold ? 28 : 22;
+      const targetElbowR = isCrouchWeaponDown ? -0.74 : -0.38 - this.recoil * 0.12;
+      const targetElbowL = isCrouchWeaponDown ? -0.86 : -0.58;
       rig.rightShoulder.rotation.x = THREE.MathUtils.damp(
         rig.rightShoulder.rotation.x,
-        aimRaise - this.recoil * 0.24 + pitchInfluence + idleSway,
-        20,
+        aimRaise - this.recoil * 0.24 + (isCrouchWeaponDown ? 0 : pitchInfluence) + idleSway,
+        twoHandJumpDamp,
         dt,
       );
       rig.rightShoulder.rotation.y = THREE.MathUtils.damp(rig.rightShoulder.rotation.y, 0.16, 18, dt);
       rig.rightShoulder.rotation.z = THREE.MathUtils.damp(rig.rightShoulder.rotation.z, -0.06, 18, dt);
-      rig.rightElbow.rotation.x = THREE.MathUtils.damp(rig.rightElbow.rotation.x, -0.38 - this.recoil * 0.12, 20, dt);
+      rig.rightElbow.rotation.x = THREE.MathUtils.damp(rig.rightElbow.rotation.x, targetElbowR, twoHandJumpDamp, dt);
 
       rig.leftShoulder.rotation.x = THREE.MathUtils.damp(
         rig.leftShoulder.rotation.x,
-        aimRaise * 0.92 - this.recoil * 0.18 + pitchInfluence - idleSway * 0.5,
-        20,
+        aimRaise * 0.92 - this.recoil * 0.18 + (isCrouchWeaponDown ? 0 : pitchInfluence) - idleSway * 0.5,
+        twoHandJumpDamp,
         dt,
       );
       rig.leftShoulder.rotation.y = THREE.MathUtils.damp(rig.leftShoulder.rotation.y, -0.46, 18, dt);
       rig.leftShoulder.rotation.z = THREE.MathUtils.damp(rig.leftShoulder.rotation.z, 0.14, 18, dt);
-      rig.leftElbow.rotation.x = THREE.MathUtils.damp(rig.leftElbow.rotation.x, -0.58, 20, dt);
+      rig.leftElbow.rotation.x = THREE.MathUtils.damp(rig.leftElbow.rotation.x, targetElbowL, twoHandJumpDamp, dt);
     }
 
     if (this.drawTimer > 0) {
