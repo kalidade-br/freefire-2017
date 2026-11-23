@@ -428,6 +428,7 @@ export interface GameSettings {
   sniperSensitivity: number; // 0.2 .. 2.5 (AWM Sniper)
   aimAssistMode: AimAssistMode; // 'default' = Mira Gruda, 'precise' = Livre
   quality: GraphicsQuality;
+  resolutionScale?: number; // 1 .. 100 (%)
   textureQuality?: TextureQuality;
   shadowQuality?: ShadowQuality;
   soundVolume: number; // 0 .. 1

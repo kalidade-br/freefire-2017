@@ -44,6 +44,12 @@ export function defaultShadowForQuality(q: GraphicsQuality): ShadowQuality {
   return 'low';
 }
 
+export function defaultResolutionForQuality(q: GraphicsQuality): number {
+  if (q === 'low') return 55;
+  if (q === 'high') return 100;
+  return 80;
+}
+
 const SETTINGS_KEY = 'zonazero2017_settings_v2';
 const HUD_LAYOUT_KEY = 'zonazero2017_hud_layout_v1';
 const HUD_SLOTS_KEY = 'zonazero2017_hud_slots_v1';
@@ -70,6 +76,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   sniperSensitivity: 0.62,
   aimAssistMode: 'default',
   quality: isMobileHardware() ? 'low' : 'medium',
+  resolutionScale: isMobileHardware() ? 60 : 85,
   textureQuality: isMobileHardware() ? 'low' : 'medium',
   shadowQuality: isMobileHardware() ? 'off' : 'low',
   soundVolume: 0.75,
@@ -287,6 +294,10 @@ export function loadSettings(): GameSettings {
       ...DEFAULT_SETTINGS,
       ...parsed,
       quality: parsed.quality ?? DEFAULT_SETTINGS.quality,
+      resolutionScale:
+        typeof parsed.resolutionScale === 'number' && Number.isFinite(parsed.resolutionScale)
+          ? Math.max(1, Math.min(100, Math.round(parsed.resolutionScale)))
+          : defaultResolutionForQuality(parsed.quality ?? resolvedQuality),
       textureQuality:
         parsed.textureQuality ?? defaultTextureForQuality(parsed.quality ?? resolvedQuality),
       shadowQuality:

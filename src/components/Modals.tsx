@@ -21,6 +21,7 @@ import {
 } from '../game/types';
 import {
   DEFAULT_SETTINGS,
+  defaultResolutionForQuality,
   defaultShadowForQuality,
   defaultTextureForQuality,
   normalizeKeyBindings,
@@ -808,6 +809,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         onChangeSettings({
                           ...settings,
                           quality: q.id,
+                          resolutionScale: defaultResolutionForQuality(q.id),
                           textureQuality: defaultTextureForQuality(q.id),
                           shadowQuality: defaultShadowForQuality(q.id),
                         })
@@ -830,6 +832,57 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   ))}
                 </div>
               </div>
+
+              {(() => {
+                const resPct = Math.max(
+                  1,
+                  Math.min(
+                    100,
+                    Math.round(
+                      settings.resolutionScale ?? defaultResolutionForQuality(settings.quality),
+                    ),
+                  ),
+                );
+                const resBadge =
+                  resPct >= 95
+                    ? 'ABSURDA (ULTRA NÍTIDA)'
+                    : resPct >= 75
+                      ? 'ALTA NITIDEZ'
+                      : resPct >= 45
+                        ? 'BALANCEADA'
+                        : resPct >= 20
+                          ? 'BAIXA (FPS)'
+                          : 'RETRÔ PIXELADA';
+                return (
+                  <div className="bg-[#181e27] border border-neutral-700 p-2.5">
+                    <div className="flex items-center justify-between font-bold uppercase text-neutral-200 mb-1">
+                      <span>RESOLUÇÃO DA TELA (1% – 100%)</span>
+                      <span className="text-amber-400 tabular-nums font-mono">
+                        {resPct}% · {resBadge}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={resPct}
+                      onChange={(e) =>
+                        onChangeSettings({
+                          ...settings,
+                          resolutionScale: Math.max(1, Math.min(100, Number(e.target.value))),
+                        })
+                      }
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[9px] text-neutral-400 font-mono mt-0.5">
+                      <span>1% (Máximo FPS)</span>
+                      <span>50% (Nativa)</span>
+                      <span>100% (Qualidade Absurda)</span>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div>
                 <div className="font-bold uppercase text-neutral-300 mb-1.5">

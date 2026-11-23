@@ -5097,9 +5097,9 @@ export function createIslandWorld(
 
   let structureCullDist = 250;
 
-  let baseFogNear = 92;
-  let baseFogFar = 220;
-  let baseCamFar = 245;
+  let baseFogNear = 175;
+  let baseFogFar = 385;
+  let baseCamFar = 430;
 
   const applyQuality = (
     quality: GraphicsQuality,
@@ -5114,15 +5114,15 @@ export function createIslandWorld(
       : (shadowQuality ?? (quality === 'low' ? 'off' : quality === 'high' ? 'high' : 'low'));
 
     textures.applyQuality(resolvedTex);
-    // Tighter texture-detail distance across ALL presets (even Ultra) -> flat texture color beyond threshold
+    // Distant texture-detail cutoff -> flat base color beyond threshold
     texDistUniform.value =
       resolvedTex === 'low'
-        ? 28.0
+        ? 42.0
         : resolvedTex === 'medium'
-          ? 42.0
+          ? 68.0
           : resolvedTex === 'high'
-            ? 56.0
-            : 70.0;
+            ? 96.0
+            : 128.0;
     terrainMat.roughness = resolvedTex === 'low' ? 0.94 : resolvedTex === 'ultra' ? 0.86 : 0.9;
     asphaltRoadMat.roughness = resolvedTex === 'low' ? 0.88 : resolvedTex === 'ultra' ? 0.76 : 0.82;
 
@@ -5179,10 +5179,10 @@ export function createIslandWorld(
     }
 
     if (quality === 'low' || isSoftwareGl) {
-      baseFogNear = 62;
-      baseFogFar = 165;
-      baseCamFar = 185;
-      structureCullDist = 105;
+      baseFogNear = 115;
+      baseFogFar = 265;
+      baseCamFar = 300;
+      structureCullDist = 175;
       sunLight.intensity = 1.95;
       hemi.intensity = 1.62;
       waterMat.roughness = 0.72;
@@ -5192,10 +5192,10 @@ export function createIslandWorld(
       scene.environment = null;
       scene.environmentIntensity = 0;
     } else if (quality === 'medium') {
-      baseFogNear = 92;
-      baseFogFar = 220;
-      baseCamFar = 245;
-      structureCullDist = 140;
+      baseFogNear = 175;
+      baseFogFar = 385;
+      baseCamFar = 430;
+      structureCullDist = 250;
       sunLight.intensity = 1.98;
       hemi.intensity = 1.38;
       waterMat.roughness = 0.32;
@@ -5205,10 +5205,10 @@ export function createIslandWorld(
       scene.environment = envMap;
       scene.environmentIntensity = 0.58;
     } else {
-      baseFogNear = 122;
-      baseFogFar = 275;
-      baseCamFar = 305;
-      structureCullDist = 180;
+      baseFogNear = 255;
+      baseFogFar = 540;
+      baseCamFar = 600;
+      structureCullDist = 360;
       sunLight.intensity = 2.24;
       hemi.intensity = 1.36;
       waterMat.roughness = 0.12;
@@ -5274,9 +5274,9 @@ export function createIslandWorld(
     const fwdX = hasFwd ? camFwdX! / fwdLen : 0;
     const fwdZ = hasFwd ? camFwdZ! / fwdLen : -1;
 
-    const targetFogNear = isAirborne ? Math.max(baseFogNear, 280) : baseFogNear;
-    const targetFogFar = isAirborne ? Math.max(baseFogFar, 560) : baseFogFar;
-    const targetCamFar = isAirborne ? Math.max(baseCamFar, 620) : baseCamFar;
+    const targetFogNear = isAirborne ? Math.max(baseFogNear, 360) : baseFogNear;
+    const targetFogFar = isAirborne ? Math.max(baseFogFar, 720) : baseFogFar;
+    const targetCamFar = isAirborne ? Math.max(baseCamFar, 800) : baseCamFar;
     if (fog.near !== targetFogNear || fog.far !== targetFogFar) {
       fog.near = targetFogNear;
       fog.far = targetFogFar;
@@ -5341,7 +5341,7 @@ export function createIslandWorld(
 
       // Vehicles keep full physics/collision simulation regardless of visibility;
       // 42m 360-deg safety bubble + active driver guard prevents reverse/turning bugs.
-      const vehCullR = structureCullDist + 24;
+      const vehCullR = structureCullDist + 40;
       for (let i = 0; i < vehicles.length; i++) {
         const v = vehicles[i];
         const vis =
@@ -5357,7 +5357,7 @@ export function createIslandWorld(
                 hasFwd,
                 3.2,
                 vehCullR,
-                42,
+                50,
               );
         if (v.group.visible !== vis) {
           v.group.visible = vis;
