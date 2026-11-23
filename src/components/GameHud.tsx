@@ -64,6 +64,7 @@ import {
   IconScopeSvg,
   IconSprintSvg,
   IconSurfboardSvg,
+  IconVaultSvg,
   IconVehicleSvg,
   IconVendingSvg,
   IconVestSvg,
@@ -1644,47 +1645,103 @@ export const GameHud: React.FC<GameHudProps> = ({
         )}
       </div>
 
-      {/* CUSTOMIZABLE RISING KILL FEED ("Fulano Eliminado") */}
+      {/* CUSTOMIZABLE RISING KILL FEED ("NICK matou NICK2 (G18)" / "NICK3 headshot NICK4 (SCAR)") */}
       {isGroundCombat && !isPaused && hud.killFeed.length > 0 && (
         <div
           style={layoutStyle(hudLayout.killFeed)}
-          className="pointer-events-none absolute z-20 flex flex-col items-center gap-0.5 w-[290px] sm:w-[360px] max-w-[90vw]"
+          className="pointer-events-none absolute z-20 flex flex-col items-center gap-0.5 w-[320px] sm:w-[420px] max-w-[94vw]"
         >
-          {hud.killFeed.slice(0, 3).map((kf) => {
-            const fade =
-              kf.age > 3.4 ? Math.max(0, 1 - (kf.age - 3.4) / 1.0) : 1;
-            const enterLift = Math.max(0, 1 - kf.age * 5) * 6;
+          {hud.killFeed.slice(-4).map((kf) => {
+            const fadeIn = Math.min(1, kf.age / 0.14);
+            const fadeOut =
+              kf.age > 3.3 ? Math.max(0, 1 - (kf.age - 3.3) / 1.1) : 1;
+            const opacity = fadeIn * fadeOut;
+            const enterLift = Math.max(0, 1 - kf.age / 0.22) * 10;
+            const driftUp = -kf.age * 4.5;
+
+            if (kf.weaponShort === 'REVIVE') {
+              const savedNick = kf.victimName.replace(/\s+SALVO$/i, '');
+              return (
+                <div
+                  key={kf.id}
+                  style={{
+                    opacity,
+                    transform: `translateY(${(enterLift + driftUp).toFixed(1)}px)`,
+                    background:
+                      'linear-gradient(90deg, transparent 0%, rgba(0,0,0,0.62) 16%, rgba(0,0,0,0.62) 84%, transparent 100%)',
+                    textShadow: '0 1px 3px rgba(0,0,0,0.98)',
+                  }}
+                  className="px-4 py-0.5 text-[11px] sm:text-xs font-bold tracking-wide whitespace-nowrap"
+                >
+                  <span className={kf.isPlayerKiller ? 'text-amber-300 font-black' : 'text-white'}>
+                    {kf.killerName}
+                  </span>{' '}
+                  <span className="text-emerald-300 font-extrabold">salvou</span>{' '}
+                  <span className="text-white">{savedNick}</span>
+                </div>
+              );
+            }
+
+            if (kf.weaponShort === 'LOJA') {
+              const targetNick = kf.victimName.replace(/\s+REDESDOBRADO$/i, '');
+              return (
+                <div
+                  key={kf.id}
+                  style={{
+                    opacity,
+                    transform: `translateY(${(enterLift + driftUp).toFixed(1)}px)`,
+                    background:
+                      'linear-gradient(90deg, transparent 0%, rgba(0,0,0,0.62) 16%, rgba(0,0,0,0.62) 84%, transparent 100%)',
+                    textShadow: '0 1px 3px rgba(0,0,0,0.98)',
+                  }}
+                  className="px-4 py-0.5 text-[11px] sm:text-xs font-bold tracking-wide whitespace-nowrap"
+                >
+                  <span className="text-cyan-200 font-black">{targetNick}</span>{' '}
+                  <span className="text-neutral-200">redesdobrado</span>{' '}
+                  <span className="text-amber-300 font-mono">({kf.killerName})</span>
+                </div>
+              );
+            }
+
             const isKnockdown = kf.killerName.includes('(DERRUBOU)');
             const cleanKiller = isKnockdown
               ? kf.killerName.replace(' (DERRUBOU)', '')
               : kf.killerName;
+            const verb = isKnockdown
+              ? 'derrubou'
+              : kf.isHeadshot
+                ? 'headshot'
+                : 'matou';
+
             return (
               <div
                 key={kf.id}
                 style={{
-                  opacity: fade,
-                  transform: `translateY(${enterLift - kf.age * 2.0}px)`,
-                  textShadow: '0 1px 4px rgba(0,0,0,0.95)',
+                  opacity,
+                  transform: `translateY(${(enterLift + driftUp).toFixed(1)}px)`,
+                  background:
+                    'linear-gradient(90deg, transparent 0%, rgba(0,0,0,0.62) 16%, rgba(0,0,0,0.62) 84%, transparent 100%)',
+                  textShadow: '0 1px 3px rgba(0,0,0,0.98)',
                 }}
-                className="flex items-center justify-center gap-1.5 text-[11px] sm:text-xs font-bold tracking-wide"
+                className="px-4 py-0.5 text-[11px] sm:text-xs font-bold tracking-wide whitespace-nowrap"
               >
+                <span className={kf.isPlayerKiller ? 'text-amber-300 font-black' : 'text-white'}>
+                  {cleanKiller}
+                </span>{' '}
                 <span
                   className={
-                    kf.isPlayerKiller ? 'text-amber-300 font-black' : 'text-white'
+                    kf.isHeadshot
+                      ? 'text-red-400 font-black'
+                      : isKnockdown
+                        ? 'text-orange-300 font-extrabold'
+                        : 'text-neutral-200 font-semibold'
                   }
                 >
-                  {cleanKiller}
-                </span>
-                <img
-                  src={isKnockdown ? '/icons/knockdown-icon.png' : '/icons/kill-icon.png'}
-                  alt={isKnockdown ? 'Derrubou' : 'Abate'}
-                  className="w-4 h-4 object-contain shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]"
-                />
-                <span className="text-[9px] font-mono px-1 bg-black/55 border border-white/20 text-neutral-200">
-                  {kf.isHeadshot ? `CAPA · ${kf.weaponShort}` : kf.weaponShort}
-                </span>
-                <span className={isKnockdown ? 'text-orange-300' : 'text-amber-300'}>
-                  {kf.victimName} {isKnockdown ? 'Derrubado' : 'Eliminado'}
+                  {verb}
+                </span>{' '}
+                <span className="text-white">{kf.victimName}</span>{' '}
+                <span className="text-neutral-300 font-mono font-semibold">
+                  ({kf.weaponShort})
                 </span>
               </div>
             );
@@ -2178,20 +2235,20 @@ export const GameHud: React.FC<GameHudProps> = ({
           );
         })}
 
-      {/* Classic Free Fire Knockdown / Kill Emblem Popup */}
+      {/* Classic Free Fire Knockdown / Kill Emblem Popup (Fixed Top-Center, non-customizable) */}
       {isGroundCombat &&
         !isPaused &&
         hud.combatIconPopup &&
         (() => {
           const pop = hud.combatIconPopup;
-          const enterT = Math.min(1, pop.age / 0.16);
-          const scale = 1.48 - 0.48 * (1 - Math.pow(1 - enterT, 3));
-          const opacity = pop.age > 1.72 ? Math.max(0, 1 - (pop.age - 1.72) / 0.48) : 1;
+          const enterT = Math.min(1, pop.age / 0.14);
+          const scale = 1.4 - 0.4 * (1 - Math.pow(1 - enterT, 3));
+          const opacity = pop.age > 1.12 ? Math.max(0, 1 - (pop.age - 1.12) / 0.38) : 1;
           const isKnock = pop.kind === 'knockdown';
           return (
             <div
               key={pop.id}
-              className="pointer-events-none absolute left-1/2 top-[67%] z-25 flex flex-col items-center select-none"
+              className="pointer-events-none absolute left-1/2 top-[18%] sm:top-[17.5%] z-25 flex flex-col items-center select-none"
               style={{
                 opacity,
                 transform: `translate(-50%, -50%) scale(${scale.toFixed(3)})`,
@@ -2203,7 +2260,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                 className={
                   isKnock
                     ? 'w-20 h-20 sm:w-24 sm:h-24 object-contain drop-shadow-[0_4px_16px_rgba(245,158,11,0.75)]'
-                    : 'w-24 h-24 sm:w-28 sm:h-28 object-contain drop-shadow-[0_4px_20px_rgba(239,68,68,0.85)]'
+                    : 'w-22 h-22 sm:w-26 sm:h-26 object-contain drop-shadow-[0_4px_20px_rgba(239,68,68,0.85)]'
                 }
               />
               <div
@@ -2389,12 +2446,6 @@ export const GameHud: React.FC<GameHudProps> = ({
                 style={{ width: `${Math.round(hud.medkitProgress * 100)}%` }}
               />
             </div>
-          </div>
-        )}
-
-        {isGroundCombat && !hud.isPlayerDowned && hud.canVaultWindow && !hud.nearbyLootLabel && !hud.inVehicle && (
-          <div className="px-3 py-1 bg-sky-950/88 border border-sky-400 text-sky-200 font-mono font-bold text-[11px] uppercase">
-            [{kJump}] PULAR JANELA
           </div>
         )}
 
@@ -2946,6 +2997,32 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
         </>
       )}
+
+      {/* DEDICATED WINDOW VAULT BUTTON ABOVE JUMP (available on Mobile & Desktop when near a window) */}
+      {isGroundCombat &&
+        !hideGameplayHud &&
+        !hud.isPlayerDowned &&
+        !isPaused &&
+        !hud.inVehicle &&
+        !hud.isSwimming &&
+        hud.canVaultWindow && (
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              input.triggerVault();
+            }}
+            style={layoutStyle(hudLayout.vaultBtn)}
+            title={`Pular Janela (${kJump})`}
+            className="pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full bg-sky-500/85 hover:bg-sky-400 active:scale-95 border-2 border-white text-white flex flex-col items-center justify-center shadow-[0_0_16px_rgba(56,189,248,0.65)] cursor-pointer"
+          >
+            <IconVaultSvg className="w-6 h-6 drop-shadow" />
+            <span className="text-[7px] font-black uppercase leading-none -mt-0.5 tracking-tight drop-shadow">
+              JANELA
+            </span>
+          </button>
+        )}
 
       {/* CUSTOMIZABLE MOBILE VIRTUAL JOYSTICK, SPRINT, LEFT-FIRE & RIGHT BUTTON CLUSTER */}
       {showTouchHud && (isGroundCombat || isAirborneDrop) && !hideGameplayHud && !isPaused && !hud.inVehicle && (

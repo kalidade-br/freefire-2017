@@ -54,6 +54,7 @@ export class InputManager {
   public isAiming = false;
 
   public jumpPressed = false;
+  public vaultPressed = false;
   public crouchPressed = false;
   public pronePressed = false;
   public reloadPressed = false;
@@ -326,6 +327,10 @@ export class InputManager {
     this.jumpPressed = true;
   }
 
+  public triggerVault(): void {
+    this.vaultPressed = true;
+  }
+
   public triggerCrouch(): void {
     const now = performance.now();
     if (now - this.lastCrouchMs < 30) return;
@@ -457,6 +462,7 @@ export class InputManager {
     dx: number;
     dy: number;
     jump: boolean;
+    vault: boolean;
     crouch: boolean;
     prone: boolean;
     reload: boolean;
@@ -479,6 +485,7 @@ export class InputManager {
       dx: this.lookDeltaX,
       dy: this.lookDeltaY,
       jump: this.jumpPressed,
+      vault: this.vaultPressed,
       crouch: this.crouchPressed,
       prone: this.pronePressed,
       reload: this.reloadPressed,
@@ -500,6 +507,7 @@ export class InputManager {
     this.lookDeltaX = 0;
     this.lookDeltaY = 0;
     this.jumpPressed = false;
+    this.vaultPressed = false;
     this.crouchPressed = false;
     this.pronePressed = false;
     this.reloadPressed = false;

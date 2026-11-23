@@ -625,6 +625,8 @@ export class BattleRoyaleEngine {
   private nextBackpackItemId = 1;
   private vaultTimer = 0;
   private canVaultWindow = false;
+  private vaultDirX = 0;
+  private vaultDirZ = -1;
   private revivingBotId: string | null = null;
   private reviveTimer = 0;
   private readonly reviveDuration = 3.0;
@@ -1039,15 +1041,36 @@ export class BattleRoyaleEngine {
   }
 
   private getEnemyRenderDist(): number {
-    if (this.settings.quality === 'low') return 95;
-    if (this.settings.quality === 'high') return 185;
-    return 135;
+    if (this.settings.quality === 'low') return 85;
+    if (this.settings.quality === 'high') return 155;
+    return 118;
   }
 
   private getLootRenderDist(): number {
-    if (this.settings.quality === 'low') return 20;
-    if (this.settings.quality === 'high') return 42;
-    return 30;
+    if (this.settings.quality === 'low') return 18;
+    if (this.settings.quality === 'high') return 32;
+    return 24;
+  }
+
+  private isInCameraViewCone(
+    ox: number,
+    oz: number,
+    maxDist: number,
+    near360Radius = 30,
+  ): boolean {
+    const cx = this.world.camera.position.x;
+    const cz = this.world.camera.position.z;
+    const dx = ox - cx;
+    const dz = oz - cz;
+    if (Math.abs(dx) > maxDist || Math.abs(dz) > maxDist) return false;
+    const dSq = dx * dx + dz * dz;
+    if (dSq > maxDist * maxDist) return false;
+    if (dSq <= near360Radius * near360Radius) return true;
+    const fwdX = -Math.sin(this.yaw);
+    const fwdZ = -Math.cos(this.yaw);
+    const dist = Math.sqrt(dSq);
+    const dot = dx * fwdX + dz * fwdZ;
+    return dot >= dist * 0.14;
   }
 
   public applyQualitySettings(settings: GameSettings): void {
@@ -1103,7 +1126,7 @@ export class BattleRoyaleEngine {
     if (this.world) {
       this.world.applyQuality(settings.quality, this.isSoftwareGl, texLevel, shadowLevel);
       this.world.camera.far =
-        settings.quality === 'low' ? 430 : settings.quality === 'high' ? 1120 : 680;
+        settings.quality === 'low' ? 185 : settings.quality === 'high' ? 305 : 245;
       this.world.camera.updateProjectionMatrix();
       if (prevShadowEnabled !== nextShadowEnabled || prevShadowType !== nextShadowType) {
         this.world.scene.traverse((obj) => {
@@ -2290,7 +2313,21 @@ export class BattleRoyaleEngine {
         });
         continue;
       }
-      entity.rig.root.visible = true;
+      const maxRemoteDist =
+        entity.teamId === this.onlineTeamId
+          ? Math.max(this.getEnemyRenderDist(), 145)
+          : this.getEnemyRenderDist();
+      const nearRemote360 = entity.teamId === this.onlineTeamId ? 40 : 30;
+      const isAirDropState =
+        state === GameState.DROPPING || state === GameState.PARACHUTE;
+      entity.rig.root.visible =
+        isAirDropState ||
+        this.isInCameraViewCone(
+          entity.targetPos.x,
+          entity.targetPos.z,
+          maxRemoteDist,
+          nearRemote360,
+        );
       const prevPos = entity.rig.root.position;
       const dx = entity.targetPos.x - prevPos.x;
       const dz = entity.targetPos.z - prevPos.z;
@@ -4297,7 +4334,10 @@ export class BattleRoyaleEngine {
       dt,
       this.elapsed,
       isAirborneLootView ? this.pos : this.world.camera.position,
-      isAirborneLootView ? 240 : inMatchView ? this.getLootRenderDist() : 120,
+      isAirborneLootView ? 240 : inMatchView ? this.getLootRenderDist() : 90,
+      -Math.sin(this.yaw),
+      -Math.cos(this.yaw),
+      isAirborneLootView,
     );
     if (this.elapsed - this.activeObstaclesLastRefresh >= 0.15 || this.activeObstaclesLastRefresh < 0) {
       this.activeObstaclesLastRefresh = this.elapsed;
@@ -4332,7 +4372,7 @@ export class BattleRoyaleEngine {
     }
     if (this.combatIconPopup) {
       this.combatIconPopup.age += dt;
-      if (this.combatIconPopup.age >= 2.2) {
+      if (this.combatIconPopup.age >= 1.5) {
         this.combatIconPopup = null;
       }
       this.hudDirty = true;
@@ -5245,25 +5285,149 @@ export class BattleRoyaleEngine {
     return best;
   }
 
+  private raycastSillOrWallXZ(
+    originY: number,
+    dirX: number,
+    dirZ: number,
+    maxDist: number,
+  ): number | null {
+    _rayOrigin.set(this.pos.x, originY, this.pos.z);
+    _rayDir.set(dirX, 0, dirZ);
+    let best: number | null = this.raycastActiveGlbWall(_rayOrigin, _rayDir, maxDist);
+
+    this.world.queryStaticCollidersNear(this.pos.x, this.pos.z, maxDist + 2.2, this._colScratch);
+    const cols = this._colScratch;
+    for (let i = 0; i < cols.length; i++) {
+      const c = cols[i];
+      if (originY < c.minY || originY > c.maxY) continue;
+      if (c.tag?.startsWith('vehicle-') || c.tag?.startsWith('gloo')) continue;
+      const dx = this.pos.x - c.cx;
+      const dz = this.pos.z - c.cz;
+      const cos = Math.cos(c.rotY);
+      const sin = Math.sin(c.rotY);
+      const ox = dx * cos - dz * sin;
+      const oz = dx * sin + dz * cos;
+      const rdx = dirX * cos - dirZ * sin;
+      const rdz = dirX * sin + dirZ * cos;
+
+      let tMin = 0.05;
+      let tMax = maxDist;
+      if (Math.abs(rdx) < 1e-6) {
+        if (Math.abs(ox) > c.halfW) continue;
+      } else {
+        const inv = 1 / rdx;
+        let t1 = (-c.halfW - ox) * inv;
+        let t2 = (c.halfW - ox) * inv;
+        if (t1 > t2) {
+          const tmp = t1;
+          t1 = t2;
+          t2 = tmp;
+        }
+        tMin = Math.max(tMin, t1);
+        tMax = Math.min(tMax, t2);
+        if (tMin > tMax) continue;
+      }
+      if (Math.abs(rdz) < 1e-6) {
+        if (Math.abs(oz) > c.halfD) continue;
+      } else {
+        const inv = 1 / rdz;
+        let t1 = (-c.halfD - oz) * inv;
+        let t2 = (c.halfD - oz) * inv;
+        if (t1 > t2) {
+          const tmp = t1;
+          t1 = t2;
+          t2 = tmp;
+        }
+        tMin = Math.max(tMin, t1);
+        tMax = Math.min(tMax, t2);
+        if (tMin > tMax) continue;
+      }
+      if (tMin <= maxDist && (best === null || tMin < best)) {
+        best = tMin;
+      }
+    }
+    return best;
+  }
+
   private findNearbyWindowSill(): boolean {
-    const cols = this.world.colliders;
     const py = this.pos.y;
+    const fwdX = -Math.sin(this.yaw);
+    const fwdZ = -Math.cos(this.yaw);
+    const cols = this.world.colliders;
+
+    // 1. Procedural building explicit window sill colliders (João Pessoa / Prefabs)
     for (let i = 0; i < cols.length; i++) {
       const c = cols[i];
       if (c.tag !== 'house-window-sill') continue;
       if (Math.abs(py - c.minY) > 1.35) continue;
       const dx = this.pos.x - c.cx;
       const dz = this.pos.z - c.cz;
-      const maxExtent = c.halfW + c.halfD + 1.35;
+      const maxExtent = c.halfW + c.halfD + 1.5;
       if (Math.abs(dx) > maxExtent || Math.abs(dz) > maxExtent) continue;
       const cos = Math.cos(c.rotY);
       const sin = Math.sin(c.rotY);
       const lx = dx * cos - dz * sin;
       const lz = dx * sin + dz * cos;
-      if (Math.abs(lx) <= c.halfW + 1.15 && Math.abs(lz) <= c.halfD + 1.15) {
+      if (Math.abs(lx) <= c.halfW + 1.25 && Math.abs(lz) <= c.halfD + 1.25) {
+        const toDist = Math.hypot(dx, dz);
+        const facingDot = toDist > 0.2 ? ((-dx * fwdX - dz * fwdZ) / toDist) : 1;
+        if (facingDot < 0.15 && toDist > 0.72) continue;
+        // Vault perpendicular across the sill from player side to opposite side
+        let localDirX = 0;
+        let localDirZ = 0;
+        if (c.halfW < c.halfD) {
+          localDirX = lx >= 0 ? -1 : 1;
+        } else {
+          localDirZ = lz >= 0 ? -1 : 1;
+        }
+        this.vaultDirX = localDirX * cos + localDirZ * sin;
+        this.vaultDirZ = -localDirX * sin + localDirZ * cos;
         return true;
       }
     }
+
+    // 2. Geometry-based window detector for bermuda.glb & any architectural mesh window
+    const yawOffsets = [0, -0.32, 0.32];
+    const bounds = this.getActiveBounds();
+    for (let a = 0; a < yawOffsets.length; a++) {
+      const ang = this.yaw + yawOffsets[a];
+      const rx = -Math.sin(ang);
+      const rz = -Math.cos(ang);
+
+      const h62 = this.raycastSillOrWallXZ(py + 0.62, rx, rz, 1.55);
+      const h88 = this.raycastSillOrWallXZ(py + 0.88, rx, rz, 1.55);
+      const h110 = this.raycastSillOrWallXZ(py + 1.1, rx, rz, 1.55);
+      let dSill: number | null = null;
+      if (h62 !== null && h62 >= 0.18) dSill = h62;
+      if (h88 !== null && h88 >= 0.18 && (dSill === null || h88 < dSill)) dSill = h88;
+      if (h110 !== null && h110 >= 0.18 && (dSill === null || h110 < dSill)) dSill = h110;
+      if (dSill === null) continue;
+
+      // Must be open at torso/head vault clearance above the sill
+      const checkOpenDist = dSill + 1.05;
+      const openMid = this.raycastSillOrWallXZ(py + 1.38, rx, rz, checkOpenDist);
+      if (openMid !== null && openMid <= checkOpenDist - 0.05) continue;
+      const openHigh = this.raycastSillOrWallXZ(py + 1.56, rx, rz, checkOpenDist);
+      if (openHigh !== null && openHigh <= checkOpenDist - 0.05) continue;
+
+      const landX = this.pos.x + rx * (dSill + 0.95);
+      const landZ = this.pos.z + rz * (dSill + 0.95);
+      if (
+        landX < bounds.minX + 1 ||
+        landX > bounds.maxX - 1 ||
+        landZ < bounds.minZ + 1 ||
+        landZ > bounds.maxZ - 1
+      ) {
+        continue;
+      }
+      const landFloor = this.resolveFloorHeight(landX, landZ, py + 1.25);
+      if (landFloor <= -50) continue;
+
+      this.vaultDirX = rx;
+      this.vaultDirZ = rz;
+      return true;
+    }
+
     return false;
   }
 
@@ -5538,7 +5702,22 @@ export class BattleRoyaleEngine {
       this.inWater &&
       this.pos.y <= (this.isOnSurfboard ? waterSurfaceY + 0.22 : swimSurfaceMax) &&
       this.vel.y <= 0.6;
-    if (edges.jump && (this.isGrounded || onWaterSurface)) {
+    const wantVault = (edges.vault || (edges.jump && this.canVaultWindow)) && this.canVaultWindow;
+    if (wantVault && (this.isGrounded || onWaterSurface)) {
+      let canVaultPosture = this.stance === 'stand';
+      if (!canVaultPosture && this.hasVerticalClearance(this.pos.x, this.pos.y, this.pos.z, 1.46, 0.22)) {
+        this.stance = 'stand';
+        canVaultPosture = true;
+      }
+      if (canVaultPosture) {
+        this.vaultTimer = 0.44;
+        this.vel.y = 3.85;
+        this.vel.x = this.vaultDirX * 7.4;
+        this.vel.z = this.vaultDirZ * 7.4;
+        this.isGrounded = false;
+        soundEngine.playJump();
+      }
+    } else if (edges.jump && (this.isGrounded || onWaterSurface)) {
       if (this.stance !== 'stand') {
         if (this.hasVerticalClearance(this.pos.x, this.pos.y, this.pos.z, 1.54, 0.3)) {
           this.stance = 'stand';
@@ -5548,16 +5727,6 @@ export class BattleRoyaleEngine {
         ) {
           this.stance = 'crouch';
         }
-      } else if (this.canVaultWindow) {
-        // Vault smoothly over house window sill
-        this.vaultTimer = 0.48;
-        this.vel.y = 6.2;
-        const vFx = -Math.sin(this.yaw);
-        const vFz = -Math.cos(this.yaw);
-        this.vel.x = vFx * 6.0;
-        this.vel.z = vFz * 6.0;
-        this.isGrounded = false;
-        soundEngine.playJump();
       } else {
         this.vel.y = this.isOnSurfboard ? 7.2 : 7.6;
         this.isGrounded = false;
@@ -6095,7 +6264,10 @@ export class BattleRoyaleEngine {
     const rightX = Math.cos(this.yaw);
     const rightZ = -Math.sin(this.yaw);
 
-    if (this.vaultTimer <= 0.15) {
+    if (this.vaultTimer > 0.14) {
+      this.vel.x = this.vaultDirX * 7.2;
+      this.vel.z = this.vaultDirZ * 7.2;
+    } else if (this.vaultTimer <= 0.14) {
       const targetVx = (forwardX * this.input.moveZ + rightX * this.input.moveX) * maxSpeed;
       const targetVz = (forwardZ * this.input.moveZ + rightZ * this.input.moveX) * maxSpeed;
       const accel = this.isOnSurfboard ? 10 : this.isSwimming ? 8 : this.isGrounded ? 18 : 6.5;
@@ -6103,10 +6275,10 @@ export class BattleRoyaleEngine {
       this.vel.z = THREE.MathUtils.damp(this.vel.z, targetVz, accel, dt);
     }
 
-    // Gravity (snappy on jump, preserve smooth vault arc)
-    this.vel.y -= (this.vaultTimer > 0 ? 20.5 : 27.5) * dt;
+    // Gravity (snappy on jump, preserve smooth compact arc over window sills)
+    this.vel.y -= (this.vaultTimer > 0 ? 19.5 : 27.5) * dt;
 
-    // Integrate XZ together + 2-pass stance-aware OBB/Mesh collision so crouch & prone fit real gaps
+    // Integrate XZ together + 2-pass stance-aware OBB/Mesh collision so crouch, prone & window vault fit real gaps
     const colProfile = this.getPlayerCollisionProfile();
     const prevGroundY = this.pos.y;
     this.pos.x += this.vel.x * dt;
@@ -6133,11 +6305,12 @@ export class BattleRoyaleEngine {
     // Terrain + Water Buoyancy + Walkable Platforms (or Distant GLB / Bermuda Floors)
     const wasGrounded = this.isGrounded;
     const floorQueryY = this.vel.y < -4 ? Math.max(this.pos.y, prevGroundY) : this.pos.y;
+    const floorStepUp = this.vaultTimer > 0.08 ? 0.45 : colProfile.stepUp;
     const resolvedFloor = this.resolveFloorHeight(
       this.pos.x,
       this.pos.z,
       floorQueryY,
-      colProfile.stepUp,
+      floorStepUp,
     );
     const deepWaterFloor = this.getDeepWaterMinY();
     const dryFloorMin = this.getDryMinFloorY();
@@ -6161,6 +6334,8 @@ export class BattleRoyaleEngine {
       wasGrounded &&
       this.vel.y <= 0 &&
       !edges.jump &&
+      !edges.vault &&
+      this.vaultTimer <= 0 &&
       !this.isSwimming &&
       !this.isOnSurfboard &&
       this.pos.y - floorY <= 0.24
@@ -6348,6 +6523,14 @@ export class BattleRoyaleEngine {
     maxOffset: number;
     stepUp: number;
   } {
+    if (this.vaultTimer > 0.04) {
+      return {
+        radius: 0.2,
+        minOffset: 1.18,
+        maxOffset: 1.46,
+        stepUp: 1.18,
+      };
+    }
     if (this.stance === 'prone') {
       return { radius: 0.19, minOffset: 0.22, maxOffset: 0.44, stepUp: 0.26 };
     }
@@ -6363,7 +6546,7 @@ export class BattleRoyaleEngine {
       radius: 0.35,
       minOffset: 0.36,
       maxOffset: 1.54,
-      stepUp: this.vaultTimer > 0 ? 0.88 : this.isGrounded ? 0.48 : 0.62,
+      stepUp: this.isGrounded ? 0.48 : 0.62,
     };
   }
 
@@ -6958,10 +7141,18 @@ export class BattleRoyaleEngine {
 
   private updateDeployedGloos(dt: number): void {
     for (let i = this.deployedGloos.length - 1; i >= 0; i--) {
-      this.deployedGloos[i].life -= dt;
-      if (this.deployedGloos[i].life <= 0 || this.deployedGloos[i].hp <= 0) {
+      const g = this.deployedGloos[i];
+      g.life -= dt;
+      if (g.life <= 0 || g.hp <= 0) {
         this.removeGlooWallAt(i);
+        continue;
       }
+      g.mesh.visible = this.isInCameraViewCone(
+        g.mesh.position.x,
+        g.mesh.position.z,
+        175,
+        26,
+      );
     }
   }
 
@@ -8754,9 +8945,15 @@ export class BattleRoyaleEngine {
           bot.goalX = bot.landX;
           bot.goalZ = bot.landZ;
         }
+        const showSky =
+          this.isInCameraViewCone(
+            bot.group.position.x,
+            bot.group.position.z,
+            effectiveRenderDist,
+            32,
+          ) && visibleBotCount < maxVisibleBots;
         const skyDistSq =
           (bot.group.position.x - this.pos.x) ** 2 + (bot.group.position.z - this.pos.z) ** 2;
-        const showSky = skyDistSq <= effectiveRenderDistSq && visibleBotCount < maxVisibleBots;
         bot.group.visible = showSky;
         if (showSky) {
           visibleBotCount++;
@@ -8813,14 +9010,19 @@ export class BattleRoyaleEngine {
       const bz = bot.group.position.z;
       const botCamDistSq =
         (bx - this.pos.x) * (bx - this.pos.x) + (bz - this.pos.z) * (bz - this.pos.z);
-      const allyVisDist = Math.max(effectiveRenderDist, 165);
+      const allyVisDist = Math.max(effectiveRenderDist, 145);
       const isSpectatedBot =
         this.isSpectating &&
         this.spectateTargetRef?.kind === 'bot' &&
         this.spectateTargetRef.botId === bot.id;
       const wantRender =
         isSpectatedBot ||
-        botCamDistSq <= (bot.isAlly ? allyVisDist * allyVisDist : effectiveRenderDistSq);
+        this.isInCameraViewCone(
+          bx,
+          bz,
+          bot.isAlly ? allyVisDist : effectiveRenderDist,
+          bot.isAlly ? 40 : 28,
+        );
       const inRenderRange =
         isSpectatedBot || (wantRender && (bot.isAlly || visibleBotCount < maxVisibleBots));
       bot.group.visible = inRenderRange;

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, LogOut, MicOff, RotateCcw, Save, Settings, Users, Volume2, Wifi } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, GripHorizontal, LogOut, MicOff, RotateCcw, Save, Settings, Users, Volume2, Wifi } from 'lucide-react';
 import {
   DEFAULT_HUD_LAYOUT,
   DEFAULT_HUD_LAYOUT_SLOT_2,
@@ -23,6 +23,7 @@ import {
   IconReloadSvg,
   IconScopeSvg,
   IconSprintSvg,
+  IconVaultSvg,
   IconVestSvg,
 } from './HudIcons';
 
@@ -71,6 +72,7 @@ const ELEMENT_ORDER: HudElementId[] = [
   'fpsBadge',
   'fireBtn',
   'aimBtn',
+  'vaultBtn',
   'jumpBtn',
   'crouchBtn',
   'proneBtn',
@@ -146,16 +148,23 @@ const ELEMENT_META: Record<HudElementId, ElementMeta> = {
     ),
   },
   killFeed: {
-    label: 'Feed de Abates',
-    sizeClass: 'w-40 h-6',
+    label: 'Nomes Subindo (Abates)',
+    sizeClass: 'w-52 sm:w-60 h-10',
     shape: 'box',
     renderPreview: () => (
-      <div className="w-full h-full bg-black/50 border border-white/25 px-1.5 flex items-center justify-center gap-1 text-[8px] font-bold whitespace-nowrap pointer-events-none">
-        <span className="text-white">JOGADOR</span>
-        <span className="px-1 bg-black/70 border border-white/20 text-[7px] font-mono text-neutral-200">
-          AK47
-        </span>
-        <span className="text-amber-300">Eliminado</span>
+      <div className="w-full h-full bg-black/50 border border-white/25 px-2 py-0.5 flex flex-col items-center justify-center leading-tight text-[8.5px] font-bold whitespace-nowrap pointer-events-none">
+        <div>
+          <span className="text-amber-300">NICK3</span>{' '}
+          <span className="text-red-400 font-black">headshot</span>{' '}
+          <span className="text-white">NICK4</span>{' '}
+          <span className="text-neutral-300 font-mono">(SCAR)</span>
+        </div>
+        <div>
+          <span className="text-white">NICK</span>{' '}
+          <span className="text-neutral-200 font-semibold">matou</span>{' '}
+          <span className="text-neutral-100">NICK2</span>{' '}
+          <span className="text-neutral-300 font-mono">(G18)</span>
+        </div>
       </div>
     ),
   },
@@ -388,6 +397,12 @@ const ELEMENT_META: Record<HudElementId, ElementMeta> = {
     shape: 'circle',
     renderPreview: () => <IconScopeSvg className="w-6 h-6" />,
   },
+  vaultBtn: {
+    label: 'Pular Janela',
+    sizeClass: 'w-12 h-12',
+    shape: 'circle',
+    renderPreview: () => <IconVaultSvg className="w-6 h-6 text-sky-300" />,
+  },
   jumpBtn: {
     label: 'Pular',
     sizeClass: 'w-12 h-12',
@@ -474,24 +489,83 @@ export const HudEditorModal: React.FC<HudEditorModalProps> = ({
   }));
   const [selected, setSelected] = useState<HudElementId>('fireBtn');
   const [panelExpanded, setPanelExpanded] = useState(true);
+  const [panelOffset, setPanelOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
   const stageRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef<HudElementId | null>(null);
+  const dragOffsetPctRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
+  const panelDragRef = useRef<{
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+  } | null>(null);
 
   useEffect(() => {
+    const handlePointerMove = (e: PointerEvent) => {
+      if (panelDragRef.current) {
+        const dx = e.clientX - panelDragRef.current.startX;
+        const dy = e.clientY - panelDragRef.current.startY;
+        const maxDx = Math.max(80, window.innerWidth * 0.42);
+        const maxDy = Math.max(80, window.innerHeight - 140);
+        setPanelOffset({
+          x: Math.max(-maxDx, Math.min(maxDx, panelDragRef.current.origX + dx)),
+          y: Math.max(0, Math.min(maxDy, panelDragRef.current.origY + dy)),
+        });
+        return;
+      }
+
+      const id = draggingRef.current;
+      const stage = stageRef.current;
+      if (!id || !stage) return;
+      const rect = stage.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const ptrXPct = ((e.clientX - rect.left) / rect.width) * 100;
+      const ptrYPct = ((e.clientY - rect.top) / rect.height) * 100;
+      const xPct = Math.max(
+        2,
+        Math.min(98, ptrXPct + dragOffsetPctRef.current.dx),
+      );
+      const yPct = Math.max(
+        3,
+        Math.min(97, ptrYPct + dragOffsetPctRef.current.dy),
+      );
+      setSlots((prev) => ({
+        ...prev,
+        [slot]: {
+          ...prev[slot],
+          [id]: {
+            ...prev[slot][id],
+            xPct: Math.round(xPct * 10) / 10,
+            yPct: Math.round(yPct * 10) / 10,
+          },
+        },
+      }));
+    };
+
     const stopDrag = () => {
       draggingRef.current = null;
+      panelDragRef.current = null;
     };
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: true });
     window.addEventListener('pointerup', stopDrag);
     window.addEventListener('pointercancel', stopDrag);
     return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', stopDrag);
       window.removeEventListener('pointercancel', stopDrag);
     };
-  }, []);
+  }, [slot]);
 
   const currentLayout = slots[slot];
   const selItem = currentLayout[selected];
+  const selectedIndex = ELEMENT_ORDER.indexOf(selected);
+
+  const cycleSelected = (dir: -1 | 1) => {
+    const nextIdx = (selectedIndex + dir + ELEMENT_ORDER.length) % ELEMENT_ORDER.length;
+    setSelected(ELEMENT_ORDER[nextIdx]);
+  };
 
   const updateCurrentElement = (patch: Partial<HudLayoutConfig[HudElementId]>) => {
     setSlots((prev) => ({
@@ -506,36 +580,18 @@ export const HudEditorModal: React.FC<HudEditorModalProps> = ({
     }));
   };
 
-  const handleStagePointerMove = (e: React.PointerEvent) => {
-    const id = draggingRef.current;
-    const stage = stageRef.current;
-    if (!id || !stage) return;
-    const rect = stage.getBoundingClientRect();
-    const xPct = Math.max(2, Math.min(98, ((e.clientX - rect.left) / rect.width) * 100));
-    const yPct = Math.max(3, Math.min(97, ((e.clientY - rect.top) / rect.height) * 100));
-    setSlots((prev) => ({
-      ...prev,
-      [slot]: {
-        ...prev[slot],
-        [id]: {
-          ...prev[slot][id],
-          xPct: Math.round(xPct * 10) / 10,
-          yPct: Math.round(yPct * 10) / 10,
-        },
-      },
-    }));
-  };
-
-  const handleStagePointerUp = () => {
-    draggingRef.current = null;
-  };
-
   const handleResetActiveSlot = () => {
     const presetBase = slot === 1 ? DEFAULT_HUD_LAYOUT : DEFAULT_HUD_LAYOUT_SLOT_2;
     setSlots((prev) => ({
       ...prev,
       [slot]: structuredCloneLayout(presetBase, presetBase),
     }));
+  };
+
+  const handleResetSelectedElement = () => {
+    const presetBase = slot === 1 ? DEFAULT_HUD_LAYOUT : DEFAULT_HUD_LAYOUT_SLOT_2;
+    const baseItem = presetBase[selected];
+    updateCurrentElement({ ...baseItem });
   };
 
   const handleSaveAndClose = () => {
@@ -549,9 +605,6 @@ export const HudEditorModal: React.FC<HudEditorModalProps> = ({
   return (
     <div
       ref={stageRef}
-      onPointerMove={handleStagePointerMove}
-      onPointerUp={handleStagePointerUp}
-      onPointerLeave={handleStagePointerUp}
       className="fixed inset-0 z-[60] w-screen h-screen overflow-hidden touch-none select-none text-white"
       style={{
         background:
@@ -586,18 +639,39 @@ export const HudEditorModal: React.FC<HudEditorModalProps> = ({
         </svg>
       </div>
 
-      {/* Floating Top-Center Free Fire HUD Editor Panel */}
+      {/* Floating Draggable Free Fire HUD Editor Panel */}
       <div
         onPointerDown={(e) => e.stopPropagation()}
-        className="fixed top-2 left-1/2 -translate-x-1/2 z-40 w-[290px] sm:w-[340px] flex flex-col items-center"
+        style={{
+          transform: `translate(calc(-50% + ${panelOffset.x}px), ${panelOffset.y}px)`,
+        }}
+        className="fixed top-2 left-1/2 z-40 w-[296px] sm:w-[350px] flex flex-col items-center"
       >
-        <div className="w-full bg-black/80 border border-white/25 shadow-2xl">
+        <div className="w-full bg-black/85 border border-white/25 shadow-2xl">
+          {/* Draggable Top Grip Bar */}
+          <div
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              panelDragRef.current = {
+                startX: e.clientX,
+                startY: e.clientY,
+                origX: panelOffset.x,
+                origY: panelOffset.y,
+              };
+            }}
+            title="Arrastar painel"
+            className="flex items-center justify-center gap-1.5 py-1 bg-[#181e27] border-b border-white/15 text-[9px] font-mono uppercase tracking-wider text-neutral-300 cursor-grab active:cursor-grabbing"
+          >
+            <GripHorizontal className="w-3.5 h-3.5 text-amber-400" />
+            <span>ARRASTAR PAINEL · TOQUE NOS ITENS P/ MOVER</span>
+          </div>
+
           {/* Tabs: HUD 1 (Clássico 2017) | HUD 2 (Outro Tipo) */}
           <div className="grid grid-cols-2">
             <button
               type="button"
               onClick={() => setSlot(1)}
-              className={`py-2 px-2 text-xs font-black uppercase tracking-wider cursor-pointer transition-colors border-b ${
+              className={`py-1.5 px-2 text-xs font-black uppercase tracking-wider cursor-pointer transition-colors border-b ${
                 slot === 1
                   ? 'bg-amber-500 text-black border-amber-400'
                   : 'bg-[#12161d] text-neutral-300 hover:text-white border-white/15'
@@ -608,7 +682,7 @@ export const HudEditorModal: React.FC<HudEditorModalProps> = ({
             <button
               type="button"
               onClick={() => setSlot(2)}
-              className={`py-2 px-2 text-xs font-black uppercase tracking-wider cursor-pointer transition-colors border-b border-l border-white/15 ${
+              className={`py-1.5 px-2 text-xs font-black uppercase tracking-wider cursor-pointer transition-colors border-b border-l border-white/15 ${
                 slot === 2
                   ? 'bg-amber-500 text-black border-amber-400'
                   : 'bg-[#12161d] text-neutral-300 hover:text-white'
@@ -636,7 +710,7 @@ export const HudEditorModal: React.FC<HudEditorModalProps> = ({
               className="h-8 bg-white hover:bg-neutral-200 text-neutral-900 font-black text-[10px] uppercase flex items-center justify-center gap-1 cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>RESET</span>
+              <span>RESETAR TUDO</span>
             </button>
             <button
               type="button"
@@ -649,16 +723,50 @@ export const HudEditorModal: React.FC<HudEditorModalProps> = ({
             </button>
           </div>
 
-          {/* Collapsible Sliders: Transparência & Tamanho */}
+          {/* Collapsible Sliders: Selector + Transparência & Tamanho */}
           {panelExpanded && (
-            <div className="px-3 py-2.5 space-y-2.5 bg-black/70">
-              <div className="flex items-center justify-between text-[10px] font-mono text-amber-300/95 uppercase border-b border-white/10 pb-1">
-                <span>Item: {ELEMENT_META[selected].label}</span>
-                <span>{slot === 1 ? 'Clássico 2017' : 'Outro Tipo'}</span>
+            <div className="px-3 py-2 space-y-2 bg-black/75">
+              <div className="flex items-center gap-1 border-b border-white/10 pb-1.5">
+                <button
+                  type="button"
+                  onClick={() => cycleSelected(-1)}
+                  title="Elemento anterior"
+                  className="p-1 bg-[#181e27] hover:bg-amber-500 hover:text-black border border-white/20 cursor-pointer shrink-0"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <select
+                  value={selected}
+                  onChange={(e) => setSelected(e.target.value as HudElementId)}
+                  aria-label="Selecionar elemento do HUD"
+                  className="flex-1 min-w-0 bg-[#12161d] border border-amber-400/50 px-1.5 py-1 text-[11px] font-bold text-amber-300 uppercase outline-none cursor-pointer"
+                >
+                  {ELEMENT_ORDER.map((id) => (
+                    <option key={id} value={id} className="bg-[#12161d] text-white">
+                      {ELEMENT_META[id].label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => cycleSelected(1)}
+                  title="Próximo elemento"
+                  className="p-1 bg-[#181e27] hover:bg-amber-500 hover:text-black border border-white/20 cursor-pointer shrink-0"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResetSelectedElement}
+                  title="Resetar somente este item"
+                  className="px-1.5 py-1 bg-[#181e27] hover:bg-white hover:text-black border border-white/20 text-[9px] font-black uppercase cursor-pointer shrink-0"
+                >
+                  PAD
+                </button>
               </div>
 
               {/* Transparência */}
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <div className="flex items-center justify-between text-xs font-bold">
                   <span className="text-white">Transparência</span>
                   <span className="text-white font-mono tabular-nums">
@@ -679,7 +787,7 @@ export const HudEditorModal: React.FC<HudEditorModalProps> = ({
               </div>
 
               {/* Tamanho */}
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <div className="flex items-center justify-between text-xs font-bold">
                   <span className="text-white">Tamanho</span>
                   <span className="text-white font-mono tabular-nums">
@@ -707,7 +815,7 @@ export const HudEditorModal: React.FC<HudEditorModalProps> = ({
           type="button"
           onClick={() => setPanelExpanded((v) => !v)}
           title={panelExpanded ? 'Recolher painel' : 'Expandir painel'}
-          className="px-4 py-0.5 bg-black/80 hover:bg-black border border-t-0 border-white/25 text-white cursor-pointer"
+          className="px-4 py-0.5 bg-black/85 hover:bg-black border border-t-0 border-white/25 text-white cursor-pointer"
         >
           {panelExpanded ? (
             <ChevronUp className="w-4 h-4" />
@@ -746,7 +854,22 @@ export const HudEditorModal: React.FC<HudEditorModalProps> = ({
             key={id}
             onPointerDown={(e) => {
               e.stopPropagation();
-              (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+              const el = e.currentTarget as HTMLElement;
+              if (el.hasPointerCapture?.(e.pointerId)) {
+                el.releasePointerCapture(e.pointerId);
+              }
+              const stage = stageRef.current;
+              if (stage) {
+                const rect = stage.getBoundingClientRect();
+                const ptrXPct = ((e.clientX - rect.left) / rect.width) * 100;
+                const ptrYPct = ((e.clientY - rect.top) / rect.height) * 100;
+                dragOffsetPctRef.current = {
+                  dx: cfg.xPct - ptrXPct,
+                  dy: cfg.yPct - ptrYPct,
+                };
+              } else {
+                dragOffsetPctRef.current = { dx: 0, dy: 0 };
+              }
               setSelected(id);
               draggingRef.current = id;
             }}

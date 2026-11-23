@@ -307,6 +307,9 @@ export interface WorldHandle {
     elapsed: number,
     camPos?: THREE.Vector3,
     lootRenderDist?: number,
+    camFwdX?: number,
+    camFwdZ?: number,
+    isAirborne?: boolean,
   ) => void;
   dispose: () => void;
 }
@@ -1984,8 +1987,8 @@ export function createIslandWorld(
     1220,
   );
 
-  // Distant-Render Texture LOD uniform: strips detail texture past threshold while keeping geometry visible
-  const texDistUniform = { value: 165.0 };
+  // Distant-Render Texture LOD uniform: strips texture resolution past threshold into flat base color
+  const texDistUniform = { value: 56.0 };
   const applyDistanceTextureLod = (
     mat: THREE.MeshStandardMaterial,
     flatRgb: [number, number, number],
@@ -2005,13 +2008,53 @@ export function createIslandWorld(
           #ifdef DECODE_VIDEO_TEXTURE
             sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
           #endif
-          float texDistFade = smoothstep(uTexMaxDist * 0.68, uTexMaxDist, length(vViewPosition));
+          float texDistFade = smoothstep(uTexMaxDist * 0.56, uTexMaxDist, length(vViewPosition));
           sampledDiffuseColor.rgb = mix(sampledDiffuseColor.rgb, uUntexturedColor, texDistFade);
           diffuseColor *= sampledDiffuseColor;
         #endif`,
       );
     };
+    mat.customProgramCacheKey = () => 'proc-dist-flat-lod';
     mat.needsUpdate = true;
+  };
+
+  const patchedGlbMats = new Set<THREE.Material>();
+  const applyGlbDistanceTextureLod = (root: THREE.Object3D) => {
+    root.traverse((node) => {
+      if (!(node as THREE.Mesh).isMesh) return;
+      const mesh = node as THREE.Mesh;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (let i = 0; i < mats.length; i++) {
+        const mat = mats[i] as THREE.MeshStandardMaterial | undefined;
+        if (!mat || !mat.map || patchedGlbMats.has(mat)) continue;
+        patchedGlbMats.add(mat);
+        if (mat.map) {
+          mat.map.generateMipmaps = true;
+          mat.map.minFilter = THREE.LinearMipmapLinearFilter;
+          mat.map.needsUpdate = true;
+        }
+        mat.onBeforeCompile = (shader) => {
+          shader.uniforms.uTexMaxDist = texDistUniform;
+          shader.fragmentShader = 'uniform float uTexMaxDist;\n' + shader.fragmentShader;
+          shader.fragmentShader = shader.fragmentShader.replace(
+            '#include <map_fragment>',
+            `#ifdef USE_MAP
+              vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+              vec4 flatDistTexColor = texture2D( map, vMapUv, 7.5 );
+              #ifdef DECODE_VIDEO_TEXTURE
+                sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
+                flatDistTexColor = sRGBTransferEOTF( flatDistTexColor );
+              #endif
+              float texDistFade = smoothstep(uTexMaxDist * 0.56, uTexMaxDist, length(vViewPosition));
+              sampledDiffuseColor.rgb = mix(sampledDiffuseColor.rgb, flatDistTexColor.rgb, texDistFade);
+              diffuseColor *= sampledDiffuseColor;
+            #endif`,
+          );
+        };
+        mat.customProgramCacheKey = () => 'glb-dist-flat-lod';
+        mat.needsUpdate = true;
+      }
+    });
   };
 
   // Sky Dome + Soft Rounded Horizon Clouds
@@ -2073,6 +2116,12 @@ export function createIslandWorld(
     x: number;
     z: number;
     radiusScale: number;
+  }> = [];
+  const bermudaCullables: Array<{
+    obj: THREE.Object3D;
+    x: number;
+    z: number;
+    radius: number;
   }> = [];
 
   const roads: MinimapRoad[] = [
@@ -4578,6 +4627,7 @@ export function createIslandWorld(
 
     if (assets.lobbyTemplate) {
       const lobbyModel = assets.lobbyTemplate.clone(true);
+      applyGlbDistanceTextureLod(lobbyModel);
       waitLobbyGroup.add(lobbyModel);
       waitLobbyGroup.updateMatrixWorld(true);
       waitCollisionGrid.buildFromObject(lobbyModel);
@@ -4585,6 +4635,7 @@ export function createIslandWorld(
 
     if (assets.gladiadoresTemplate) {
       const gladModel = assets.gladiadoresTemplate.clone(true);
+      applyGlbDistanceTextureLod(gladModel);
       gladiadoresGroup.add(gladModel);
       gladiadoresGroup.updateMatrixWorld(true);
       gladiadoresCollisionGrid.buildFromObject(gladModel);
@@ -4592,9 +4643,41 @@ export function createIslandWorld(
 
     if (assets.bermudaTemplate) {
       const bermudaModel = assets.bermudaTemplate.clone(true);
+      applyGlbDistanceTextureLod(bermudaModel);
       bermudaGroup.add(bermudaModel);
       bermudaGroup.updateMatrixWorld(true);
       bermudaCollisionGrid.buildFromObject(bermudaModel);
+
+      // Collect discrete buildings, trees, rocks & props in bermuda.glb for view-cone + distance culling
+      // Keep large terrain/ground/road/ocean meshes always visible (handled by fog & flat-color LOD).
+      bermudaCullables.length = 0;
+      const cullBox = new THREE.Box3();
+      const cullCenter = new THREE.Vector3();
+      const cullSize = new THREE.Vector3();
+      const NEVER_CULL_RE =
+        /terrain|ground|water|ocean|sea|sky|cloud|highway|airport_road|p_road|road|runway/i;
+      bermudaModel.traverse((node) => {
+        if (!(node as THREE.Mesh).isMesh) return;
+        const m = node as THREE.Mesh;
+        if (!m.visible) return;
+        const pName = m.parent?.name ?? '';
+        if (NEVER_CULL_RE.test(m.name) || NEVER_CULL_RE.test(pName)) return;
+        const geo = m.geometry as THREE.BufferGeometry | undefined;
+        if (!geo) return;
+        if (!geo.boundingBox) geo.computeBoundingBox();
+        if (!geo.boundingBox) return;
+        cullBox.copy(geo.boundingBox).applyMatrix4(m.matrixWorld);
+        cullBox.getSize(cullSize);
+        if (Math.max(cullSize.x, cullSize.z) >= 135) return;
+        cullBox.getCenter(cullCenter);
+        const radius = Math.max(2.5, Math.hypot(cullSize.x, cullSize.z) * 0.5);
+        bermudaCullables.push({
+          obj: m,
+          x: cullCenter.x,
+          z: cullCenter.z,
+          radius,
+        });
+      });
 
       // Extract real houses, hangars & 2nd floors from bermuda.glb (zero changes to map mesh!)
       const spots = extractBermudaBuildingSpots(bermudaModel, bermudaCollisionGrid);
@@ -5014,6 +5097,10 @@ export function createIslandWorld(
 
   let structureCullDist = 250;
 
+  let baseFogNear = 92;
+  let baseFogFar = 220;
+  let baseCamFar = 245;
+
   const applyQuality = (
     quality: GraphicsQuality,
     isSoftwareGl: boolean,
@@ -5027,14 +5114,15 @@ export function createIslandWorld(
       : (shadowQuality ?? (quality === 'low' ? 'off' : quality === 'high' ? 'high' : 'low'));
 
     textures.applyQuality(resolvedTex);
+    // Tighter texture-detail distance across ALL presets (even Ultra) -> flat texture color beyond threshold
     texDistUniform.value =
       resolvedTex === 'low'
-        ? 68.0
+        ? 28.0
         : resolvedTex === 'medium'
-          ? 135.0
+          ? 42.0
           : resolvedTex === 'high'
-            ? 245.0
-            : 430.0;
+            ? 56.0
+            : 70.0;
     terrainMat.roughness = resolvedTex === 'low' ? 0.94 : resolvedTex === 'ultra' ? 0.86 : 0.9;
     asphaltRoadMat.roughness = resolvedTex === 'low' ? 0.88 : resolvedTex === 'ultra' ? 0.76 : 0.82;
 
@@ -5091,9 +5179,10 @@ export function createIslandWorld(
     }
 
     if (quality === 'low' || isSoftwareGl) {
-      fog.near = 145;
-      fog.far = 385;
-      structureCullDist = 185;
+      baseFogNear = 62;
+      baseFogFar = 165;
+      baseCamFar = 185;
+      structureCullDist = 105;
       sunLight.intensity = 1.95;
       hemi.intensity = 1.62;
       waterMat.roughness = 0.72;
@@ -5103,9 +5192,10 @@ export function createIslandWorld(
       scene.environment = null;
       scene.environmentIntensity = 0;
     } else if (quality === 'medium') {
-      fog.near = 250;
-      fog.far = 610;
-      structureCullDist = 290;
+      baseFogNear = 92;
+      baseFogFar = 220;
+      baseCamFar = 245;
+      structureCullDist = 140;
       sunLight.intensity = 1.98;
       hemi.intensity = 1.38;
       waterMat.roughness = 0.32;
@@ -5115,9 +5205,10 @@ export function createIslandWorld(
       scene.environment = envMap;
       scene.environmentIntensity = 0.58;
     } else {
-      fog.near = 420;
-      fog.far = 1040;
-      structureCullDist = 520;
+      baseFogNear = 122;
+      baseFogFar = 275;
+      baseCamFar = 305;
+      structureCullDist = 180;
       sunLight.intensity = 2.24;
       hemi.intensity = 1.36;
       waterMat.roughness = 0.12;
@@ -5127,13 +5218,47 @@ export function createIslandWorld(
       scene.environment = envMap;
       scene.environmentIntensity = 1.05;
     }
+    fog.near = baseFogNear;
+    fog.far = baseFogFar;
+    camera.far = baseCamFar;
+    camera.updateProjectionMatrix();
+  };
+
+  const shouldRenderInView = (
+    ox: number,
+    oz: number,
+    cx: number,
+    cz: number,
+    fwdX: number,
+    fwdZ: number,
+    hasFwd: boolean,
+    objRadius: number,
+    maxDist: number,
+    near360Radius: number,
+  ): boolean => {
+    const dx = ox - cx;
+    const dz = oz - cz;
+    const maxR = maxDist + objRadius;
+    if (Math.abs(dx) > maxR || Math.abs(dz) > maxR) return false;
+    const dSq = dx * dx + dz * dz;
+    if (dSq > maxR * maxR) return false;
+    const safeR = near360Radius + objRadius;
+    if (dSq <= safeR * safeR) return true;
+    if (!hasFwd) return true;
+    const dist = Math.sqrt(dSq);
+    const dot = dx * fwdX + dz * fwdZ;
+    // Wide ~160-deg front cone + object radius margin so screen edges never pop
+    return dot + objRadius * 1.1 >= dist * 0.14;
   };
 
   const updateDynamicProps = (
     dt: number,
     elapsed: number,
     camPos?: THREE.Vector3,
-    lootRenderDist = 28,
+    lootRenderDist = 24,
+    camFwdX?: number,
+    camFwdZ?: number,
+    isAirborne = false,
   ) => {
     cloudGroup.rotation.y = elapsed * 0.0025;
 
@@ -5141,8 +5266,25 @@ export function createIslandWorld(
     const cz = camPos ? camPos.z : 0;
     const cy = camPos ? camPos.y : 0;
     skyDome.position.set(cx, 0, cz);
-    const renderMaxSq = lootRenderDist * lootRenderDist;
     const animMaxSq = 16 * 16;
+
+    const fwdLen =
+      camFwdX !== undefined && camFwdZ !== undefined ? Math.hypot(camFwdX, camFwdZ) : 0;
+    const hasFwd = fwdLen > 0.001;
+    const fwdX = hasFwd ? camFwdX! / fwdLen : 0;
+    const fwdZ = hasFwd ? camFwdZ! / fwdLen : -1;
+
+    const targetFogNear = isAirborne ? Math.max(baseFogNear, 280) : baseFogNear;
+    const targetFogFar = isAirborne ? Math.max(baseFogFar, 560) : baseFogFar;
+    const targetCamFar = isAirborne ? Math.max(baseCamFar, 620) : baseCamFar;
+    if (fog.near !== targetFogNear || fog.far !== targetFogFar) {
+      fog.near = targetFogNear;
+      fog.far = targetFogFar;
+    }
+    if (Math.abs(camera.far - targetCamFar) > 1) {
+      camera.far = targetCamFar;
+      camera.updateProjectionMatrix();
+    }
 
     if (camPos) {
       waitLobbyGroup.visible =
@@ -5152,43 +5294,73 @@ export function createIslandWorld(
         Math.abs(cx - GLADIADORES_ORIGIN.x) < 180 &&
         Math.abs(cz - GLADIADORES_ORIGIN.z) < 180;
 
-      const keepAllStructures = cy > 45;
+      const keepAllStructures = isAirborne || cy > 45;
       if (activeBrMap === 'joao_pessoa') {
         for (let i = 0; i < cullableStructures.length; i++) {
           const s = cullableStructures[i];
-          if (keepAllStructures) {
-            if (!s.obj.visible) s.obj.visible = true;
-          } else {
-            const maxR = structureCullDist * s.radiusScale;
-            const dx = s.x - cx;
-            const dz = s.z - cz;
-            const vis =
-              Math.abs(dx) <= maxR &&
-              Math.abs(dz) <= maxR &&
-              dx * dx + dz * dz <= maxR * maxR;
-            if (s.obj.visible !== vis) {
-              s.obj.visible = vis;
-            }
+          const vis = keepAllStructures
+            ? true
+            : shouldRenderInView(
+                s.x,
+                s.z,
+                cx,
+                cz,
+                fwdX,
+                fwdZ,
+                hasFwd,
+                16 * s.radiusScale,
+                structureCullDist * s.radiusScale,
+                34,
+              );
+          if (s.obj.visible !== vis) {
+            s.obj.visible = vis;
+          }
+        }
+      } else if (bermudaAttached) {
+        for (let i = 0; i < bermudaCullables.length; i++) {
+          const b = bermudaCullables[i];
+          const vis = keepAllStructures
+            ? true
+            : shouldRenderInView(
+                b.x,
+                b.z,
+                cx,
+                cz,
+                fwdX,
+                fwdZ,
+                hasFwd,
+                b.radius,
+                structureCullDist,
+                34,
+              );
+          if (b.obj.visible !== vis) {
+            b.obj.visible = vis;
           }
         }
       }
 
-      const vehCullR = structureCullDist + 45;
-      const vehCullSq = vehCullR * vehCullR;
+      // Vehicles keep full physics/collision simulation regardless of visibility;
+      // 42m 360-deg safety bubble + active driver guard prevents reverse/turning bugs.
+      const vehCullR = structureCullDist + 24;
       for (let i = 0; i < vehicles.length; i++) {
         const v = vehicles[i];
-        if (keepAllStructures || v.driverIsPlayer) {
-          if (!v.group.visible) v.group.visible = true;
-        } else {
-          const dx = v.x - cx;
-          const dz = v.z - cz;
-          const vis =
-            Math.abs(dx) <= vehCullR &&
-            Math.abs(dz) <= vehCullR &&
-            dx * dx + dz * dz <= vehCullSq;
-          if (v.group.visible !== vis) {
-            v.group.visible = vis;
-          }
+        const vis =
+          keepAllStructures || v.driverIsPlayer
+            ? true
+            : shouldRenderInView(
+                v.x,
+                v.z,
+                cx,
+                cz,
+                fwdX,
+                fwdZ,
+                hasFwd,
+                3.2,
+                vehCullR,
+                42,
+              );
+        if (v.group.visible !== vis) {
+          v.group.visible = vis;
         }
       }
     }
@@ -5197,18 +5369,25 @@ export function createIslandWorld(
       const l = loots[i];
       if (l.data.collected) continue;
       if (camPos) {
-        const dx = l.data.x - cx;
-        const dz = l.data.z - cz;
-        if (Math.abs(dx) > lootRenderDist || Math.abs(dz) > lootRenderDist) {
-          if (l.mesh.visible) l.mesh.visible = false;
-          continue;
-        }
-        const dSq = dx * dx + dz * dz;
-        const vis = dSq <= renderMaxSq;
+        const vis = shouldRenderInView(
+          l.data.x,
+          l.data.z,
+          cx,
+          cz,
+          fwdX,
+          fwdZ,
+          hasFwd,
+          1.2,
+          lootRenderDist,
+          10,
+        );
         if (l.mesh.visible !== vis) {
           l.mesh.visible = vis;
         }
-        if (!vis || dSq > animMaxSq) continue;
+        if (!vis) continue;
+        const dx = l.data.x - cx;
+        const dz = l.data.z - cz;
+        if (dx * dx + dz * dz > animMaxSq) continue;
       }
       if (l.data.kind !== 'deathbox') {
         l.mesh.children[0].rotation.y = elapsed * 1.8 + i;

@@ -140,6 +140,7 @@ export type HudElementId =
   | 'fpsBadge'
   | 'fireBtn'
   | 'aimBtn'
+  | 'vaultBtn'
   | 'jumpBtn'
   | 'crouchBtn'
   | 'proneBtn'
@@ -164,7 +165,7 @@ export const DEFAULT_HUD_LAYOUT: HudLayoutConfig = {
   minimap: { xPct: 8, yPct: 12, scale: 1.0, opacity: 1.0 },
   teamPanel: { xPct: 24, yPct: 10, scale: 1.0, opacity: 1.0 },
   topBanner: { xPct: 50, yPct: 7.5, scale: 1.0, opacity: 1.0 },
-  killFeed: { xPct: 50, yPct: 17.5, scale: 1.0, opacity: 1.0 },
+  killFeed: { xPct: 50, yPct: 72, scale: 1.0, opacity: 1.0 },
   ffCoins: { xPct: 74, yPct: 4.5, scale: 1.0, opacity: 1.0 },
   aliveBox: { xPct: 87.5, yPct: 4.5, scale: 1.0, opacity: 1.0 },
   settingsBtn: { xPct: 96.5, yPct: 4.5, scale: 1.0, opacity: 1.0 },
@@ -186,6 +187,7 @@ export const DEFAULT_HUD_LAYOUT: HudLayoutConfig = {
   fpsBadge: { xPct: 4.5, yPct: 96, scale: 1.0, opacity: 0.9 },
   fireBtn: { xPct: 84, yPct: 68, scale: 1.0, opacity: 0.92 },
   aimBtn: { xPct: 93, yPct: 56, scale: 1.0, opacity: 0.9 },
+  vaultBtn: { xPct: 93, yPct: 29, scale: 1.0, opacity: 0.95 },
   jumpBtn: { xPct: 93, yPct: 40, scale: 1.0, opacity: 0.88 },
   crouchBtn: { xPct: 92, yPct: 81, scale: 1.0, opacity: 0.88 },
   proneBtn: { xPct: 81, yPct: 84, scale: 1.0, opacity: 0.88 },
@@ -200,7 +202,7 @@ export const DEFAULT_HUD_LAYOUT_SLOT_2: HudLayoutConfig = {
   minimap: { xPct: 8, yPct: 12, scale: 0.95, opacity: 0.95 },
   teamPanel: { xPct: 24, yPct: 10, scale: 0.95, opacity: 0.95 },
   topBanner: { xPct: 50, yPct: 7.5, scale: 0.95, opacity: 0.9 },
-  killFeed: { xPct: 50, yPct: 17.5, scale: 0.95, opacity: 0.95 },
+  killFeed: { xPct: 50, yPct: 72, scale: 0.95, opacity: 0.95 },
   ffCoins: { xPct: 74, yPct: 4.5, scale: 0.95, opacity: 0.95 },
   aliveBox: { xPct: 87.5, yPct: 4.5, scale: 1.0, opacity: 1.0 },
   settingsBtn: { xPct: 96.5, yPct: 4.5, scale: 1.0, opacity: 1.0 },
@@ -222,6 +224,7 @@ export const DEFAULT_HUD_LAYOUT_SLOT_2: HudLayoutConfig = {
   fpsBadge: { xPct: 4.5, yPct: 96, scale: 0.95, opacity: 0.85 },
   fireBtn: { xPct: 83, yPct: 72, scale: 1.15, opacity: 0.9 },
   aimBtn: { xPct: 86, yPct: 48, scale: 1.15, opacity: 0.92 },
+  vaultBtn: { xPct: 93, yPct: 47, scale: 1.05, opacity: 0.95 },
   jumpBtn: { xPct: 93, yPct: 58, scale: 1.1, opacity: 0.9 },
   crouchBtn: { xPct: 73, yPct: 81, scale: 1.1, opacity: 0.9 },
   proneBtn: { xPct: 84, yPct: 85, scale: 0.95, opacity: 0.85 },

@@ -166,6 +166,35 @@ export const IconJumpSvg: React.FC<IconProps> = ({ className = 'w-6 h-6' }) => (
   </svg>
 );
 
+export const IconVaultSvg: React.FC<IconProps> = ({ className = 'w-6 h-6' }) => (
+  <svg viewBox="0 0 32 32" fill="none" className={className} aria-hidden="true">
+    <rect x="4.5" y="19" width="23" height="3.2" rx="1" fill="currentColor" fillOpacity="0.85" />
+    <path d="M6.5 22.2V27.5M25.5 22.2V27.5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    <circle cx="20.5" cy="7" r="2.3" fill="currentColor" />
+    <path
+      d="M11 11.5L16.5 9.8L22.5 11.2"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M16.5 10.5L14.2 15.8L20.8 16.5L23.5 22.5"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M14.2 15.8L9.5 17.8L7.5 15.5"
+      stroke="currentColor"
+      strokeWidth="2.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 export const IconCrouchSvg: React.FC<IconProps> = ({ className = 'w-6 h-6' }) => (
   <svg viewBox="0 0 32 32" fill="none" className={className} aria-hidden="true">
     <circle cx="13" cy="8.5" r="2.4" fill="currentColor" />

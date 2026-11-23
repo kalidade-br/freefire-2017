@@ -192,24 +192,79 @@ export function saveHudSlots(
   }
 }
 
+const HUD_KILLFEED_BOTTOM_MIGRATED_KEY = 'zonazero2017_killfeed_bottom_v1';
+
+function migrateLegacyKillFeedLayout(
+  layout: HudLayoutConfig,
+  fallbackBase: HudLayoutConfig,
+): HudLayoutConfig {
+  if (
+    layout.killFeed &&
+    Math.abs(layout.killFeed.xPct - 50) < 0.25 &&
+    Math.abs(layout.killFeed.yPct - 17.5) < 0.25
+  ) {
+    return {
+      ...layout,
+      killFeed: {
+        ...layout.killFeed,
+        yPct: fallbackBase.killFeed.yPct,
+      },
+    };
+  }
+  return layout;
+}
+
 export function loadSettings(): GameSettings {
   const dedicatedHud = loadHudLayout();
   const savedSlots = loadHudSlots(dedicatedHud);
+  let needsKillFeedMigration = false;
+  try {
+    needsKillFeedMigration = localStorage.getItem(HUD_KILLFEED_BOTTOM_MIGRATED_KEY) !== '1';
+  } catch {
+    needsKillFeedMigration = false;
+  }
+
+  const applyMigration = (
+    slot1: HudLayoutConfig,
+    slot2: HudLayoutConfig,
+    active: HudLayoutConfig,
+  ) => {
+    if (!needsKillFeedMigration) {
+      return { slot1, slot2, active };
+    }
+    const next1 = migrateLegacyKillFeedLayout(slot1, DEFAULT_HUD_LAYOUT);
+    const next2 = migrateLegacyKillFeedLayout(slot2, DEFAULT_HUD_LAYOUT_SLOT_2);
+    const nextActive = migrateLegacyKillFeedLayout(active, DEFAULT_HUD_LAYOUT);
+    try {
+      saveHudLayout(nextActive);
+      saveHudSlots(savedSlots.activeSlot, { 1: next1, 2: next2 });
+      localStorage.setItem(HUD_KILLFEED_BOTTOM_MIGRATED_KEY, '1');
+    } catch {
+      // Ignore storage errors
+    }
+    return { slot1: next1, slot2: next2, active: nextActive };
+  };
+
   try {
     const raw =
       localStorage.getItem(SETTINGS_KEY) ||
       localStorage.getItem('zonazero2017_settings_v1');
     if (!raw) {
+      const migrated = applyMigration(
+        savedSlots.slots[1],
+        savedSlots.slots[2],
+        savedSlots.slots[savedSlots.activeSlot],
+      );
       return {
         ...DEFAULT_SETTINGS,
         activeHudSlot: savedSlots.activeSlot,
-        hudSlots: savedSlots.slots,
-        hudLayout: savedSlots.slots[savedSlots.activeSlot],
+        hudSlots: { 1: migrated.slot1, 2: migrated.slot2 },
+        hudLayout: migrated.active,
       };
     }
     const parsed = JSON.parse(raw) as Partial<GameSettings>;
     const activeHudSlot: HudSlotId = parsed.activeHudSlot === 2 ? 2 : savedSlots.activeSlot;
-    const hudSlots: Record<HudSlotId, HudLayoutConfig> = {
+    const rawHudSlots: Record<HudSlotId, HudLayoutConfig> = {
       1: structuredCloneLayout(
         parsed.hudSlots?.[1] ?? savedSlots.slots[1],
         DEFAULT_HUD_LAYOUT,
@@ -219,12 +274,13 @@ export function loadSettings(): GameSettings {
         DEFAULT_HUD_LAYOUT_SLOT_2,
       ),
     };
-    const activeLayout =
+    const rawActiveLayout =
       dedicatedHud ??
       structuredCloneLayout(
-        parsed.hudLayout ?? hudSlots[activeHudSlot],
+        parsed.hudLayout ?? rawHudSlots[activeHudSlot],
         activeHudSlot === 2 ? DEFAULT_HUD_LAYOUT_SLOT_2 : DEFAULT_HUD_LAYOUT,
       );
+    const migrated = applyMigration(rawHudSlots[1], rawHudSlots[2], rawActiveLayout);
     const resolvedQuality: GraphicsQuality =
       parsed.quality === 'low' || parsed.quality === 'high' ? parsed.quality : 'medium';
     return {
@@ -239,15 +295,20 @@ export function loadSettings(): GameSettings {
       aimToggleMode: Boolean(parsed.aimToggleMode),
       keyBindings: normalizeKeyBindings(parsed.keyBindings),
       activeHudSlot,
-      hudSlots,
-      hudLayout: activeLayout,
+      hudSlots: { 1: migrated.slot1, 2: migrated.slot2 },
+      hudLayout: migrated.active,
     };
   } catch {
+    const migrated = applyMigration(
+      savedSlots.slots[1],
+      savedSlots.slots[2],
+      savedSlots.slots[savedSlots.activeSlot],
+    );
     return {
       ...DEFAULT_SETTINGS,
       activeHudSlot: savedSlots.activeSlot,
-      hudSlots: savedSlots.slots,
-      hudLayout: savedSlots.slots[savedSlots.activeSlot],
+      hudSlots: { 1: migrated.slot1, 2: migrated.slot2 },
+      hudLayout: migrated.active,
     };
   }
 }
