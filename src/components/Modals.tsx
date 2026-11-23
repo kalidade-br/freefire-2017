@@ -3,15 +3,18 @@ import { X, Check, RotateCcw, Keyboard, MousePointerClick } from 'lucide-react';
 import { getCharacterAvatar } from '../game/avatars';
 import {
   CharacterConfig,
+  CharacterModelId,
   ControlMode,
   DEFAULT_KEY_BINDINGS,
   EMULATOR_KEY_BINDINGS,
   formatKeyCodeLabel,
   GameSettings,
+  getCharacterPresetByModelId,
   GlooSkinId,
   GraphicsQuality,
   KEY_BINDING_GROUPS,
   KeyBindAction,
+  normalizeCharacterModelId,
   ShadowQuality,
   TextureQuality,
   WEAPONS,
@@ -35,7 +38,14 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({
   onChange,
   onClose,
 }) => {
-  const activeModel = config.modelId === 'eva' ? 'eva' : 'adam';
+  const activeModel = normalizeCharacterModelId(config.modelId);
+
+  const characters: ReadonlyArray<{ id: CharacterModelId; title: string; sub: string }> = [
+    { id: 'adam', title: 'ADAM', sub: 'Personagem Masculino Clássico' },
+    { id: 'eva', title: 'EVA', sub: 'Personagem Feminina Clássica' },
+    { id: 'maxim', title: 'MAXIM', sub: 'Guloso • Jaqueta & Boné' },
+    { id: 'kelly', title: 'KELLY', sub: 'Velocista • Agasalho Amarelo' },
+  ];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
@@ -54,19 +64,15 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({
         </div>
 
         <div className="p-4 space-y-4 max-h-[76vh] overflow-y-auto text-xs">
-          {/* Core Character Selection: Adam vs Eva */}
+          {/* Core Character Selection: Adam, Eva, Maxim, Kelly */}
           <div>
             <div className="font-bold uppercase tracking-wider text-neutral-300 mb-2">
               PERSONAGEM ORIGINAL (FREE FIRE)
             </div>
             <div className="grid grid-cols-2 gap-3">
-              {(
-                [
-                  { id: 'adam', title: 'ADAM', sub: 'Personagem Masculino Clássico' },
-                  { id: 'eva', title: 'EVA', sub: 'Personagem Feminina Clássica' },
-                ] as const
-              ).map((ch) => {
+              {characters.map((ch) => {
                 const selected = activeModel === ch.id;
+                const preset = getCharacterPresetByModelId(ch.id);
                 return (
                   <button
                     key={ch.id}
@@ -74,11 +80,10 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({
                     onClick={() =>
                       onChange({
                         ...config,
-                        id: ch.id === 'adam' ? 'ff_adam_classic' : 'ff_eva_classic',
-                        name: ch.title,
-                        modelId: ch.id,
+                        ...preset,
+                        backpackEnabled: config.backpackEnabled,
+                        glooSkin: config.glooSkin,
                         vestEnabled: false,
-                        hairStyle: ch.id === 'eva' ? 'spiky' : 'buzz',
                       })
                     }
                     className={`p-2.5 text-left border-2 cursor-pointer transition-colors flex flex-col gap-2 ${

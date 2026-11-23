@@ -1,6 +1,7 @@
 import type { User } from 'firebase/auth';
 import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
-import type { CharacterConfig, PlayerProfile } from '../game/types';
+import type { CharacterConfig, CharacterModelId, PlayerProfile } from '../game/types';
+import { normalizeCharacterModelId } from '../game/types';
 import { db, handleFirestoreError, OperationType } from './firebase';
 
 export interface FirestoreUserProfileDoc {
@@ -16,7 +17,7 @@ export interface FirestoreUserProfileDoc {
   rankedMatches: number;
   rankedWins: number;
   totalKills: number;
-  characterModelId: 'adam' | 'eva';
+  characterModelId: CharacterModelId;
 }
 
 function clampInt(val: number, min: number, max: number): number {
@@ -35,8 +36,8 @@ function sanitizePublicId(raw: string | null | undefined): string {
   return String(10000000 + Math.floor(Math.random() * 89999999));
 }
 
-function sanitizeModelId(raw: string | undefined): 'adam' | 'eva' {
-  return raw === 'eva' ? 'eva' : 'adam';
+function sanitizeModelId(raw: string | undefined): CharacterModelId {
+  return normalizeCharacterModelId(raw);
 }
 
 export async function syncPrivateUserInfo(user: User): Promise<void> {

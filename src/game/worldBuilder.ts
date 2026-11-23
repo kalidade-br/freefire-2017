@@ -155,6 +155,9 @@ export interface TargetDummy {
   navCheckZ: number;
   navCheckTimer: number;
   vaultTimer: number;
+  jumpCooldown?: number;
+  isRetreating?: boolean;
+  retreatTimer?: number;
   escapeTimer: number;
   escapeDoorX: number;
   escapeDoorZ: number;
@@ -1438,8 +1441,8 @@ function createBotEntity(
     ammoCount: 45,
     medkits: 2,
     healTimer: 0,
-    gloos: 2,
-    grenades: 1,
+    gloos: 0,
+    grenades: 0,
     backpackLevel: 1,
     coins: 100,
     scopes: [],
@@ -1455,6 +1458,9 @@ function createBotEntity(
     navCheckZ: z,
     navCheckTimer: 0,
     vaultTimer: 0,
+    jumpCooldown: 0,
+    isRetreating: false,
+    retreatTimer: 0,
     escapeTimer: 0,
     escapeDoorX: x,
     escapeDoorZ: z,
@@ -1473,7 +1479,7 @@ function createBotEntity(
     fireCooldown: 0.6 + (idx % 4) * 0.2,
     targetId: null,
     walkPhase: idx * 0.7,
-    moveSpeed: 4.8 + (idx % 3) * 0.55,
+    moveSpeed: 3.15 + (idx % 3) * 0.25,
     patrolOriginX: x,
     patrolOriginZ: z,
     patrolAxisX: 0,
@@ -1594,7 +1600,8 @@ export function upgradeBotsToAdam(
       bot.group.remove(bot.group.children[0]);
     }
 
-    const modelId: FFModelId = i % 2 === 0 ? 'adam' : 'eva';
+    const BOT_MODEL_POOL: readonly FFModelId[] = ['adam', 'eva', 'maxim', 'kelly'];
+    const modelId: FFModelId = BOT_MODEL_POOL[i % BOT_MODEL_POOL.length];
     const pack = getModelAssetPack(modelId);
     const cloned = cloneCharacterScene(modelId);
     if (!cloned || !pack) continue;
@@ -3575,7 +3582,7 @@ export function createIslandWorld(
   });
   const vehicles: VehicleEntity[] = [];
 
-  // 13. 30 Real Parachuting, Looting & Tactical Combat AI Bots
+  // 13. 50 Real Parachuting, Looting & Classic Bot AI (51 total participants with player)
   const BOT_NICKS = [
     'LuanPro_17', 'xX_Braga_Xx', 'Gabriel_07', 'YuriRush', 'CAPA_MESTRE',
     'Pedro_PB', 'BielCapa', 'Kauan_JP', 'Matheus_PB', 'Davi_Gelo',
@@ -3583,6 +3590,10 @@ export function createIslandWorld(
     'Rafael2017', 'Thiago_Pro', 'Caua_Rush', 'Enzo_Capa', 'FelipeZika',
     'Gustavo_JP', 'BrunoSertao', 'Diego_17', 'Natan_FF', 'Igor_Tambaú',
     'Samu_Sniper', 'Ruan_Mestre', 'Caio_Lenda', 'JoaoVitorPB', 'Léo_Jampa',
+    'Erick_Bermuda', 'Murilo_BR', 'Vitor_Bessa', 'Renan_18', 'DaniloRush',
+    'Otavio_FF', 'NicolasCapa', 'Heitor_07', 'Eduardo_PB', 'Kaique_X1',
+    'Bernardo_FF', 'Leandro2018', 'Wesley_Sertao', 'Fabricio_JP', 'AlexandreBR',
+    'Emanuel_Top1', 'Samuel_M4', 'Guilherme_17', 'RodrigoCapa', 'Victor_Manaíra',
   ];
 
   const landPois = POIS.filter(
@@ -3598,8 +3609,8 @@ export function createIslandWorld(
       lx = poi.x + (poi.name === 'A LAGOA' ? 56 : 0);
       lz = poi.z;
     }
-    const waitX = WAIT_SPAWN.x + Math.cos(idx * 0.7) * (8 + (idx % 5) * 3.5);
-    const waitZ = WAIT_SPAWN.z + Math.sin(idx * 0.7) * (8 + (idx % 5) * 3.5);
+    const waitX = WAIT_SPAWN.x - 14.5 + ((idx * 3.7) % 25.0);
+    const waitZ = WAIT_SPAWN.z - 7.4 + ((idx * 2.3) % 7.0);
     const bot = createBotEntity(
       `bot_${idx + 1}`,
       nick,

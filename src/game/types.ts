@@ -79,8 +79,13 @@ export interface WeaponSlotState {
   attachments: WeaponAttachments;
 }
 
-export type CharacterModelId = 'adam' | 'eva';
+export type CharacterModelId = 'adam' | 'eva' | 'maxim' | 'kelly';
 export type GlooSkinId = 'classic' | 'ffwc';
+
+export function normalizeCharacterModelId(raw?: string | null): CharacterModelId {
+  if (raw === 'eva' || raw === 'maxim' || raw === 'kelly') return raw;
+  return 'adam';
+}
 
 export interface CharacterConfig {
   id: string;
@@ -778,7 +783,7 @@ export interface HudSnapshot {
     nick: string;
     level: number;
     rankPoints: number;
-    modelId: 'adam' | 'eva';
+    modelId: CharacterModelId;
     hp: number;
     maxHp: number;
     kills: number;
@@ -1184,4 +1189,42 @@ export const CHARACTER_PRESETS: CharacterConfig[] = [
     backpackEnabled: true,
     shoesColor: '#30343a',
   },
+  {
+    id: 'ff_maxim_classic',
+    name: 'MAXIM',
+    modelId: 'maxim',
+    glooSkin: 'classic',
+    skinColor: '#e2b695',
+    hairStyle: 'cap',
+    hairColor: '#c7ccd4',
+    shirtStyle: 'hoodie',
+    shirtColor: '#8b1e24',
+    pantsColor: '#252830',
+    vestEnabled: false,
+    vestColor: '#3f4739',
+    backpackEnabled: true,
+    shoesColor: '#22242a',
+  },
+  {
+    id: 'ff_kelly_classic',
+    name: 'KELLY',
+    modelId: 'kelly',
+    glooSkin: 'classic',
+    skinColor: '#e8bea0',
+    hairStyle: 'spiky',
+    hairColor: '#291c18',
+    shirtStyle: 'hoodie',
+    shirtColor: '#facc15',
+    pantsColor: '#1f2937',
+    vestEnabled: false,
+    vestColor: '#3f4739',
+    backpackEnabled: true,
+    shoesColor: '#eab308',
+  },
 ];
+
+export function getCharacterPresetByModelId(raw?: string | null): CharacterConfig {
+  const id = normalizeCharacterModelId(raw);
+  return CHARACTER_PRESETS.find((p) => p.modelId === id) ?? CHARACTER_PRESETS[0];
+}
+

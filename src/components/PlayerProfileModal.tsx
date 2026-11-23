@@ -16,7 +16,14 @@ import {
 } from 'lucide-react';
 import { getCharacterAvatar } from '../game/avatars';
 import { soundEngine } from '../game/audio';
-import { CharacterConfig, PlayerProfile, getRankInfo } from '../game/types';
+import {
+  CharacterConfig,
+  CharacterModelId,
+  PlayerProfile,
+  getCharacterPresetByModelId,
+  getRankInfo,
+  normalizeCharacterModelId,
+} from '../game/types';
 import { PresenceStatus, PublicPlayerAccount } from '../shared/multiplayerTypes';
 import { RankEmblemSvg } from './HudIcons';
 
@@ -34,7 +41,7 @@ export interface ProfileModalSubject {
   rankedMatches: number;
   rankedWins: number;
   totalKills: number;
-  modelId: 'adam' | 'eva';
+  modelId: CharacterModelId;
   presence?: PresenceStatus;
   isFriend?: boolean;
 }
@@ -62,10 +69,7 @@ export function profileFromLocal(
   character: CharacterConfig,
   account: PublicPlayerAccount | null,
 ): ProfileModalSubject {
-  const modelId =
-    account?.character?.modelId === 'eva' || character.modelId === 'eva'
-      ? 'eva'
-      : 'adam';
+  const modelId = normalizeCharacterModelId(account?.character?.modelId ?? character.modelId);
   return {
     isOwn: true,
     accountId: account?.id,
@@ -103,7 +107,7 @@ export function profileFromAccount(
     rankedMatches: acc.rankedMatches,
     rankedWins: acc.rankedWins,
     totalKills: acc.totalKills,
-    modelId: acc.character?.modelId === 'eva' ? 'eva' : 'adam',
+    modelId: normalizeCharacterModelId(acc.character?.modelId),
     presence: acc.presence,
     isFriend: options?.isFriend,
   };
@@ -126,7 +130,7 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
 
   const rk = getRankInfo(subject.rankPoints);
   const avatarSrc = getCharacterAvatar(subject.modelId);
-  const charLabel = subject.modelId === 'eva' ? 'EVA' : 'ADAM';
+  const charLabel = getCharacterPresetByModelId(subject.modelId).name;
 
   const matches = modeTab === 'br_ranked' ? subject.rankedMatches : subject.matchesPlayed;
   const wins = modeTab === 'br_ranked' ? subject.rankedWins : subject.wins;

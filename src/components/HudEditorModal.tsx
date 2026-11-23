@@ -176,7 +176,7 @@ const ELEMENT_META: Record<HudElementId, ElementMeta> = {
     shape: 'box',
     renderPreview: () => (
       <div className="w-full h-full bg-black/65 border border-white/30 flex items-center justify-between px-2 text-[9px] font-black tracking-wider">
-        <span className="text-cyan-300">VIVO 50</span>
+        <span className="text-cyan-300">VIVO 51</span>
         <span className="text-orange-400">MATOU 0</span>
       </div>
     ),

@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { autoRigStaticCharacter } from './autoRigCharacter';
+import type { CharacterModelId } from './types';
 
-export type FFModelId = 'adam' | 'eva';
+export type FFModelId = CharacterModelId;
 
 export const FF_SCENE_SCALE = 1.78;
 
@@ -59,6 +61,8 @@ export interface FFModelAssetPack {
 export interface AdamLoadedData {
   adam: FFModelAssetPack;
   eva: FFModelAssetPack;
+  maxim: FFModelAssetPack;
+  kelly: FFModelAssetPack;
   animations: THREE.AnimationClip[];
   aimPoseQuats: Record<string, THREE.Quaternion>;
 }
@@ -76,7 +80,10 @@ export function getAdamData(): AdamLoadedData | null {
 
 export function getModelAssetPack(modelId: FFModelId = 'adam'): FFModelAssetPack | null {
   if (!loadedData) return null;
-  return modelId === 'eva' ? loadedData.eva : loadedData.adam;
+  if (modelId === 'eva') return loadedData.eva;
+  if (modelId === 'maxim') return loadedData.maxim;
+  if (modelId === 'kelly') return loadedData.kelly;
+  return loadedData.adam;
 }
 
 export function getAimPoseQuats(modelId: FFModelId = 'adam'): Record<string, THREE.Quaternion> | null {
@@ -159,6 +166,7 @@ function buildFFPack(
   rawScene: THREE.Group,
   srcScene: THREE.Group,
   srcClips: THREE.AnimationClip[],
+  rawRotY = -Math.PI / 2,
 ): FFModelAssetPack {
   // Normalize meshes: disable frustum culling & preserve clean PBR skin/outfit maps
   rawScene.traverse((obj) => {
@@ -179,8 +187,8 @@ function buildFFPack(
     }
   });
 
-  // Wrap raw (+X facing, ~0.98m) scene inside +Z-facing upright wrapper (~1.74m)
-  rawScene.rotation.set(0, -Math.PI / 2, 0);
+  // Wrap raw (~0.98m) scene inside +Z-facing upright wrapper (~1.74m)
+  rawScene.rotation.set(0, rawRotY, 0);
   rawScene.scale.setScalar(FF_SCENE_SCALE);
   rawScene.position.set(0, 0, 0);
 
@@ -334,7 +342,7 @@ function buildFFPack(
         db.quaternion.copy(qLocal);
         db.updateMatrixWorld(false);
 
-        if (modelId === 'adam' && (dstName === 'mixamorigLeftShoulder' || dstName === 'mixamorigRightShoulder')) {
+        if ((modelId === 'adam' || modelId === 'maxim') && (dstName === 'mixamorigLeftShoulder' || dstName === 'mixamorigRightShoulder')) {
           const baseShQ = savedLocalQuats.get(dstName);
           if (baseShQ) {
             qLocal.copy(baseShQ).slerp(qLocal, 0.78).normalize();
@@ -349,8 +357,8 @@ function buildFFPack(
         buf[f * 4 + 3] = qLocal.w;
       }
 
-      // For Adam's straight T-pose mesh, softly limit extreme (>60°) elbow bends so arms never crease or over-fold
-      if (modelId === 'adam') {
+      // For straight T-pose meshes (Adam & Maxim), softly limit extreme (>60°) elbow bends so arms never crease or over-fold
+      if (modelId === 'adam' || modelId === 'maxim') {
         wrapper.updateMatrixWorld(true);
         const elbowPairs: ReadonlyArray<readonly [string, string, string]> = [
           ['mixamorigLeftArm', 'mixamorigLeftForeArm', 'mixamorigLeftHand'],
@@ -487,24 +495,32 @@ export function preloadAdamAssets(
   loadPromise = (async () => {
     try {
       const loader = new GLTFLoader();
-      onStep?.(46, 'Carregando personagens Adam e Eva (Free Fire)...');
-      const [animLibGltf, ffAdamGltf, ffEvaGltf] = await Promise.all([
+      onStep?.(46, 'Carregando personagens Adam, Eva, Maxim e Kelly...');
+      const [animLibGltf, ffAdamGltf, ffEvaGltf, maximGltf, kellyGltf] = await Promise.all([
         loadGlbAsync(loader, '/assets/models/adam.glb'),
         loadGlbAsync(loader, '/assets/models/ff_adam.glb'),
         loadGlbAsync(loader, '/assets/models/ff_eva.glb'),
+        loadGlbAsync(loader, '/assets/models/maxim.glb'),
+        loadGlbAsync(loader, '/assets/models/kelly.glb'),
       ]);
 
-      onStep?.(72, 'Aplicando animações Free Fire em Adam e Eva...');
+      onStep?.(72, 'Aplicando animações Free Fire nos 4 personagens...');
       const adamPack = buildFFPack('adam', ffAdamGltf.scene, animLibGltf.scene, animLibGltf.animations);
       const evaPack = buildFFPack('eva', ffEvaGltf.scene, animLibGltf.scene, animLibGltf.animations);
+      const maximRigged = autoRigStaticCharacter(maximGltf.scene, 'maxim');
+      const kellyRigged = autoRigStaticCharacter(kellyGltf.scene, 'kelly');
+      const maximPack = buildFFPack('maxim', maximRigged, animLibGltf.scene, animLibGltf.animations, 0);
+      const kellyPack = buildFFPack('kelly', kellyRigged, animLibGltf.scene, animLibGltf.animations, 0);
 
       loadedData = {
         adam: adamPack,
         eva: evaPack,
+        maxim: maximPack,
+        kelly: kellyPack,
         animations: adamPack.animations,
         aimPoseQuats: adamPack.aimPoseQuats,
       };
-      onStep?.(88, 'Personagens Adam & Eva prontos!');
+      onStep?.(88, 'Personagens Adam, Eva, Maxim & Kelly prontos!');
       return loadedData;
     } catch {
       return null;

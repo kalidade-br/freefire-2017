@@ -253,6 +253,12 @@ const _tN = new THREE.Vector3();
 const _tP = new THREE.Vector3();
 const _tQ = new THREE.Vector3();
 const _tTvec = new THREE.Vector3();
+const _clipAx = new Float64Array(6);
+const _clipAy = new Float64Array(6);
+const _clipAz = new Float64Array(6);
+const _clipBx = new Float64Array(6);
+const _clipBy = new Float64Array(6);
+const _clipBz = new Float64Array(6);
 
 function closestPointOnSegmentXZ(
   px: number,
@@ -513,11 +519,15 @@ export class MeshCollisionGrid {
   public resolveHorizontal(
     posObj: { x: number; y: number; z: number },
     radius: number,
+    bodyMinOffset = 0.34,
+    bodyMaxOffset = 1.54,
+    stepUp = bodyMinOffset,
   ): number {
     const px = posObj.x;
     const pz = posObj.z;
-    const bodyMinY = posObj.y + 0.34;
-    const bodyMaxY = posObj.y + 1.56;
+    const bodyMinY = posObj.y + bodyMinOffset;
+    const bodyMaxY = posObj.y + bodyMaxOffset;
+    const slopeMinY = posObj.y + Math.max(bodyMinOffset, stepUp);
     const ix0 = Math.floor((px - radius) / this.cellSize);
     const ix1 = Math.floor((px + radius) / this.cellSize);
     const iz0 = Math.floor((pz - radius) / this.cellSize);
@@ -536,85 +546,177 @@ export class MeshCollisionGrid {
           if (tri.stamp === stamp) continue;
           tri.stamp = stamp;
 
-          if (tri.maxY < bodyMinY || tri.minY > bodyMaxY) continue;
+          const absNy = Math.abs(tri.ny);
+          const slabMinY = absNy > 0.45 ? slopeMinY : bodyMinY;
+          if (tri.maxY < slabMinY || tri.minY > bodyMaxY) continue;
 
-          let bestX = px;
-          let bestZ = pz;
+          // Clip 3D triangle against horizontal slab [slabMinY, bodyMaxY] so diagonal beams,
+          // arches, roof eaves, and angled pipes only collide where geometry actually enters the stance height.
+          let polyCount = 3;
+          let polyX = _clipAx;
+          let polyZ = _clipAz;
+
+          if (tri.minY >= slabMinY && tri.maxY <= bodyMaxY) {
+            _clipAx[0] = tri.ax;
+            _clipAz[0] = tri.az;
+            _clipAx[1] = tri.bx;
+            _clipAz[1] = tri.bz;
+            _clipAx[2] = tri.cx;
+            _clipAz[2] = tri.cz;
+          } else {
+            _clipAx[0] = tri.ax;
+            _clipAy[0] = tri.ay;
+            _clipAz[0] = tri.az;
+            _clipAx[1] = tri.bx;
+            _clipAy[1] = tri.by;
+            _clipAz[1] = tri.bz;
+            _clipAx[2] = tri.cx;
+            _clipAy[2] = tri.cy;
+            _clipAz[2] = tri.cz;
+
+            let curCount = 3;
+            let srcX = _clipAx;
+            let srcY = _clipAy;
+            let srcZ = _clipAz;
+            let dstX = _clipBx;
+            let dstY = _clipBy;
+            let dstZ = _clipBz;
+
+            if (tri.minY < slabMinY) {
+              let outCount = 0;
+              let pIdx = curCount - 1;
+              let pIn = srcY[pIdx] >= slabMinY;
+              for (let vi = 0; vi < curCount; vi++) {
+                const cIn = srcY[vi] >= slabMinY;
+                if (cIn !== pIn) {
+                  const dy = srcY[vi] - srcY[pIdx];
+                  const t = Math.abs(dy) > 1e-8 ? (slabMinY - srcY[pIdx]) / dy : 0;
+                  dstX[outCount] = srcX[pIdx] + (srcX[vi] - srcX[pIdx]) * t;
+                  dstY[outCount] = slabMinY;
+                  dstZ[outCount] = srcZ[pIdx] + (srcZ[vi] - srcZ[pIdx]) * t;
+                  outCount++;
+                }
+                if (cIn) {
+                  dstX[outCount] = srcX[vi];
+                  dstY[outCount] = srcY[vi];
+                  dstZ[outCount] = srcZ[vi];
+                  outCount++;
+                }
+                pIdx = vi;
+                pIn = cIn;
+              }
+              curCount = outCount;
+              const tmpX = srcX; srcX = dstX; dstX = tmpX;
+              const tmpY = srcY; srcY = dstY; dstY = tmpY;
+              const tmpZ = srcZ; srcZ = dstZ; dstZ = tmpZ;
+            }
+
+            if (curCount >= 3 && tri.maxY > bodyMaxY) {
+              let outCount = 0;
+              let pIdx = curCount - 1;
+              let pIn = srcY[pIdx] <= bodyMaxY;
+              for (let vi = 0; vi < curCount; vi++) {
+                const cIn = srcY[vi] <= bodyMaxY;
+                if (cIn !== pIn) {
+                  const dy = srcY[vi] - srcY[pIdx];
+                  const t = Math.abs(dy) > 1e-8 ? (bodyMaxY - srcY[pIdx]) / dy : 0;
+                  dstX[outCount] = srcX[pIdx] + (srcX[vi] - srcX[pIdx]) * t;
+                  dstY[outCount] = bodyMaxY;
+                  dstZ[outCount] = srcZ[pIdx] + (srcZ[vi] - srcZ[pIdx]) * t;
+                  outCount++;
+                }
+                if (cIn) {
+                  dstX[outCount] = srcX[vi];
+                  dstY[outCount] = srcY[vi];
+                  dstZ[outCount] = srcZ[vi];
+                  outCount++;
+                }
+                pIdx = vi;
+                pIn = cIn;
+              }
+              curCount = outCount;
+              srcX = dstX;
+              srcZ = dstZ;
+            }
+
+            polyCount = curCount;
+            polyX = srcX;
+            polyZ = srcZ;
+          }
+
+          if (polyCount < 3) continue;
+
+          if (absNy > 0.08) {
+            let inside = false;
+            for (let fi = 1; fi + 1 < polyCount; fi++) {
+              if (
+                pointInTriXZ(
+                  posObj.x,
+                  posObj.z,
+                  polyX[0],
+                  polyZ[0],
+                  polyX[fi],
+                  polyZ[fi],
+                  polyX[fi + 1],
+                  polyZ[fi + 1],
+                )
+              ) {
+                inside = true;
+                break;
+              }
+            }
+            if (inside) {
+              if (absNy <= 0.45) {
+                const nh = Math.hypot(tri.nx, tri.nz);
+                if (nh > 1e-4) {
+                  const p = radius * 0.35;
+                  posObj.x += (tri.nx / nh) * p;
+                  posObj.z += (tri.nz / nh) * p;
+                  totalPush += p;
+                }
+              }
+              continue;
+            }
+          }
+
+          let bestX = posObj.x;
+          let bestZ = posObj.z;
           let bestDistSq = Infinity;
 
-          if (
-            pointInTriXZ(
+          for (let ei = 0; ei < polyCount; ei++) {
+            const nextEi = ei + 1 < polyCount ? ei + 1 : 0;
+            const [cx, cz] = closestPointOnSegmentXZ(
               posObj.x,
               posObj.z,
-              tri.ax,
-              tri.az,
-              tri.bx,
-              tri.bz,
-              tri.cx,
-              tri.cz,
-            )
-          ) {
-            const nh = Math.hypot(tri.nx, tri.nz);
-            if (nh > 1e-4) {
-              const p = radius * 0.35;
-              posObj.x += (tri.nx / nh) * p;
-              posObj.z += (tri.nz / nh) * p;
-              totalPush += p;
+              polyX[ei],
+              polyZ[ei],
+              polyX[nextEi],
+              polyZ[nextEi],
+            );
+            const d = (posObj.x - cx) * (posObj.x - cx) + (posObj.z - cz) * (posObj.z - cz);
+            if (d < bestDistSq) {
+              bestDistSq = d;
+              bestX = cx;
+              bestZ = cz;
             }
-            continue;
           }
 
-          const [c1x, c1z] = closestPointOnSegmentXZ(
-            posObj.x,
-            posObj.z,
-            tri.ax,
-            tri.az,
-            tri.bx,
-            tri.bz,
-          );
-          const d1 = (posObj.x - c1x) * (posObj.x - c1x) + (posObj.z - c1z) * (posObj.z - c1z);
-          if (d1 < bestDistSq) {
-            bestDistSq = d1;
-            bestX = c1x;
-            bestZ = c1z;
-          }
-
-          const [c2x, c2z] = closestPointOnSegmentXZ(
-            posObj.x,
-            posObj.z,
-            tri.bx,
-            tri.bz,
-            tri.cx,
-            tri.cz,
-          );
-          const d2 = (posObj.x - c2x) * (posObj.x - c2x) + (posObj.z - c2z) * (posObj.z - c2z);
-          if (d2 < bestDistSq) {
-            bestDistSq = d2;
-            bestX = c2x;
-            bestZ = c2z;
-          }
-
-          const [c3x, c3z] = closestPointOnSegmentXZ(
-            posObj.x,
-            posObj.z,
-            tri.cx,
-            tri.cz,
-            tri.ax,
-            tri.az,
-          );
-          const d3 = (posObj.x - c3x) * (posObj.x - c3x) + (posObj.z - c3z) * (posObj.z - c3z);
-          if (d3 < bestDistSq) {
-            bestDistSq = d3;
-            bestX = c3x;
-            bestZ = c3z;
-          }
-
-          if (bestDistSq < rSq && bestDistSq > 1e-8) {
-            const dist = Math.sqrt(bestDistSq);
-            const push = radius - dist;
-            posObj.x += ((posObj.x - bestX) / dist) * push;
-            posObj.z += ((posObj.z - bestZ) / dist) * push;
-            totalPush += push;
+          if (bestDistSq < rSq) {
+            if (bestDistSq > 1e-8) {
+              const dist = Math.sqrt(bestDistSq);
+              const push = radius - dist;
+              posObj.x += ((posObj.x - bestX) / dist) * push;
+              posObj.z += ((posObj.z - bestZ) / dist) * push;
+              totalPush += push;
+            } else if (absNy <= 0.45) {
+              const nh = Math.hypot(tri.nx, tri.nz);
+              if (nh > 1e-4) {
+                const p = radius * 0.5;
+                posObj.x += (tri.nx / nh) * p;
+                posObj.z += (tri.nz / nh) * p;
+                totalPush += p;
+              }
+            }
           }
         }
       }

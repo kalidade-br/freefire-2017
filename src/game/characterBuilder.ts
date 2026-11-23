@@ -7,7 +7,7 @@ import {
   isAdamAssetsLoaded,
   UPPER_AIM_BONE_NAMES,
 } from './adamAssets';
-import { CharacterConfig, WeaponId } from './types';
+import { CharacterConfig, normalizeCharacterModelId, WeaponId } from './types';
 import { buildHybridWeaponModel } from './weapon25d';
 
 export interface CharacterRig {
@@ -363,7 +363,7 @@ function createAdamCharacterRig(
   camoTexture: THREE.Texture,
   contactShadowTexture: THREE.Texture,
 ): CharacterRig {
-  const modelId: FFModelId = initialConfig.modelId === 'eva' ? 'eva' : 'adam';
+  const modelId: FFModelId = normalizeCharacterModelId(initialConfig.modelId);
   const pack = getModelAssetPack(modelId)!;
   const clonedScene = cloneCharacterScene(modelId)!;
 

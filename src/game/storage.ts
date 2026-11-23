@@ -5,12 +5,14 @@ import {
   DEFAULT_HUD_LAYOUT_SLOT_2,
   DEFAULT_KEY_BINDINGS,
   GameSettings,
+  getCharacterPresetByModelId,
   GraphicsQuality,
   HudElementId,
   HudLayoutConfig,
   HudSlotId,
   KeyBindAction,
   KeyBindingsConfig,
+  normalizeCharacterModelId,
   PlayerProfile,
   ShadowQuality,
   TextureQuality,
@@ -281,14 +283,13 @@ export function loadCharacterConfig(): CharacterConfig {
     const raw = localStorage.getItem(CHARACTER_KEY);
     if (!raw) return { ...CHARACTER_PRESETS[0] };
     const parsed = JSON.parse(raw) as Partial<CharacterConfig>;
-    const modelId = parsed.modelId === 'eva' ? 'eva' : 'adam';
+    const modelId = normalizeCharacterModelId(parsed.modelId);
     const glooSkin = parsed.glooSkin === 'ffwc' ? 'ffwc' : 'classic';
-    const base = modelId === 'eva' ? CHARACTER_PRESETS[1] : CHARACTER_PRESETS[0];
+    const base = getCharacterPresetByModelId(modelId);
     return {
       ...base,
       backpackEnabled: parsed.backpackEnabled ?? true,
       vestEnabled: false,
-      hairStyle: modelId === 'eva' ? 'spiky' : 'buzz',
       modelId,
       glooSkin,
     };

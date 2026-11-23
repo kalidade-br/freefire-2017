@@ -112,7 +112,7 @@ service cloud.firestore {
         && data.totalKills <= 10000000
         && data.characterModelId is string
         && data.characterModelId.size() <= 16
-        && data.characterModelId in ['adam', 'eva']
+        && data.characterModelId in ['adam', 'eva', 'maxim', 'kelly']
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }

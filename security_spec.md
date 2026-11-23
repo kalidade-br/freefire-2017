@@ -3,7 +3,7 @@
 ## 1. Data Invariants
 1. **Identity Ownership**: Every document under `/users/{uid}` and `/users/{uid}/private/{docId}` MUST belong to `request.auth.uid`, and `data.uid` MUST equal `request.auth.uid` and the path `{uid}`.
 2. **PII Isolation**: Email addresses are strictly isolated in `/users/{uid}/private/info` and are only readable/writable by `request.auth.uid == uid`. Public profiles under `/users/{uid}` contain zero PII.
-3. **Strict Schema & Bounds**: All strings enforce `.size()` bounds; all integers enforce non-negative bounds (`>= 0`, `level >= 1`); `characterModelId` is strictly `adam` or `eva`; `publicId` matches `^[0-9]{4,16}$`.
+3. **Strict Schema & Bounds**: All strings enforce `.size()` bounds; all integers enforce non-negative bounds (`>= 0`, `level >= 1`); `characterModelId` is strictly one of `adam`, `eva`, `maxim`, or `kelly`; `publicId` matches `^[0-9]{4,16}$`.
 4. **Immutable & Temporal Fields**: `uid`, `publicId`, and `createdAt` are immutable after creation. `createdAt == request.time` on create; `updatedAt == request.time` on create and update.
 5. **Verified Users**: All writes require `request.auth != null && request.auth.token.email_verified == true`.
 

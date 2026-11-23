@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { getAimPoseQuats } from './adamAssets';
+import { FFModelId, getAimPoseQuats } from './adamAssets';
 import { CharacterRig } from './characterBuilder';
 import { PlayerStance } from './types';
 
@@ -81,7 +81,7 @@ export function applyAdamOverBackDraw(
   vis: THREE.Object3D | undefined,
   upperBones: Array<{ name: string; bone: THREE.Object3D }> | undefined,
   drawTimer: number,
-  modelId: 'adam' | 'eva' = 'adam',
+  modelId: FFModelId = 'adam',
 ): number {
   if (!vis || !upperBones || drawTimer <= 0) return 0;
   const { reachWeight } = computeWeaponDrawWeights(drawTimer);

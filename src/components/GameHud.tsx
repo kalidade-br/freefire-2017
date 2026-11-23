@@ -1751,7 +1751,7 @@ export const GameHud: React.FC<GameHudProps> = ({
               {hud.gameVariant === 'gladiadores' && hud.gladiadores
                 ? `${hud.gladiadores.playerTeamAlive}v${hud.gladiadores.enemyTeamAlive}`
                 : gameState === GameState.WAITING
-                  ? `${hud.aliveCount}/20`
+                  ? `${hud.aliveCount}/51`
                   : hud.aliveCount}
             </span>
           </div>

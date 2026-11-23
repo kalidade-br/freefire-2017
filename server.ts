@@ -1020,7 +1020,7 @@ export async function createExpressApp(
       return res.status(400).json({ error: 'Máximo de 4 jogadores por esquadrão.' });
     }
 
-    // Find an existing open room matching mode + map + ranked where total online humans <= 20
+    // Find an existing open room matching mode + map + ranked where total online humans <= 51
     const partyMapId: BrMapId = party.mapId === 'joao_pessoa' ? 'joao_pessoa' : 'bermuda';
     const now = Date.now();
     let matchedRoom: ServerMatchRoom | undefined;
@@ -1031,7 +1031,7 @@ export async function createExpressApp(
         r.mapId === partyMapId &&
         r.isRanked === party.isRanked &&
         now < r.waitingEndsAtMs - 1500 &&
-        r.humans.size + partySize <= 20
+        r.humans.size + partySize <= 51
       ) {
         matchedRoom = r;
         break;
@@ -1065,7 +1065,7 @@ export async function createExpressApp(
         glooWalls: new Map(),
         killFeed: [],
         nextKillFeedId: 1,
-        aliveCount: 20,
+        aliveCount: 51,
         winnerTeamId: null,
         lastRequestMs: new Map(),
       };
@@ -1073,7 +1073,7 @@ export async function createExpressApp(
     }
 
     const assignedTeamId = matchedRoom.nextTeamId;
-    matchedRoom.nextTeamId = Math.min(20, matchedRoom.nextTeamId + 1);
+    matchedRoom.nextTeamId = Math.min(51, matchedRoom.nextTeamId + 1);
 
     party.members.forEach((m, idx) => {
       const slotInTeam = idx + 1;

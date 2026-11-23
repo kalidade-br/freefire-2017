@@ -28,6 +28,8 @@ import {
   PlayerProfile,
   PoiMarker,
   computeRankedPointDelta,
+  getCharacterPresetByModelId,
+  normalizeCharacterModelId,
 } from './game/types';
 import { BERMUDA_MAP_RANGE } from './game/worldBuilder';
 import {
@@ -279,13 +281,15 @@ export default function App() {
     saveProfile(mergedProfile);
     engineRef.current?.setPlayerNickname(acc.nickname);
 
-    if (acc.character && (acc.character.modelId === 'adam' || acc.character.modelId === 'eva')) {
+    if (acc.character && acc.character.modelId) {
+      const preset = getCharacterPresetByModelId(acc.character.modelId);
       const nextChar: CharacterConfig = {
         ...characterRef.current,
         ...acc.character,
-        id: acc.character.modelId === 'eva' ? 'ff_eva_classic' : 'ff_adam_classic',
-        name: acc.character.modelId === 'eva' ? 'EVA' : 'ADAM',
-        modelId: acc.character.modelId,
+        id: preset.id,
+        name: preset.name,
+        modelId: preset.modelId,
+        hairStyle: preset.hairStyle,
         vestEnabled: false,
       };
       setCharacter(nextChar);
@@ -434,13 +438,14 @@ export default function App() {
   // Keep 3D Lobby Squad characters synced side-by-side with current party & mode
   useEffect(() => {
     if (!engineRef.current) return;
+    const selfModelId = normalizeCharacterModelId(character.modelId);
     if (gameVariant === 'gladiadores') {
       if (gladiadoresFormat === '1v1' || !party || party.members.length === 0) {
         engineRef.current.setLobbySquadMembers([
           {
             accountId: account?.id ?? -1,
             nickname: profile.nickname,
-            modelId: character.modelId === 'eva' ? 'eva' : 'adam',
+            modelId: selfModelId,
             isLeader: true,
             isSelf: true,
           },
@@ -453,12 +458,8 @@ export default function App() {
           nickname: m.nickname,
           modelId:
             m.accountId === account?.id
-              ? character.modelId === 'eva'
-                ? 'eva'
-                : 'adam'
-              : m.character?.modelId === 'eva'
-                ? 'eva'
-                : 'adam',
+              ? selfModelId
+              : normalizeCharacterModelId(m.character?.modelId),
           isLeader: m.isLeader,
           isSelf: account ? m.accountId === account.id : false,
         })),
@@ -470,7 +471,7 @@ export default function App() {
         {
           accountId: account?.id ?? -1,
           nickname: profile.nickname,
-          modelId: character.modelId === 'eva' ? 'eva' : 'adam',
+          modelId: selfModelId,
           isLeader: true,
           isSelf: true,
         },
@@ -483,12 +484,8 @@ export default function App() {
         nickname: m.nickname,
         modelId:
           m.accountId === account?.id
-            ? character.modelId === 'eva'
-              ? 'eva'
-              : 'adam'
-            : m.character?.modelId === 'eva'
-              ? 'eva'
-              : 'adam',
+            ? selfModelId
+            : normalizeCharacterModelId(m.character?.modelId),
         isLeader: m.isLeader,
         isSelf: account ? m.accountId === account.id : false,
       })),
@@ -712,7 +709,7 @@ export default function App() {
     }
     if (firebaseUserRef.current) {
       void saveFirestoreProfile(firebaseUserRef.current, {
-        characterModelId: next.modelId === 'eva' ? 'eva' : 'adam',
+        characterModelId: normalizeCharacterModelId(next.modelId),
       }).catch(() => undefined);
     }
   };

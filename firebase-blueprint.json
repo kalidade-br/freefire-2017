@@ -62,7 +62,7 @@
         "characterModelId": {
           "type": "string",
           "description": "Selected character model ID.",
-          "enum": ["adam", "eva"],
+          "enum": ["adam", "eva", "maxim", "kelly"],
           "maxLength": 16
         },
         "createdAt": {
