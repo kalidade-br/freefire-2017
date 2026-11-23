@@ -100,6 +100,8 @@ export interface CharacterConfig {
 }
 
 export type GraphicsQuality = 'low' | 'medium' | 'high';
+export type TextureQuality = 'low' | 'medium' | 'high' | 'ultra';
+export type ShadowQuality = 'off' | 'low' | 'medium' | 'high' | 'ultra';
 export type ControlMode = 'auto' | 'desktop' | 'mobile';
 export type AimAssistMode = 'default' | 'precise';
 export type MatchMode = 'solo' | 'duo' | 'squad';
@@ -223,6 +225,190 @@ export const DEFAULT_HUD_LAYOUT_SLOT_2: HudLayoutConfig = {
 
 export type AutoLootSpeed = 'normal' | 'fast' | 'ultra';
 
+export type KeyBindAction =
+  | 'moveForward'
+  | 'moveBackward'
+  | 'moveLeft'
+  | 'moveRight'
+  | 'sprint'
+  | 'jump'
+  | 'crouch'
+  | 'prone'
+  | 'fire'
+  | 'aim'
+  | 'reload'
+  | 'quickSwap'
+  | 'cycleScope'
+  | 'slot1'
+  | 'slot2'
+  | 'slot3'
+  | 'slot4'
+  | 'interact'
+  | 'gloo'
+  | 'grenade'
+  | 'medkit'
+  | 'smallMedkit'
+  | 'backpack'
+  | 'revive'
+  | 'surfboard'
+  | 'minimap'
+  | 'toggleMouse'
+  | 'resetMouse';
+
+export type KeyBindingsConfig = Record<KeyBindAction, string>;
+
+export const DEFAULT_KEY_BINDINGS: KeyBindingsConfig = {
+  moveForward: 'KeyW',
+  moveBackward: 'KeyS',
+  moveLeft: 'KeyA',
+  moveRight: 'KeyD',
+  sprint: 'ShiftLeft',
+  jump: 'Space',
+  crouch: 'KeyC',
+  prone: 'KeyZ',
+  fire: 'MouseLeft',
+  aim: 'MouseRight',
+  reload: 'KeyR',
+  quickSwap: 'KeyQ',
+  cycleScope: 'KeyY',
+  slot1: 'Digit1',
+  slot2: 'Digit2',
+  slot3: 'Digit3',
+  slot4: 'Digit4',
+  interact: 'KeyE',
+  gloo: 'KeyG',
+  grenade: 'KeyX',
+  medkit: 'KeyH',
+  smallMedkit: 'Digit7',
+  backpack: 'Tab',
+  revive: 'KeyV',
+  surfboard: 'KeyT',
+  minimap: 'KeyM',
+  toggleMouse: 'F1',
+  resetMouse: 'F2',
+};
+
+export const EMULATOR_KEY_BINDINGS: KeyBindingsConfig = {
+  moveForward: 'KeyW',
+  moveBackward: 'KeyS',
+  moveLeft: 'KeyA',
+  moveRight: 'KeyD',
+  sprint: 'ShiftLeft',
+  jump: 'Space',
+  crouch: 'KeyC',
+  prone: 'KeyZ',
+  fire: 'MouseLeft',
+  aim: 'MouseRight',
+  reload: 'KeyR',
+  quickSwap: 'KeyQ',
+  cycleScope: 'KeyY',
+  slot1: 'Digit1',
+  slot2: 'Digit2',
+  slot3: 'Digit3',
+  slot4: 'Digit4',
+  interact: 'KeyF',
+  gloo: 'KeyE',
+  grenade: 'Digit5',
+  medkit: 'KeyH',
+  smallMedkit: 'Digit6',
+  backpack: 'Tab',
+  revive: 'KeyV',
+  surfboard: 'KeyT',
+  minimap: 'KeyM',
+  toggleMouse: 'F1',
+  resetMouse: 'F2',
+};
+
+export const KEY_BINDING_GROUPS: Array<{
+  title: string;
+  items: Array<{ action: KeyBindAction; label: string; hint?: string }>;
+}> = [
+  {
+    title: 'EMULADOR & CONTROLE DE MOUSE',
+    items: [
+      {
+        action: 'toggleMouse',
+        label: 'Suspender / Voltar Câmera',
+        hint: 'Libera o cursor do mouse para clicar e aperta de novo para voltar à câmera',
+      },
+      {
+        action: 'resetMouse',
+        label: 'Resetar / Reiniciar Mouse',
+        hint: 'Desbuga a mira, zera o giro preso e reinicia a trava da câmera',
+      },
+    ],
+  },
+  {
+    title: 'MOVIMENTAÇÃO & POSTURA',
+    items: [
+      { action: 'moveForward', label: 'Andar para Frente' },
+      { action: 'moveBackward', label: 'Andar para Trás' },
+      { action: 'moveLeft', label: 'Andar para Esquerda' },
+      { action: 'moveRight', label: 'Andar para Direita' },
+      { action: 'sprint', label: 'Correr / Sprint' },
+      { action: 'jump', label: 'Pular / Avião / Paraquedas' },
+      { action: 'crouch', label: 'Agachar' },
+      { action: 'prone', label: 'Deitar' },
+    ],
+  },
+  {
+    title: 'COMBATE & ARMAS',
+    items: [
+      { action: 'fire', label: 'Atirar / Botar Gelo / Granada' },
+      { action: 'aim', label: 'Mirar (Scope)' },
+      { action: 'reload', label: 'Recarregar Arma' },
+      { action: 'quickSwap', label: 'Troca Rápida de Arma' },
+      { action: 'cycleScope', label: 'Alternar Mira (Red Dot/2x/4x)' },
+      { action: 'slot1', label: 'Arma Principal 1' },
+      { action: 'slot2', label: 'Arma Principal 2' },
+      { action: 'slot3', label: 'Pistola (Slot 3)' },
+      { action: 'slot4', label: 'Punho / Soco (Slot 4)' },
+    ],
+  },
+  {
+    title: 'LOOT, GELO & UTILITÁRIOS',
+    items: [
+      { action: 'interact', label: 'Pegar Loot / Lojinha / Carro' },
+      { action: 'gloo', label: 'Parede de Gelo' },
+      { action: 'grenade', label: 'Granada Explosiva' },
+      { action: 'medkit', label: 'Usar Kit Médico' },
+      { action: 'smallMedkit', label: 'Usar Kit Pequeno' },
+      { action: 'revive', label: 'Salvar / Reviver Aliado' },
+      { action: 'backpack', label: 'Abrir / Fechar Mochila' },
+      { action: 'surfboard', label: 'Prancha na Água' },
+      { action: 'minimap', label: 'Zoom do Minimapa' },
+    ],
+  },
+];
+
+export function formatKeyCodeLabel(code: string): string {
+  if (!code) return '---';
+  if (code === 'MouseLeft') return 'CLIQUE ESQ';
+  if (code === 'MouseRight') return 'CLIQUE DIR';
+  if (code === 'MouseMiddle') return 'M. MEIO';
+  if (code === 'MouseBack') return 'M. LAT 1';
+  if (code === 'MouseForward') return 'M. LAT 2';
+  if (code === 'WheelUp') return 'SCROLL ↑';
+  if (code === 'WheelDown') return 'SCROLL ↓';
+  if (code === 'Space') return 'ESPAÇO';
+  if (code === 'ShiftLeft' || code === 'ShiftRight') return 'SHIFT';
+  if (code === 'ControlLeft' || code === 'ControlRight') return 'CTRL';
+  if (code === 'AltLeft' || code === 'AltRight') return 'ALT';
+  if (code === 'Tab') return 'TAB';
+  if (code === 'CapsLock') return 'CAPS';
+  if (code === 'Backquote') return "' / ~";
+  if (code === 'Enter' || code === 'NumpadEnter') return 'ENTER';
+  if (code === 'Backspace') return 'BACKSPACE';
+  if (code === 'ArrowUp') return 'SETA ↑';
+  if (code === 'ArrowDown') return 'SETA ↓';
+  if (code === 'ArrowLeft') return 'SETA ←';
+  if (code === 'ArrowRight') return 'SETA →';
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  if (code.startsWith('Numpad')) return `NUM ${code.slice(6)}`;
+  return code.toUpperCase();
+}
+
 export interface GameSettings {
   sensitivity: number; // 0.2 .. 2.5 (Geral)
   redDotSensitivity: number; // 0.2 .. 2.5 (1x / Red Dot)
@@ -231,6 +417,8 @@ export interface GameSettings {
   sniperSensitivity: number; // 0.2 .. 2.5 (AWM Sniper)
   aimAssistMode: AimAssistMode; // 'default' = Mira Gruda, 'precise' = Livre
   quality: GraphicsQuality;
+  textureQuality?: TextureQuality;
+  shadowQuality?: ShadowQuality;
   soundVolume: number; // 0 .. 1
   muted: boolean;
   showFps: boolean;
@@ -238,6 +426,9 @@ export interface GameSettings {
   invertY: boolean;
   autoLoot: boolean;
   autoLootSpeed: AutoLootSpeed;
+  emulatorMode?: boolean;
+  aimToggleMode?: boolean;
+  keyBindings?: KeyBindingsConfig;
   hudLayout: HudLayoutConfig;
   activeHudSlot?: HudSlotId;
   hudSlots?: Record<HudSlotId, HudLayoutConfig>;
@@ -510,6 +701,8 @@ export interface HudSnapshot {
   killFeed: KillFeedEntry[];
   fps: number;
   pointerLocked: boolean;
+  mouseSuspended: boolean;
+  mouseResetNotice: boolean;
   currentPoi: string | null;
   matchMode: MatchMode;
   reviveTarget: {

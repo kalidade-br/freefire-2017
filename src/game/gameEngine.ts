@@ -61,7 +61,11 @@ import {
   WeaponSlotState,
   WorldObbCollider,
 } from './types';
-import { isMobileHardware } from './storage';
+import {
+  defaultShadowForQuality,
+  defaultTextureForQuality,
+  isMobileHardware,
+} from './storage';
 import { preloadAllWeaponTextures } from './weapon25d';
 import {
   BERMUDA_HALF,
@@ -790,7 +794,7 @@ export class BattleRoyaleEngine {
     this.lobbyScene.characterAnchor.add(this.lobbyRig.root);
 
     this.world = createIslandWorld(this.textures, this.envMap);
-    this.world.applyQuality(initialSettings.quality, this.isSoftwareGl);
+    this.applyQualitySettings(initialSettings);
     for (let i = 0; i < this.world.targets.length; i++) {
       this.targetById.set(this.world.targets[i].id, this.world.targets[i]);
     }
@@ -993,6 +997,17 @@ export class BattleRoyaleEngine {
   public applyQualitySettings(settings: GameSettings): void {
     this.settings = settings;
     soundEngine.configure(settings.soundVolume, settings.muted);
+    this.input.configureControls({
+      keyBindings: settings.keyBindings,
+      emulatorMode: Boolean(settings.emulatorMode),
+      aimToggleMode: Boolean(settings.aimToggleMode),
+    });
+
+    const texLevel =
+      settings.textureQuality ?? defaultTextureForQuality(settings.quality);
+    const shadowLevel = this.isSoftwareGl
+      ? 'off'
+      : (settings.shadowQuality ?? defaultShadowForQuality(settings.quality));
 
     const mobile = isMobileHardware();
     const scale =
@@ -1000,25 +1015,53 @@ export class BattleRoyaleEngine {
         ? 1
         : mobile
           ? settings.quality === 'low'
-            ? Math.min(window.devicePixelRatio, 0.72)
+            ? Math.min(window.devicePixelRatio, 0.75)
             : settings.quality === 'high'
-              ? Math.min(window.devicePixelRatio, 1.3)
-              : Math.min(window.devicePixelRatio, 0.92)
+              ? Math.min(window.devicePixelRatio, 1.45)
+              : Math.min(window.devicePixelRatio, 0.96)
           : settings.quality === 'low'
             ? Math.min(window.devicePixelRatio, 0.85)
             : settings.quality === 'high'
-              ? Math.min(window.devicePixelRatio, 1.75)
-              : Math.min(window.devicePixelRatio, 1.25);
+              ? Math.min(window.devicePixelRatio, 2.0)
+              : Math.min(window.devicePixelRatio, 1.3);
+    const prevShadowEnabled = this.renderer.shadowMap.enabled;
+    const prevShadowType = this.renderer.shadowMap.type;
+    const nextShadowEnabled = shadowLevel !== 'off';
+    const nextShadowType =
+      shadowLevel === 'high' || shadowLevel === 'ultra'
+        ? THREE.PCFSoftShadowMap
+        : THREE.PCFShadowMap;
+
     this.renderer.setPixelRatio(scale);
-    this.renderer.shadowMap.enabled = !this.isSoftwareGl && !mobile && settings.quality === 'high';
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.enabled = nextShadowEnabled;
+    this.renderer.shadowMap.type = nextShadowType;
+    if (nextShadowEnabled) {
+      this.renderer.shadowMap.needsUpdate = true;
+    }
     this.renderer.toneMappingExposure =
-      settings.quality === 'low' ? 1.12 : settings.quality === 'high' ? 1.16 : 1.15;
+      settings.quality === 'low' ? 1.12 : settings.quality === 'high' ? 1.2 : 1.15;
+
+    if (this.textures) {
+      this.textures.applyQuality(texLevel, this.renderer.capabilities.getMaxAnisotropy());
+    }
     if (this.world) {
-      this.world.applyQuality(settings.quality, this.isSoftwareGl);
+      this.world.applyQuality(settings.quality, this.isSoftwareGl, texLevel, shadowLevel);
       this.world.camera.far =
-        settings.quality === 'low' ? 410 : settings.quality === 'high' ? 880 : 600;
+        settings.quality === 'low' ? 430 : settings.quality === 'high' ? 1120 : 680;
       this.world.camera.updateProjectionMatrix();
+      if (prevShadowEnabled !== nextShadowEnabled || prevShadowType !== nextShadowType) {
+        this.world.scene.traverse((obj) => {
+          const mat = (obj as THREE.Mesh).material;
+          if (!mat) return;
+          if (Array.isArray(mat)) {
+            mat.forEach((m) => {
+              m.needsUpdate = true;
+            });
+          } else {
+            mat.needsUpdate = true;
+          }
+        });
+      }
     }
   }
 
@@ -4484,11 +4527,20 @@ export class BattleRoyaleEngine {
     this.vaultTimer = Math.max(0, this.vaultTimer - dt);
     this.canVaultWindow = this.findNearbyWindowSill();
 
+    if (this.input.consumeResetCameraFlag()) {
+      this.camShake = 0;
+      this.aimBreakAccum = 0;
+      this.hudDirty = true;
+    }
+
     if (edges.backpack) {
       this.onBackpackRequest?.();
     }
     if (edges.medkit) {
       this.useMedkit();
+    }
+    if (edges.smallMedkit) {
+      this.useSmallKit();
     }
     if (edges.gloo) {
       if (this.glooCount > 0) {
@@ -5326,8 +5378,9 @@ export class BattleRoyaleEngine {
     if (snapX !== this.lastSunSnapX || snapZ !== this.lastSunSnapZ) {
       this.lastSunSnapX = snapX;
       this.lastSunSnapZ = snapZ;
-      this.world.sunLight.position.set(snapX + 65, this.pos.y + 95, snapZ + 55);
+      this.world.sunLight.position.set(snapX + 75, this.pos.y + 115, snapZ + 62);
       this.world.sunLight.target.position.set(snapX, this.pos.y, snapZ);
+      this.world.sunLight.target.updateMatrixWorld();
     }
 
     // Update camera BEFORE firing so aim-assist snaps apply cleanly with zero rotational skew!
@@ -5722,7 +5775,9 @@ export class BattleRoyaleEngine {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(x, y, z);
     mesh.rotation.y = wallYaw;
-    const enableShadow = !this.isSoftwareGl && this.settings.quality === 'high';
+    const shadowLv =
+      this.settings.shadowQuality ?? defaultShadowForQuality(this.settings.quality);
+    const enableShadow = !this.isSoftwareGl && shadowLv !== 'off';
     mesh.castShadow = enableShadow;
     mesh.receiveShadow = enableShadow;
     mesh.userData.glooId = id;
@@ -8986,7 +9041,9 @@ export class BattleRoyaleEngine {
 
     const crateMesh = new THREE.Mesh(this.airDropCrateGeo, this.airDropCrateMat);
     crateMesh.position.y = 0.675;
-    const dropShadow = !this.isSoftwareGl && this.settings.quality === 'high';
+    const airShadowLv =
+      this.settings.shadowQuality ?? defaultShadowForQuality(this.settings.quality);
+    const dropShadow = !this.isSoftwareGl && airShadowLv !== 'off';
     crateMesh.castShadow = dropShadow;
     crateMesh.receiveShadow = dropShadow;
 
@@ -10095,8 +10152,14 @@ export class BattleRoyaleEngine {
 
     this.input.sample();
     const edges = this.input.consumeLookAndEdges();
+    if (this.input.consumeResetCameraFlag()) {
+      this.camShake = 0;
+      this.vehicleLookOverrideTimer = 0;
+      this.hudDirty = true;
+    }
     if (edges.backpack) this.onBackpackRequest?.();
     if (edges.medkit) this.useMedkit();
+    if (edges.smallMedkit) this.useSmallKit();
     this.updateMedkitChannel(dt, false);
     if (edges.interact) {
       this.exitVehicle();
@@ -10671,6 +10734,8 @@ export class BattleRoyaleEngine {
       killFeed: this.killFeed.map((k) => ({ ...k })),
       fps: this.currentFps,
       pointerLocked: this.input.pointerLocked,
+      mouseSuspended: this.input.mouseSuspended,
+      mouseResetNotice: performance.now() - this.input.mouseResetTimestamp < 1450,
       currentPoi,
       matchMode: this.matchMode,
       reviveTarget: (() => {

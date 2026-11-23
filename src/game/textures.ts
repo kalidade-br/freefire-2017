@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { TextureQuality } from './types';
 
 function makeCanvas(size: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const canvas = document.createElement('canvas');
@@ -57,43 +58,44 @@ export interface ProceduralTextureSet {
   modernGlass: THREE.CanvasTexture;
   colonialPastel: THREE.CanvasTexture;
   plazaStone: THREE.CanvasTexture;
+  applyQuality: (level: TextureQuality, maxAniso?: number) => void;
   dispose: () => void;
 }
 
 export function createProceduralTextures(
   maxAnisotropy: number,
 ): ProceduralTextureSet {
-  // 1. Clean Bright Bermudian Meadow Grass (128x128 lightweight, zero muddy blotches)
-  const [grassC, grassCtx] = makeCanvas(128);
+  // 1. Crisp Tropical Meadow Grass (256x256 rich micro-blades)
+  const [grassC, grassCtx] = makeCanvas(256);
   grassCtx.fillStyle = '#6c8742';
-  grassCtx.fillRect(0, 0, 128, 128);
-  for (let i = 0; i < 42; i++) {
-    const cx = (i * 47 + (i % 5) * 13) % 128;
-    const cy = (i * 73 + (i % 7) * 11) % 128;
-    const r = 7 + (i % 4) * 4;
+  grassCtx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 68; i++) {
+    const cx = (i * 79 + (i % 5) * 23) % 256;
+    const cy = (i * 113 + (i % 7) * 19) % 256;
+    const r = 12 + (i % 4) * 7;
     grassCtx.fillStyle =
       i % 3 === 0
         ? 'rgba(130, 160, 76, 0.34)'
         : i % 3 === 1
           ? 'rgba(84, 110, 48, 0.30)'
           : 'rgba(146, 134, 82, 0.20)';
-    for (let ox = -128; ox <= 128; ox += 128) {
-      for (let oy = -128; oy <= 128; oy += 128) {
+    for (let ox = -256; ox <= 256; ox += 256) {
+      for (let oy = -256; oy <= 256; oy += 256) {
         grassCtx.beginPath();
         grassCtx.arc(cx + ox, cy + oy, r, 0, Math.PI * 2);
         grassCtx.fill();
       }
     }
   }
-  grassCtx.lineWidth = 1.3;
-  for (let i = 0; i < 110; i++) {
-    const x = (i * 31) % 128;
-    const y = (i * 53) % 128;
+  grassCtx.lineWidth = 1.6;
+  for (let i = 0; i < 240; i++) {
+    const x = (i * 53 + (i % 11) * 7) % 256;
+    const y = (i * 97 + (i % 13) * 5) % 256;
     grassCtx.strokeStyle =
-      i % 2 === 0 ? 'rgba(154, 184, 92, 0.45)' : 'rgba(74, 102, 42, 0.40)';
+      i % 2 === 0 ? 'rgba(154, 184, 92, 0.48)' : 'rgba(74, 102, 42, 0.42)';
     grassCtx.beginPath();
     grassCtx.moveTo(x, y);
-    grassCtx.quadraticCurveTo(x + 3, y - 4, x + 7, y - 1);
+    grassCtx.quadraticCurveTo(x + 4, y - 6, x + 9, y - 2);
     grassCtx.stroke();
   }
   const grass = finalizeTexture(grassC, maxAnisotropy, 64, 64);
@@ -385,8 +387,10 @@ export function createProceduralTextures(
   contactShadow.colorSpace = THREE.SRGBColorSpace;
   contactShadow.needsUpdate = true;
 
-  // 9. Calçadão de Tambaú / Cabo Branco Pedra Portuguesa Wave Mosaic (128x128)
-  const [calcC, calcCtx] = makeCanvas(128);
+  // 9. Calçadão de Tambaú / Cabo Branco Pedra Portuguesa Wave Mosaic (256x256 HD)
+  const [calcC, calcCtx] = makeCanvas(256);
+  calcCtx.save();
+  calcCtx.scale(2, 2);
   calcCtx.fillStyle = '#e7e1d4';
   calcCtx.fillRect(0, 0, 128, 128);
   calcCtx.fillStyle = '#334155';
@@ -405,19 +409,20 @@ export function createProceduralTextures(
   calcCtx.bezierCurveTo(96, 120, 32, 80, 0, 100);
   calcCtx.closePath();
   calcCtx.fill();
-  for (let i = 0; i < 90; i++) {
-    calcCtx.fillStyle = i % 2 === 0 ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.12)';
-    calcCtx.fillRect((i * 23) % 128, (i * 41) % 128, 3, 2);
+  calcCtx.restore();
+  for (let i = 0; i < 260; i++) {
+    calcCtx.fillStyle = i % 2 === 0 ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.14)';
+    calcCtx.fillRect((i * 37) % 256, (i * 61) % 256, 4, 3);
   }
   const calcadaoWave = finalizeTexture(calcC, maxAnisotropy, 4, 24);
 
-  // 10. Golden Tropical Beach Sand (128x128)
-  const [sandC, sandCtx] = makeCanvas(128);
+  // 10. Golden Tropical Beach Sand (256x256 crisp grain)
+  const [sandC, sandCtx] = makeCanvas(256);
   sandCtx.fillStyle = '#e6ce9e';
-  sandCtx.fillRect(0, 0, 128, 128);
-  for (let i = 0; i < 160; i++) {
-    sandCtx.fillStyle = i % 3 === 0 ? '#d8bd8b' : i % 3 === 1 ? '#f0dbb0' : '#c9ae7a';
-    sandCtx.fillRect((i * 29) % 128, (i * 43) % 128, 3, 2);
+  sandCtx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 420; i++) {
+    sandCtx.fillStyle = i % 3 === 0 ? '#d8bd8b' : i % 3 === 1 ? '#f3dfb6' : '#c9ae7a';
+    sandCtx.fillRect((i * 47) % 256, (i * 73) % 256, 3, 2);
   }
   const sandBeach = finalizeTexture(sandC, maxAnisotropy, 16, 16);
 
@@ -434,24 +439,32 @@ export function createProceduralTextures(
   }
   const falesiaClay = finalizeTexture(falC, maxAnisotropy, 3, 2);
 
-  // 12. Altiplano / Estação Cabo Branco Modern Glass & Aluminum Curtain Wall (128x128)
-  const [glassC, glassCtx] = makeCanvas(128);
+  // 12. Altiplano / Estação Cabo Branco Modern Glass & Aluminum Curtain Wall (256x256 HD)
+  const [glassC, glassCtx] = makeCanvas(256);
+  glassCtx.save();
+  glassCtx.scale(2, 2);
   glassCtx.fillStyle = '#e2e8f0';
   glassCtx.fillRect(0, 0, 128, 128);
   for (let y = 6; y < 128; y += 32) {
     for (let x = 6; x < 128; x += 24) {
       const gradG = glassCtx.createLinearGradient(x, y, x, y + 22);
-      gradG.addColorStop(0, '#38bdf8');
-      gradG.addColorStop(0.45, '#0284c7');
+      gradG.addColorStop(0, '#7dd3fc');
+      gradG.addColorStop(0.35, '#0ea5e9');
+      gradG.addColorStop(0.75, '#0369a1');
       gradG.addColorStop(1, '#0f172a');
       glassCtx.fillStyle = gradG;
       glassCtx.fillRect(x, y, 18, 22);
-      glassCtx.fillStyle = 'rgba(255,255,255,0.28)';
-      glassCtx.fillRect(x + 2, y + 2, 4, 18);
+      glassCtx.fillStyle = 'rgba(255,255,255,0.34)';
+      glassCtx.fillRect(x + 2, y + 2, 3.5, 18);
+      glassCtx.fillStyle = 'rgba(255,255,255,0.16)';
+      glassCtx.fillRect(x + 7, y + 3, 1.5, 16);
     }
     glassCtx.fillStyle = '#f8fafc';
     glassCtx.fillRect(0, y + 22, 128, 10);
+    glassCtx.fillStyle = 'rgba(15,23,42,0.16)';
+    glassCtx.fillRect(0, y + 30, 128, 2);
   }
+  glassCtx.restore();
   const modernGlass = finalizeTexture(glassC, maxAnisotropy, 2, 3);
 
   // 13. Centro Histórico Colonial Pastel Plaster Wall (128x128)
@@ -480,6 +493,61 @@ export function createProceduralTextures(
   }
   const plazaStone = finalizeTexture(plzC, maxAnisotropy, 8, 8);
 
+  const allTextures: THREE.CanvasTexture[] = [
+    grass,
+    foliage,
+    bark,
+    rock,
+    waterWave,
+    dirtRoad,
+    asphaltRoad,
+    concrete,
+    interiorFloor,
+    stairConcrete,
+    woodPlank,
+    barnWood,
+    stuccoWall,
+    brickWall,
+    shedMetal,
+    roofTile,
+    containerBlue,
+    containerRust,
+    camoParachute,
+    calcadaoWave,
+    sandBeach,
+    falesiaClay,
+    modernGlass,
+    colonialPastel,
+    plazaStone,
+  ];
+
+  let appliedLevel: TextureQuality | null = null;
+  const applyQuality = (level: TextureQuality, maxAniso = maxAnisotropy) => {
+    if (appliedLevel === level) return;
+    appliedLevel = level;
+    const cap = Math.max(1, maxAniso);
+    const targetAniso =
+      level === 'low'
+        ? 1
+        : level === 'medium'
+          ? Math.min(2, cap)
+          : level === 'high'
+            ? Math.min(8, cap)
+            : Math.min(16, cap);
+    const targetMinFilter =
+      level === 'low'
+        ? THREE.LinearMipmapNearestFilter
+        : THREE.LinearMipmapLinearFilter;
+
+    for (let i = 0; i < allTextures.length; i++) {
+      const t = allTextures[i];
+      t.anisotropy = targetAniso;
+      t.minFilter = targetMinFilter;
+      t.magFilter = THREE.LinearFilter;
+      t.needsUpdate = true;
+    }
+  };
+
   return {
     grass,
     foliage,
@@ -507,33 +575,10 @@ export function createProceduralTextures(
     modernGlass,
     colonialPastel,
     plazaStone,
+    applyQuality,
     dispose: () => {
-      grass.dispose();
-      foliage.dispose();
-      bark.dispose();
-      rock.dispose();
-      waterWave.dispose();
-      dirtRoad.dispose();
-      asphaltRoad.dispose();
-      concrete.dispose();
-      interiorFloor.dispose();
-      stairConcrete.dispose();
-      woodPlank.dispose();
-      barnWood.dispose();
-      stuccoWall.dispose();
-      brickWall.dispose();
-      shedMetal.dispose();
-      roofTile.dispose();
-      containerBlue.dispose();
-      containerRust.dispose();
-      camoParachute.dispose();
+      allTextures.forEach((t) => t.dispose());
       contactShadow.dispose();
-      calcadaoWave.dispose();
-      sandBeach.dispose();
-      falesiaClay.dispose();
-      modernGlass.dispose();
-      colonialPastel.dispose();
-      plazaStone.dispose();
     },
   };
 }

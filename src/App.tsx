@@ -155,6 +155,8 @@ const INITIAL_HUD: HudSnapshot = {
   killFeed: [],
   fps: 60,
   pointerLocked: false,
+  mouseSuspended: false,
+  mouseResetNotice: false,
   currentPoi: null,
   matchMode: 'solo',
   reviveTarget: null,
@@ -459,20 +461,32 @@ export default function App() {
     }
 
     if (!isBackpackOpen && !isShopOpen) return;
+    const backpackCode = settings.keyBindings?.backpack ?? 'Tab';
     const onKey = (e: KeyboardEvent) => {
       if (isShopOpen && e.code === 'Escape') {
         e.preventDefault();
         setIsShopOpen(false);
+        if (!isPaused && engineRef.current && !engineRef.current.input.mouseSuspended) {
+          engineRef.current.input.setGameplayActive(true);
+          engineRef.current.input.requestLock();
+        }
         return;
       }
-      if (isBackpackOpen && (e.code === 'Tab' || e.code === 'KeyB' || e.code === 'Escape')) {
+      if (
+        isBackpackOpen &&
+        (e.code === backpackCode || e.code === 'Tab' || e.code === 'KeyB' || e.code === 'Escape')
+      ) {
         e.preventDefault();
         setIsBackpackOpen(false);
+        if (!isPaused && engineRef.current && !engineRef.current.input.mouseSuspended) {
+          engineRef.current.input.setGameplayActive(true);
+          engineRef.current.input.requestLock();
+        }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isBackpackOpen, isPaused, isShopOpen, gameState]);
+  }, [isBackpackOpen, isPaused, isShopOpen, gameState, settings.keyBindings?.backpack]);
 
   // Mount WebGLRenderer once inside isolated container
   useEffect(() => {
@@ -912,6 +926,8 @@ export default function App() {
           pois={mapMeta.pois}
           input={engineRef.current.input}
           controlMode={settings.controlMode}
+          keyBindings={settings.keyBindings}
+          emulatorMode={settings.emulatorMode}
           hudLayout={settings.hudLayout}
           showFps={settings.showFps}
           isPaused={isPaused}
@@ -920,11 +936,25 @@ export default function App() {
             soundEngine.playUiClick();
             setIsBackpackOpen(false);
             setIsShopOpen(false);
-            setIsPaused((p) => !p);
+            setIsPaused((p) => {
+              const next = !p;
+              if (!next && engineRef.current && !engineRef.current.input.mouseSuspended) {
+                engineRef.current.input.setGameplayActive(true);
+                engineRef.current.input.requestLock();
+              }
+              return next;
+            });
           }}
           onToggleBackpack={() => {
             setIsShopOpen(false);
-            setIsBackpackOpen((b) => !b);
+            setIsBackpackOpen((b) => {
+              const next = !b;
+              if (!next && !isPaused && engineRef.current && !engineRef.current.input.mouseSuspended) {
+                engineRef.current.input.setGameplayActive(true);
+                engineRef.current.input.requestLock();
+              }
+              return next;
+            });
           }}
           onUseMedkit={() => engineRef.current?.useMedkit()}
           onUseSmallKit={() => engineRef.current?.useSmallKit()}
@@ -992,7 +1022,13 @@ export default function App() {
       {inGameplayHud && isBackpackOpen && !isPaused && engineRef.current && (
         <BackpackModal
           hud={hud}
-          onClose={() => setIsBackpackOpen(false)}
+          onClose={() => {
+            setIsBackpackOpen(false);
+            if (engineRef.current && !engineRef.current.input.mouseSuspended) {
+              engineRef.current.input.setGameplayActive(true);
+              engineRef.current.input.requestLock();
+            }
+          }}
           onUseMedkit={() => engineRef.current?.useMedkit()}
           onDropMedkit={() => engineRef.current?.dropMedkit()}
           onUseSmallKit={() => engineRef.current?.useSmallKit()}
@@ -1029,7 +1065,13 @@ export default function App() {
           onBuyOffer={(offerId, reviveAllyId) =>
             engineRef.current?.buyVendingOffer(offerId, reviveAllyId) ?? false
           }
-          onClose={() => setIsShopOpen(false)}
+          onClose={() => {
+            setIsShopOpen(false);
+            if (engineRef.current && !engineRef.current.input.mouseSuspended) {
+              engineRef.current.input.setGameplayActive(true);
+              engineRef.current.input.requestLock();
+            }
+          }}
         />
       )}
 
@@ -1171,8 +1213,12 @@ export default function App() {
             setShowSettingsModal(false);
             setShowHudEditor(true);
           }}
+          onRebindingChange={(active) => {
+            engineRef.current?.input.setRebinding(active);
+          }}
           onClose={() => {
             soundEngine.playUiClick();
+            engineRef.current?.input.setRebinding(false);
             setShowSettingsModal(false);
           }}
         />

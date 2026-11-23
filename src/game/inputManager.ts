@@ -1,3 +1,48 @@
+import {
+  DEFAULT_KEY_BINDINGS,
+  KeyBindAction,
+  KeyBindingsConfig,
+} from './types';
+
+function mouseButtonToCode(button: number): string | null {
+  if (button === 0) return 'MouseLeft';
+  if (button === 1) return 'MouseMiddle';
+  if (button === 2) return 'MouseRight';
+  if (button === 3) return 'MouseBack';
+  if (button === 4) return 'MouseForward';
+  return null;
+}
+
+function codesMatch(bound: string, incoming: string): boolean {
+  if (bound === incoming) return true;
+  if (
+    (bound === 'ShiftLeft' || bound === 'ShiftRight') &&
+    (incoming === 'ShiftLeft' || incoming === 'ShiftRight')
+  ) {
+    return true;
+  }
+  if (
+    (bound === 'ControlLeft' || bound === 'ControlRight') &&
+    (incoming === 'ControlLeft' || incoming === 'ControlRight')
+  ) {
+    return true;
+  }
+  if (
+    (bound === 'AltLeft' || bound === 'AltRight') &&
+    (incoming === 'AltLeft' || incoming === 'AltRight')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isEditableElement(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+}
+
 export class InputManager {
   public moveX = 0;
   public moveZ = 0;
@@ -16,19 +61,37 @@ export class InputManager {
   public cycleScopePressed = false;
   public backpackPressed = false;
   public medkitPressed = false;
+  public smallMedkitPressed = false;
   public glooPressed = false;
   public grenadePressed = false;
   public fireTapPressed = false;
   public revivePressed = false;
   public surfboardPressed = false;
   public quickSwapPressed = false;
+  public minimapTogglePressed = false;
   public switchSlot: 1 | 2 | 3 | 4 | null = null;
   public cycleSlotDir: -1 | 0 | 1 = 0;
   public pointerLocked = false;
+
+  public keyBindings: KeyBindingsConfig = { ...DEFAULT_KEY_BINDINGS };
+  public emulatorMode = false;
+  public aimToggleMode = false;
+  public mouseSuspended = false;
+  public mouseResetTimestamp = 0;
+  public isRebinding = false;
+
+  private isAimToggled = false;
+  private pendingResetCamera = false;
+  private pendingRelockAfterReset = false;
+  private resetRelockTimer: number | null = null;
+  private lastFreeMoveX: number | null = null;
+  private lastFreeMoveY: number | null = null;
+
   private lastCrouchMs = 0;
   private lastProneMs = 0;
 
   private keys = new Set<string>();
+  private activeCodes = new Set<string>();
   private touchMoveX = 0;
   private touchMoveY = 0;
   private touchSprint = false;
@@ -47,6 +110,36 @@ export class InputManager {
     window.addEventListener('keyup', this.handleKeyUp);
     window.addEventListener('blur', this.handleBlur);
     document.addEventListener('pointerlockchange', this.handlePointerLockChange);
+  }
+
+  public configureControls(opts: {
+    keyBindings?: Partial<KeyBindingsConfig>;
+    emulatorMode?: boolean;
+    aimToggleMode?: boolean;
+  }): void {
+    if (opts.keyBindings) {
+      this.keyBindings = { ...DEFAULT_KEY_BINDINGS, ...opts.keyBindings };
+    }
+    if (typeof opts.emulatorMode === 'boolean') {
+      this.emulatorMode = opts.emulatorMode;
+    }
+    if (typeof opts.aimToggleMode === 'boolean') {
+      this.aimToggleMode = opts.aimToggleMode;
+      if (!opts.aimToggleMode) {
+        this.isAimToggled = false;
+      }
+    }
+  }
+
+  public setRebinding(active: boolean): void {
+    this.isRebinding = active;
+    if (active) {
+      this.keys.clear();
+      this.activeCodes.clear();
+      this.isFiring = false;
+      this.isAiming = false;
+      this.isDraggingMouse = false;
+    }
   }
 
   public attachCanvas(canvas: HTMLElement, onPause?: () => void): void {
@@ -77,9 +170,13 @@ export class InputManager {
       this.isFiring = false;
       this.touchFire = false;
       this.isAiming = false;
+      this.isAimToggled = false;
       this.touchAim = false;
       this.touchAutoSprint = false;
       this.isDraggingMouse = false;
+      this.lastFreeMoveX = null;
+      this.lastFreeMoveY = null;
+      this.pendingRelockAfterReset = false;
       if (document.pointerLockElement) {
         document.exitPointerLock?.();
       }
@@ -87,12 +184,103 @@ export class InputManager {
   }
 
   public requestLock(): void {
-    if (!this.allowPointerLock || !this.canvas) return;
+    if (!this.allowPointerLock || !this.canvas || this.mouseSuspended) return;
     try {
-      this.canvas.requestPointerLock?.();
+      const res = this.canvas.requestPointerLock?.() as unknown as Promise<void> | undefined;
+      if (res && typeof res.catch === 'function') {
+        res.catch(() => {
+          // Pointer lock cooldown or iframe restriction; fallback drag/free-look still works
+        });
+      }
     } catch {
       // Fallback drag look still works seamlessly
     }
+  }
+
+  public suspendMouseCursor(): void {
+    this.mouseSuspended = true;
+    this.isFiring = false;
+    this.isAiming = false;
+    this.isAimToggled = false;
+    this.isDraggingMouse = false;
+    this.lookDeltaX = 0;
+    this.lookDeltaY = 0;
+    this.lastFreeMoveX = null;
+    this.lastFreeMoveY = null;
+    this.pendingRelockAfterReset = false;
+    if (document.pointerLockElement) {
+      try {
+        document.exitPointerLock?.();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  public resumeCameraFromCursor(): void {
+    this.mouseSuspended = false;
+    this.lookDeltaX = 0;
+    this.lookDeltaY = 0;
+    this.isDraggingMouse = false;
+    this.lastFreeMoveX = null;
+    this.lastFreeMoveY = null;
+    this.requestLock();
+  }
+
+  public toggleMouseSuspension(): void {
+    if (this.mouseSuspended) {
+      this.resumeCameraFromCursor();
+      return;
+    }
+    if (this.pointerLocked || this.emulatorMode) {
+      this.suspendMouseCursor();
+    } else {
+      // Not locked yet in normal PC mode: lock camera directly; pressing again suspends
+      this.resumeCameraFromCursor();
+    }
+  }
+
+  public resetMouse(): void {
+    if (this.resetRelockTimer !== null) {
+      window.clearTimeout(this.resetRelockTimer);
+      this.resetRelockTimer = null;
+    }
+    this.lookDeltaX = 0;
+    this.lookDeltaY = 0;
+    this.isFiring = false;
+    this.isAiming = false;
+    this.isAimToggled = false;
+    this.isDraggingMouse = false;
+    this.touchFire = false;
+    this.touchAim = false;
+    this.lastFreeMoveX = null;
+    this.lastFreeMoveY = null;
+    this.mouseSuspended = false;
+    this.mouseResetTimestamp = performance.now();
+    this.pendingResetCamera = true;
+    this.pendingRelockAfterReset = true;
+
+    if (document.pointerLockElement) {
+      try {
+        document.exitPointerLock?.();
+      } catch {
+        // ignore
+      }
+      this.resetRelockTimer = window.setTimeout(() => {
+        this.resetRelockTimer = null;
+        if (this.allowPointerLock && !this.mouseSuspended) {
+          this.requestLock();
+        }
+      }, 45);
+    } else if (this.allowPointerLock) {
+      this.requestLock();
+    }
+  }
+
+  public consumeResetCameraFlag(): boolean {
+    const was = this.pendingResetCamera;
+    this.pendingResetCamera = false;
+    return was;
   }
 
   public setVirtualJoystick(x: number, y: number): void {
@@ -117,6 +305,9 @@ export class InputManager {
 
   public setTouchAim(active: boolean): void {
     this.touchAim = active;
+    if (!active) {
+      this.isAimToggled = false;
+    }
   }
 
   public setTouchSprint(active: boolean): void {
@@ -169,6 +360,10 @@ export class InputManager {
     this.medkitPressed = true;
   }
 
+  public triggerSmallMedkit(): void {
+    this.smallMedkitPressed = true;
+  }
+
   public triggerGloo(): void {
     this.glooPressed = true;
   }
@@ -197,20 +392,48 @@ export class InputManager {
     this.switchSlot = slot;
   }
 
+  private hasActiveBinding(action: KeyBindAction): boolean {
+    const target = this.keyBindings[action];
+    for (const code of this.activeCodes) {
+      if (codesMatch(target, code)) return true;
+    }
+    return false;
+  }
+
+  private isCodeForAction(action: KeyBindAction, code: string): boolean {
+    return codesMatch(this.keyBindings[action], code);
+  }
+
   public sample(): void {
     let kx = 0;
     let kz = 0;
-    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) kz += 1;
-    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) kz -= 1;
-    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) kx -= 1;
-    if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) kx += 1;
+    const fwdActive =
+      this.hasActiveBinding('moveForward') ||
+      (this.keyBindings.moveForward === 'KeyW' && this.keys.has('ArrowUp'));
+    const backActive =
+      this.hasActiveBinding('moveBackward') ||
+      (this.keyBindings.moveBackward === 'KeyS' && this.keys.has('ArrowDown'));
+    const leftActive =
+      this.hasActiveBinding('moveLeft') ||
+      (this.keyBindings.moveLeft === 'KeyA' && this.keys.has('ArrowLeft'));
+    const rightActive =
+      this.hasActiveBinding('moveRight') ||
+      (this.keyBindings.moveRight === 'KeyD' && this.keys.has('ArrowRight'));
+
+    if (fwdActive) kz += 1;
+    if (backActive) kz -= 1;
+    if (leftActive) kx -= 1;
+    if (rightActive) kx += 1;
 
     if (kx !== 0 || kz < 0) {
       this.touchAutoSprint = false;
     }
 
     const autoZ =
-      this.touchAutoSprint && Math.abs(this.touchMoveX) < 0.15 && Math.abs(this.touchMoveY) < 0.15 && kz === 0
+      this.touchAutoSprint &&
+      Math.abs(this.touchMoveX) < 0.15 &&
+      Math.abs(this.touchMoveY) < 0.15 &&
+      kz === 0
         ? 1
         : 0;
     const combinedX = kx + this.touchMoveX;
@@ -225,8 +448,7 @@ export class InputManager {
     }
 
     this.isSprinting =
-      this.keys.has('ShiftLeft') ||
-      this.keys.has('ShiftRight') ||
+      this.hasActiveBinding('sprint') ||
       this.touchSprint ||
       this.touchAutoSprint;
   }
@@ -242,12 +464,14 @@ export class InputManager {
     cycleScope: boolean;
     backpack: boolean;
     medkit: boolean;
+    smallMedkit: boolean;
     gloo: boolean;
     grenade: boolean;
     fireTap: boolean;
     revive: boolean;
     surfboard: boolean;
     quickSwap: boolean;
+    minimapToggle: boolean;
     slot: 1 | 2 | 3 | 4 | null;
     cycleSlotDir: -1 | 0 | 1;
   } {
@@ -262,12 +486,14 @@ export class InputManager {
       cycleScope: this.cycleScopePressed,
       backpack: this.backpackPressed,
       medkit: this.medkitPressed,
+      smallMedkit: this.smallMedkitPressed,
       gloo: this.glooPressed,
       grenade: this.grenadePressed,
       fireTap: this.fireTapPressed,
       revive: this.revivePressed,
       surfboard: this.surfboardPressed,
       quickSwap: this.quickSwapPressed,
+      minimapToggle: this.minimapTogglePressed,
       slot: this.switchSlot,
       cycleSlotDir: this.cycleSlotDir,
     };
@@ -281,12 +507,14 @@ export class InputManager {
     this.cycleScopePressed = false;
     this.backpackPressed = false;
     this.medkitPressed = false;
+    this.smallMedkitPressed = false;
     this.glooPressed = false;
     this.grenadePressed = false;
     this.fireTapPressed = false;
     this.revivePressed = false;
     this.surfboardPressed = false;
     this.quickSwapPressed = false;
+    this.minimapTogglePressed = false;
     this.switchSlot = null;
     this.cycleSlotDir = 0;
     return out;
@@ -297,35 +525,86 @@ export class InputManager {
   }
 
   public getAimActive(): boolean {
-    return this.isAiming || this.touchAim;
+    if (this.mouseSuspended) return this.touchAim;
+    return (this.aimToggleMode ? this.isAimToggled : this.isAiming) || this.touchAim;
+  }
+
+  private triggerPressForCode(code: string): void {
+    this.activeCodes.add(code);
+
+    if (this.isCodeForAction('toggleMouse', code)) {
+      this.toggleMouseSuspension();
+      return;
+    }
+    if (this.isCodeForAction('resetMouse', code)) {
+      this.resetMouse();
+      return;
+    }
+
+    if (this.isCodeForAction('fire', code)) {
+      this.isFiring = true;
+      this.fireTapPressed = true;
+    }
+    if (this.isCodeForAction('aim', code)) {
+      if (this.aimToggleMode) {
+        this.isAimToggled = !this.isAimToggled;
+      } else {
+        this.isAiming = true;
+      }
+    }
+    if (this.isCodeForAction('jump', code)) this.jumpPressed = true;
+    if (this.isCodeForAction('crouch', code)) this.triggerCrouch();
+    if (this.isCodeForAction('prone', code)) this.triggerProne();
+    if (this.isCodeForAction('reload', code)) this.reloadPressed = true;
+    if (this.isCodeForAction('interact', code)) this.interactPressed = true;
+    if (this.isCodeForAction('cycleScope', code)) this.cycleScopePressed = true;
+    if (this.isCodeForAction('quickSwap', code)) this.quickSwapPressed = true;
+    if (this.isCodeForAction('backpack', code)) this.backpackPressed = true;
+    if (this.isCodeForAction('medkit', code)) this.medkitPressed = true;
+    if (this.isCodeForAction('smallMedkit', code)) this.smallMedkitPressed = true;
+    if (this.isCodeForAction('gloo', code)) this.glooPressed = true;
+    if (this.isCodeForAction('grenade', code)) this.grenadePressed = true;
+    if (this.isCodeForAction('revive', code)) this.revivePressed = true;
+    if (this.isCodeForAction('surfboard', code)) this.surfboardPressed = true;
+    if (this.isCodeForAction('minimap', code)) this.minimapTogglePressed = true;
+    if (this.isCodeForAction('slot1', code)) this.switchSlot = 1;
+    if (this.isCodeForAction('slot2', code)) this.switchSlot = 2;
+    if (this.isCodeForAction('slot3', code)) this.switchSlot = 3;
+    if (this.isCodeForAction('slot4', code)) this.switchSlot = 4;
+  }
+
+  private triggerReleaseForCode(code: string): void {
+    this.activeCodes.delete(code);
+    if (this.isCodeForAction('fire', code)) {
+      this.isFiring = false;
+    }
+    if (this.isCodeForAction('aim', code) && !this.aimToggleMode) {
+      this.isAiming = false;
+    }
   }
 
   private handleKeyDown = (e: KeyboardEvent): void => {
-    if (e.code === 'Tab') {
+    if (this.isRebinding || isEditableElement(e.target)) return;
+
+    if (
+      e.code === 'Tab' ||
+      e.code === 'F1' ||
+      e.code === 'F2' ||
+      this.isCodeForAction('toggleMouse', e.code) ||
+      this.isCodeForAction('resetMouse', e.code) ||
+      this.isCodeForAction('backpack', e.code)
+    ) {
       e.preventDefault();
     }
+
     if (e.repeat) {
       this.keys.add(e.code);
+      this.activeCodes.add(e.code);
       return;
     }
     this.keys.add(e.code);
-    if (e.code === 'Space') this.jumpPressed = true;
-    if (e.code === 'KeyC') this.triggerCrouch();
-    if (e.code === 'KeyZ' || e.code === 'ControlLeft') this.triggerProne();
-    if (e.code === 'KeyR') this.reloadPressed = true;
-    if (e.code === 'KeyE' || e.code === 'KeyF') this.interactPressed = true;
-    if (e.code === 'KeyY') this.cycleScopePressed = true;
-    if (e.code === 'KeyQ') this.quickSwapPressed = true;
-    if (e.code === 'Tab' || e.code === 'KeyB') this.backpackPressed = true;
-    if (e.code === 'KeyH') this.medkitPressed = true;
-    if (e.code === 'KeyG' || e.code === 'Digit5') this.glooPressed = true;
-    if (e.code === 'KeyX' || e.code === 'Digit6') this.grenadePressed = true;
-    if (e.code === 'KeyV') this.revivePressed = true;
-    if (e.code === 'KeyT') this.surfboardPressed = true;
-    if (e.code === 'Digit1') this.switchSlot = 1;
-    if (e.code === 'Digit2') this.switchSlot = 2;
-    if (e.code === 'Digit3') this.switchSlot = 3;
-    if (e.code === 'Digit4') this.switchSlot = 4;
+    this.triggerPressForCode(e.code);
+
     if (e.code === 'Escape' && this.onPauseCallback && !this.pointerLocked) {
       this.onPauseCallback();
     }
@@ -333,13 +612,18 @@ export class InputManager {
 
   private handleKeyUp = (e: KeyboardEvent): void => {
     this.keys.delete(e.code);
+    this.triggerReleaseForCode(e.code);
   };
 
   private handleBlur = (): void => {
     this.keys.clear();
+    this.activeCodes.clear();
     this.isFiring = false;
     this.isAiming = false;
+    this.isAimToggled = false;
     this.isDraggingMouse = false;
+    this.lastFreeMoveX = null;
+    this.lastFreeMoveY = null;
     this.touchFire = false;
     this.touchAim = false;
     this.touchSprint = false;
@@ -349,47 +633,94 @@ export class InputManager {
 
   private handlePointerLockChange = (): void => {
     this.pointerLocked = document.pointerLockElement === this.canvas;
+    this.lastFreeMoveX = null;
+    this.lastFreeMoveY = null;
+    if (this.pointerLocked) {
+      this.pendingRelockAfterReset = false;
+      this.mouseSuspended = false;
+    }
   };
 
   private handleMouseDown = (e: MouseEvent): void => {
-    if (e.button === 0) {
-      if (this.allowPointerLock && !this.pointerLocked) {
-        this.requestLock();
+    if (this.isRebinding) return;
+    if (this.allowPointerLock && !this.pointerLocked && !this.mouseSuspended) {
+      this.requestLock();
+    }
+    const mouseCode = mouseButtonToCode(e.button);
+    if (mouseCode) {
+      if (!this.mouseSuspended || (mouseCode !== 'MouseLeft' && mouseCode !== 'MouseRight')) {
+        this.triggerPressForCode(mouseCode);
       }
-      this.isFiring = true;
-      this.fireTapPressed = true;
+    }
+    if (e.button === 0 && !this.mouseSuspended) {
       this.isDraggingMouse = true;
       this.lastMouseX = e.clientX;
       this.lastMouseY = e.clientY;
-    } else if (e.button === 2) {
-      this.isAiming = true;
     }
   };
 
   private handleMouseUp = (e: MouseEvent): void => {
+    const mouseCode = mouseButtonToCode(e.button);
+    if (mouseCode) {
+      this.triggerReleaseForCode(mouseCode);
+    }
     if (e.button === 0) {
-      this.isFiring = false;
       this.isDraggingMouse = false;
-    } else if (e.button === 2) {
-      this.isAiming = false;
     }
   };
 
   private handleMouseMove = (e: MouseEvent): void => {
+    if (this.isRebinding || this.mouseSuspended) return;
+
     if (this.pointerLocked) {
+      // Filter sudden browser pointer-lock warp jumps (> 320px in a single event)
+      if (Math.abs(e.movementX) > 320 || Math.abs(e.movementY) > 320) return;
       this.lookDeltaX += e.movementX;
       this.lookDeltaY += e.movementY;
-    } else if (this.isDraggingMouse) {
+      return;
+    }
+
+    if (this.pendingRelockAfterReset && this.allowPointerLock) {
+      this.requestLock();
+    }
+
+    if (this.isDraggingMouse) {
       this.lookDeltaX += e.clientX - this.lastMouseX;
       this.lookDeltaY += e.clientY - this.lastMouseY;
       this.lastMouseX = e.clientX;
       this.lastMouseY = e.clientY;
+      return;
+    }
+
+    if (this.emulatorMode && this.allowPointerLock && e.target === this.canvas) {
+      if (this.lastFreeMoveX !== null && this.lastFreeMoveY !== null) {
+        const dx = e.clientX - this.lastFreeMoveX;
+        const dy = e.clientY - this.lastFreeMoveY;
+        if (Math.abs(dx) < 240 && Math.abs(dy) < 240) {
+          this.lookDeltaX += dx;
+          this.lookDeltaY += dy;
+        }
+      }
+      this.lastFreeMoveX = e.clientX;
+      this.lastFreeMoveY = e.clientY;
+    } else {
+      this.lastFreeMoveX = null;
+      this.lastFreeMoveY = null;
     }
   };
 
   private handleWheel = (e: WheelEvent): void => {
-    if (!this.allowPointerLock) return;
+    if (!this.allowPointerLock || this.isRebinding) return;
     if (Math.abs(e.deltaY) < 4) return;
+    const wheelCode = e.deltaY < 0 ? 'WheelUp' : 'WheelDown';
+    const anyBoundToWheel = (Object.keys(this.keyBindings) as KeyBindAction[]).some((act) =>
+      this.isCodeForAction(act, wheelCode),
+    );
+    if (anyBoundToWheel) {
+      this.triggerPressForCode(wheelCode);
+      this.triggerReleaseForCode(wheelCode);
+      return;
+    }
     this.cycleSlotDir = e.deltaY > 0 ? 1 : -1;
   };
 
@@ -398,6 +729,10 @@ export class InputManager {
   };
 
   public dispose(): void {
+    if (this.resetRelockTimer !== null) {
+      window.clearTimeout(this.resetRelockTimer);
+      this.resetRelockTimer = null;
+    }
     this.detachCanvas();
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);

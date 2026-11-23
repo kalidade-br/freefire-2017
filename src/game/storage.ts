@@ -3,12 +3,44 @@ import {
   CharacterConfig,
   DEFAULT_HUD_LAYOUT,
   DEFAULT_HUD_LAYOUT_SLOT_2,
+  DEFAULT_KEY_BINDINGS,
   GameSettings,
+  GraphicsQuality,
   HudElementId,
   HudLayoutConfig,
   HudSlotId,
+  KeyBindAction,
+  KeyBindingsConfig,
   PlayerProfile,
+  ShadowQuality,
+  TextureQuality,
 } from './types';
+
+export function normalizeKeyBindings(
+  src?: Partial<KeyBindingsConfig> | null,
+): KeyBindingsConfig {
+  const out = { ...DEFAULT_KEY_BINDINGS };
+  if (!src) return out;
+  (Object.keys(DEFAULT_KEY_BINDINGS) as KeyBindAction[]).forEach((action) => {
+    const val = src[action];
+    if (typeof val === 'string' && val.trim().length > 0 && val !== 'Escape') {
+      out[action] = val;
+    }
+  });
+  return out;
+}
+
+export function defaultTextureForQuality(q: GraphicsQuality): TextureQuality {
+  if (q === 'low') return 'low';
+  if (q === 'high') return 'ultra';
+  return 'medium';
+}
+
+export function defaultShadowForQuality(q: GraphicsQuality): ShadowQuality {
+  if (q === 'low') return 'off';
+  if (q === 'high') return 'high';
+  return 'low';
+}
 
 const SETTINGS_KEY = 'zonazero2017_settings_v2';
 const HUD_LAYOUT_KEY = 'zonazero2017_hud_layout_v1';
@@ -36,6 +68,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
   sniperSensitivity: 0.62,
   aimAssistMode: 'default',
   quality: isMobileHardware() ? 'low' : 'medium',
+  textureQuality: isMobileHardware() ? 'low' : 'medium',
+  shadowQuality: isMobileHardware() ? 'off' : 'low',
   soundVolume: 0.75,
   muted: false,
   showFps: true,
@@ -43,6 +77,9 @@ export const DEFAULT_SETTINGS: GameSettings = {
   invertY: false,
   autoLoot: true,
   autoLootSpeed: 'fast',
+  emulatorMode: false,
+  aimToggleMode: false,
+  keyBindings: { ...DEFAULT_KEY_BINDINGS },
   hudLayout: structuredCloneLayout(DEFAULT_HUD_LAYOUT),
   activeHudSlot: 1,
   hudSlots: {
@@ -186,9 +223,19 @@ export function loadSettings(): GameSettings {
         parsed.hudLayout ?? hudSlots[activeHudSlot],
         activeHudSlot === 2 ? DEFAULT_HUD_LAYOUT_SLOT_2 : DEFAULT_HUD_LAYOUT,
       );
+    const resolvedQuality: GraphicsQuality =
+      parsed.quality === 'low' || parsed.quality === 'high' ? parsed.quality : 'medium';
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      quality: parsed.quality ?? DEFAULT_SETTINGS.quality,
+      textureQuality:
+        parsed.textureQuality ?? defaultTextureForQuality(parsed.quality ?? resolvedQuality),
+      shadowQuality:
+        parsed.shadowQuality ?? defaultShadowForQuality(parsed.quality ?? resolvedQuality),
+      emulatorMode: Boolean(parsed.emulatorMode),
+      aimToggleMode: Boolean(parsed.aimToggleMode),
+      keyBindings: normalizeKeyBindings(parsed.keyBindings),
       activeHudSlot,
       hudSlots,
       hudLayout: activeLayout,

@@ -19,11 +19,14 @@ import { InputManager } from '../game/inputManager';
 import {
   ATTACHMENT_LABELS,
   ControlMode,
+  DEFAULT_KEY_BINDINGS,
+  formatKeyCodeLabel,
   GameState,
   GlooSkinId,
   HudElementLayout,
   HudLayoutConfig,
   HudSnapshot,
+  KeyBindingsConfig,
   MinimapBuilding,
   MinimapRoad,
   PoiMarker,
@@ -75,6 +78,8 @@ interface GameHudProps {
   pois: PoiMarker[];
   input: InputManager;
   controlMode: ControlMode;
+  keyBindings?: KeyBindingsConfig;
+  emulatorMode?: boolean;
   hudLayout: HudLayoutConfig;
   showFps: boolean;
   isPaused: boolean;
@@ -140,6 +145,8 @@ export const GameHud: React.FC<GameHudProps> = ({
   pois,
   input,
   controlMode,
+  keyBindings,
+  emulatorMode = false,
   hudLayout,
   showFps,
   isPaused,
@@ -168,6 +175,26 @@ export const GameHud: React.FC<GameHudProps> = ({
   onTestDamage,
   onTestVictory,
 }) => {
+  const kb = keyBindings ?? DEFAULT_KEY_BINDINGS;
+  const kJump = formatKeyCodeLabel(kb.jump);
+  const kCrouch = formatKeyCodeLabel(kb.crouch);
+  const kProne = formatKeyCodeLabel(kb.prone);
+  const kReload = formatKeyCodeLabel(kb.reload);
+  const kQuickSwap = formatKeyCodeLabel(kb.quickSwap);
+  const kInteract = formatKeyCodeLabel(kb.interact);
+  const kGloo = formatKeyCodeLabel(kb.gloo);
+  const kGrenade = formatKeyCodeLabel(kb.grenade);
+  const kMedkit = formatKeyCodeLabel(kb.medkit);
+  const kSmallMedkit = formatKeyCodeLabel(kb.smallMedkit);
+  const kRevive = formatKeyCodeLabel(kb.revive);
+  const kBackpack = formatKeyCodeLabel(kb.backpack);
+  const kSurfboard = formatKeyCodeLabel(kb.surfboard);
+  const kToggleMouse = formatKeyCodeLabel(kb.toggleMouse);
+  const kResetMouse = formatKeyCodeLabel(kb.resetMouse);
+  const kSlot1 = formatKeyCodeLabel(kb.slot1);
+  const kSlot2 = formatKeyCodeLabel(kb.slot2);
+  const kSlot3 = formatKeyCodeLabel(kb.slot3);
+  const kSlot4 = formatKeyCodeLabel(kb.slot4);
   const minimapCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const minimapBgRef = useRef<HTMLCanvasElement | null>(null);
   const [minimapZoomed, setMinimapZoomed] = useState(true);
@@ -241,15 +268,16 @@ export const GameHud: React.FC<GameHudProps> = ({
   }, []);
 
   useEffect(() => {
+    const minimapCode = kb.minimap || 'KeyM';
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code !== 'KeyM' || e.repeat) return;
+      if (e.code !== minimapCode || e.repeat || input.isRebinding) return;
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
       setMinimapZoomed((v) => !v);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [kb.minimap, input]);
 
   // Guarantee Fire button never stays stuck down if pointer leaves or cancels outside
   useEffect(() => {
@@ -1211,12 +1239,17 @@ export const GameHud: React.FC<GameHudProps> = ({
             }}
             style={layoutStyle(hudLayout.backpackBtn)}
             className="pointer-events-auto touch-none absolute z-20 w-11 h-11 sm:w-12 sm:h-12 bg-black/50 hover:bg-black/65 border border-white/25 flex items-center justify-center shadow cursor-pointer active:scale-95"
-            title="Abrir Mochila (TAB ou B)"
+            title={`Abrir Mochila (${kBackpack})`}
           >
             <IconBackpackSvg className="w-6 h-6 sm:w-7 sm:h-7 text-white drop-shadow" />
             <span className="absolute -top-1 right-0 bg-black/80 px-1 text-[8px] font-mono font-black text-white leading-tight">
               {backpackPct}%
             </span>
+            {!showTouchHud && (
+              <span className="absolute bottom-0.5 left-0.5 text-[7px] font-mono text-white/75">
+                {kBackpack}
+              </span>
+            )}
             <div className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-white/15">
               <div
                 className="h-full bg-amber-400"
@@ -1242,7 +1275,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                 }
                 style={layoutStyle(hudLayout.medkitBtn)}
                 className="pointer-events-auto touch-none absolute z-20 w-11 h-11 sm:w-12 sm:h-12 bg-black/50 hover:bg-black/65 border border-white/25 flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:brightness-50 disabled:grayscale"
-                title="Usar Kit Médico (H)"
+                title={`Usar Kit Médico (${kMedkit})`}
               >
                 <img
                   src={hud.medkitCount > 0 ? '/icons/kit-grande.png' : '/icons/kit.png'}
@@ -1254,7 +1287,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                 </span>
                 {!showTouchHud && (
                   <span className="absolute bottom-0 left-0.5 text-[7px] font-mono text-white/75">
-                    H
+                    {kMedkit}
                   </span>
                 )}
               </button>
@@ -1271,7 +1304,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                   disabled={hud.hp >= hud.maxHp || hud.usingMedkit}
                   style={layoutStyle(hudLayout.smallMedkitBtn)}
                   className="pointer-events-auto touch-none absolute z-20 w-10 h-10 bg-black/55 hover:bg-emerald-950/65 border border-emerald-400/50 flex items-center justify-center shadow cursor-pointer active:scale-95 disabled:brightness-50 disabled:grayscale"
-                  title="Kit Pequeno (+35 HP · 4s)"
+                  title={`Kit Pequeno (+35 HP · 4s) (${kSmallMedkit})`}
                 >
                   <img
                     src="/icons/kit.png"
@@ -1281,6 +1314,11 @@ export const GameHud: React.FC<GameHudProps> = ({
                   <span className="absolute top-0 right-0.5 text-[9px] font-mono font-black text-emerald-300 drop-shadow">
                     {hud.smallkitCount}
                   </span>
+                  {!showTouchHud && (
+                    <span className="absolute bottom-0 left-0.5 text-[7px] font-mono text-emerald-200/80">
+                      {kSmallMedkit}
+                    </span>
+                  )}
                 </button>
               )}
 
@@ -1301,7 +1339,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                         ? 'bg-red-600/80 border-amber-300 text-white ring-1 ring-amber-300'
                         : 'bg-black/50 hover:bg-black/65 border-white/25 text-white'
                     }`}
-                    title="Granada Explosiva (X ou 6)"
+                    title={`Granada Explosiva (${kGrenade})`}
                   >
                     <IconGrenadeSvg className="w-6 h-6 sm:w-7 sm:h-7 text-white drop-shadow" />
                     <span className="absolute bottom-0 right-0.5 text-[10px] font-mono font-black text-white drop-shadow">
@@ -1309,7 +1347,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                     </span>
                     {!showTouchHud && (
                       <span className="absolute top-0 left-0.5 text-[7px] font-mono text-white/75">
-                        X
+                        {kGrenade}
                       </span>
                     )}
                   </button>
@@ -1329,7 +1367,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                         ? 'bg-cyan-500/85 border-white text-black ring-1 ring-cyan-300'
                         : 'bg-black/50 hover:bg-black/65 border-white/25 text-cyan-200'
                     }`}
-                    title="Parede de Gelo (G ou 5)"
+                    title={`Parede de Gelo (${kGloo})`}
                   >
                     <IconGlooSvg className="w-6 h-6 sm:w-7 sm:h-7 drop-shadow" />
                     <span className="absolute bottom-0 right-0.5 text-[10px] font-mono font-black text-white drop-shadow">
@@ -1337,7 +1375,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                     </span>
                     {!showTouchHud && (
                       <span className="absolute top-0 left-0.5 text-[7px] font-mono text-white/75">
-                        G
+                        {kGloo}
                       </span>
                     )}
                   </button>
@@ -1695,7 +1733,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                         input.triggerSlot(4);
                       }}
                       className="touch-none relative flex items-center justify-center p-1 hover:bg-white/15 cursor-pointer"
-                      title="Soco / Punho (Tecla 4)"
+                      title={`Soco / Punho (${kSlot4})`}
                     >
                       <IconFistSvg className="w-6 h-6 text-white drop-shadow" />
                       <span className="absolute bottom-0.5 left-1 text-[10px] font-mono font-bold text-white/90 leading-none">
@@ -1703,7 +1741,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                       </span>
                       {!showTouchHud && (
                         <span className="absolute top-0.5 right-1 text-[7px] font-mono text-white/60">
-                          4
+                          {kSlot4}
                         </span>
                       )}
                     </button>
@@ -1712,6 +1750,7 @@ export const GameHud: React.FC<GameHudProps> = ({
 
                 const w = hud.weapons[slotNum];
                 const def = w ? WEAPONS[w.weaponId] : null;
+                const slotKeyLabel = slotNum === 1 ? kSlot1 : slotNum === 2 ? kSlot2 : kSlot3;
                 if (!w || !def) {
                   return (
                     <div
@@ -1724,7 +1763,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                         className="w-8 h-4 opacity-40"
                       />
                       <span className="absolute top-0.5 left-1 text-[7px] font-mono text-white/60">
-                        {slotNum}
+                        {slotKeyLabel}
                       </span>
                     </div>
                   );
@@ -1752,7 +1791,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                     <span className="absolute top-0.5 right-1 text-[7px] font-mono text-amber-300/90 leading-none">
                       {def.allowsCustomScope && w.scope !== 'none'
                         ? SCOPE_META[w.scope].short
-                        : slotNum}
+                        : slotKeyLabel}
                     </span>
                   </button>
                 );
@@ -1771,9 +1810,9 @@ export const GameHud: React.FC<GameHudProps> = ({
                   input.triggerQuickSwap();
                 }}
                 className="touch-none px-1.5 py-0.5 text-[8px] font-mono font-black border border-amber-400/70 bg-black/65 hover:bg-amber-400 hover:text-black text-amber-300 cursor-pointer"
-                title="Troca Rápida de Arma (Q)"
+                title={`Troca Rápida de Arma (${kQuickSwap})`}
               >
-                ⇄ TROCA{!showTouchHud ? ' [Q]' : ''}
+                ⇄ TROCA{!showTouchHud ? ` [${kQuickSwap}]` : ''}
               </button>
             )}
             {activeWeaponDef && activeWeaponSlot && activeWeaponDef.allowsCustomScope &&
@@ -2014,32 +2053,32 @@ export const GameHud: React.FC<GameHudProps> = ({
         )}
 
         {hud.canJumpFromPlane && (
-          <button
-            type="button"
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              onJumpFromPlane();
-            }}
-            className="pointer-events-auto touch-none px-6 py-3 bg-amber-500 hover:bg-amber-400 text-black font-black text-sm uppercase tracking-widest border-b-4 border-amber-700 shadow-xl cursor-pointer"
-          >
-            SALTAR DO AVIÃO (ESPAÇO)
-          </button>
-        )}
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                onJumpFromPlane();
+              }}
+              className="pointer-events-auto touch-none px-6 py-3 bg-amber-500 hover:bg-amber-400 text-black font-black text-sm uppercase tracking-widest border-b-4 border-amber-700 shadow-xl cursor-pointer"
+            >
+              SALTAR DO AVIÃO ({kJump})
+            </button>
+          )}
 
-        {hud.canOpenParachute && (
-          <button
-            type="button"
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              onOpenParachute();
-            }}
-            className="pointer-events-auto touch-none px-6 py-3 bg-sky-500 hover:bg-sky-400 text-black font-black text-sm uppercase tracking-widest border-b-4 border-sky-700 shadow-xl cursor-pointer"
-          >
-            ABRIR PARAQUEDAS (ESPAÇO)
-          </button>
-        )}
+          {hud.canOpenParachute && (
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                onOpenParachute();
+              }}
+              className="pointer-events-auto touch-none px-6 py-3 bg-sky-500 hover:bg-sky-400 text-black font-black text-sm uppercase tracking-widest border-b-4 border-sky-700 shadow-xl cursor-pointer"
+            >
+              ABRIR PARAQUEDAS ({kJump})
+            </button>
+          )}
 
         {isGroundCombat && !hud.isDead && !isPaused && hud.isPlayerDowned && (
           <div className="pointer-events-none flex flex-col items-center gap-1.5 w-72 max-w-[88vw]">
@@ -2112,7 +2151,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           >
             <HeartPulse className="w-4 h-4 stroke-[2.6]" />
             <span>
-              SALVAR #{hud.reviveTarget.slotNumber} {hud.reviveTarget.nick} (V / F)
+              SALVAR #{hud.reviveTarget.slotNumber} {hud.reviveTarget.nick} ({kRevive})
             </span>
           </button>
         )}
@@ -2134,7 +2173,7 @@ export const GameHud: React.FC<GameHudProps> = ({
 
         {isGroundCombat && !hud.isPlayerDowned && hud.canVaultWindow && !hud.nearbyLootLabel && !hud.inVehicle && (
           <div className="px-3 py-1 bg-sky-950/88 border border-sky-400 text-sky-200 font-mono font-bold text-[11px] uppercase">
-            [ESPAÇO] PULAR JANELA
+            [{kJump}] PULAR JANELA
           </div>
         )}
 
@@ -2149,7 +2188,7 @@ export const GameHud: React.FC<GameHudProps> = ({
             className="pointer-events-auto touch-none flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 border-2 border-white text-black font-black text-xs uppercase tracking-wider shadow-xl cursor-pointer whitespace-nowrap"
           >
             <IconVendingSvg className="w-4 h-4 shrink-0" />
-            <span>[E] ABRIR LOJINHA</span>
+            <span>[{kInteract}] ABRIR LOJINHA</span>
           </button>
         )}
 
@@ -2164,7 +2203,7 @@ export const GameHud: React.FC<GameHudProps> = ({
             className="pointer-events-auto touch-none flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-400 border-2 border-white text-black font-black text-xs uppercase tracking-wider shadow-xl cursor-pointer whitespace-nowrap"
           >
             <IconVehicleSvg className="w-4 h-4 shrink-0" />
-            <span>[E] DIRIGIR {hud.nearbyVehicle.name}</span>
+            <span>[{kInteract}] DIRIGIR {hud.nearbyVehicle.name}</span>
           </button>
         )}
 
@@ -2209,7 +2248,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                 }}
                 className="touch-none px-2.5 py-1 bg-red-600 hover:bg-red-500 text-white font-black uppercase cursor-pointer"
               >
-                SAIR [E]
+                SAIR [{kInteract}]
               </button>
             </div>
           </div>
@@ -2304,14 +2343,49 @@ export const GameHud: React.FC<GameHudProps> = ({
             >
               <IconSurfboardSvg className="w-5 h-5 shrink-0" />
               <span>
-                {hud.isOnSurfboard ? 'GUARDAR PRANCHA [T]' : 'USAR PRANCHA [T]'}
+                {hud.isOnSurfboard ? `GUARDAR PRANCHA [${kSurfboard}]` : `USAR PRANCHA [${kSurfboard}]`}
               </span>
             </button>
           )}
 
-        {isGroundCombat && !hud.pointerLocked && !showTouchHud && !isPaused && !isBackpackOpen && (
-          <div className="bg-black/55 px-2.5 py-0.5 text-[9px] font-mono text-white/80">
-            CLIQUE ATIRA · DIR MIRA · Q TROCA · C AGACHA · Z DEITA · R RECAR · G GELO · X GRANADA · H KIT · T PRANCHA · TAB MOCHILA
+        {!showTouchHud && !isPaused && !isBackpackOpen && hud.mouseResetNotice && (
+          <div className="bg-cyan-950/92 border border-cyan-400 px-3 py-1 text-[10px] font-mono font-black text-cyan-200 uppercase tracking-wider shadow-lg">
+            MOUSE REINICIADO · CÂMERA CENTRALIZADA
+          </div>
+        )}
+
+        {!showTouchHud && !isPaused && !isBackpackOpen && hud.mouseSuspended && (
+          <div className="pointer-events-auto flex items-center gap-1.5 bg-amber-950/90 border border-amber-400 px-2.5 py-1 shadow-xl">
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                input.resumeCameraFromCursor();
+              }}
+              className="text-[10px] font-mono font-black text-amber-200 hover:text-white uppercase cursor-pointer"
+            >
+              CURSOR LIVRE · CLIQUE AQUI OU [{kToggleMouse}] P/ VOLTAR CÂMERA
+            </button>
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                input.resetMouse();
+              }}
+              className="px-1.5 py-0.5 bg-cyan-500 hover:bg-cyan-400 text-black text-[9px] font-mono font-black uppercase cursor-pointer"
+              title={`Resetar / Reiniciar Mouse (${kResetMouse})`}
+            >
+              RESET [{kResetMouse}]
+            </button>
+          </div>
+        )}
+
+        {isGroundCombat && !hud.pointerLocked && !hud.mouseSuspended && !showTouchHud && !isPaused && !isBackpackOpen && (
+          <div className="bg-black/60 border border-white/15 px-2.5 py-0.5 text-[9px] font-mono text-white/85 text-center">
+            {emulatorMode ? 'EMULADOR · ' : ''}
+            {kQuickSwap} TROCA · {kCrouch} AGACHA · {kProne} DEITA · {kReload} RECAR · {kGloo} GELO · {kGrenade} GRANADA · {kMedkit} KIT · {kBackpack} MOCHILA · {kToggleMouse} CURSOR · {kResetMouse} RESET MOUSE
           </div>
         )}
       </div>
@@ -2551,7 +2625,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                       <div className="w-full flex items-center justify-between leading-none">
                         {idx === 0 ? (
                           <span className="px-1 py-0.5 bg-amber-400 text-black text-[8px] font-black font-mono">
-                            E
+                            {kInteract}
                           </span>
                         ) : slot.boxOwnerNick ? (
                           <span className="px-1 py-0.5 bg-amber-950/90 border border-amber-400/50 text-amber-200 text-[7px] font-black font-mono">

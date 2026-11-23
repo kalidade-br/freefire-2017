@@ -50,11 +50,14 @@ import {
   MinimapRoad,
   PoiMarker,
   ScopeType,
+  ShadowQuality,
+  TextureQuality,
   VehicleKind,
   WalkablePlatform,
   WeaponId,
   WorldObbCollider,
 } from './types';
+import { isMobileHardware } from './storage';
 
 export interface TargetDummy {
   id: string;
@@ -268,7 +271,12 @@ export interface WorldHandle {
   resetMatchLoots: () => void;
   spawnDroppedLoot: (item: Omit<LootItem, 'id' | 'collected'>) => void;
   clearDroppedLoots: () => void;
-  applyQuality: (quality: GraphicsQuality, isSoftwareGl: boolean) => void;
+  applyQuality: (
+    quality: GraphicsQuality,
+    isSoftwareGl: boolean,
+    textureQuality?: TextureQuality,
+    shadowQuality?: ShadowQuality,
+  ) => void;
   updateDynamicProps: (
     dt: number,
     elapsed: number,
@@ -1883,12 +1891,12 @@ function createAirplane(): { group: THREE.Group; props: THREE.Mesh[] } {
 }
 
 function createSkyDome(): THREE.Mesh {
-  const skyGeo = new THREE.SphereGeometry(240, 20, 14);
+  const skyGeo = new THREE.SphereGeometry(240, 24, 16);
   const pos = skyGeo.attributes.position;
   const colors = new Float32Array(pos.count * 3);
-  const cZenith = new THREE.Color(0x286bb5);
-  const cMid = new THREE.Color(0x5da4e3);
-  const cHorizon = new THREE.Color(0xb8dcf0);
+  const cZenith = new THREE.Color(0x1b5ec7);
+  const cMid = new THREE.Color(0x4ea3eb);
+  const cHorizon = new THREE.Color(0xbce4fa);
   const tmp = new THREE.Color();
 
   for (let i = 0; i < pos.count; i++) {
@@ -3290,7 +3298,7 @@ export function createIslandWorld(
   }
 
   // Batched InstancedMesh Coqueiros, Mata Atlântica, Ipês Amarelos, Arbustos, Guarda-sóis & Postes!
-  createInstancedJoaoPessoaFoliage(scene, {
+  const foliageCtrl = createInstancedJoaoPessoaFoliage(scene, {
     sampleGroundHeight,
     isOnRoad: isOnRoadCheck,
     isInsideBuildingFootprint,
@@ -4304,51 +4312,124 @@ export function createIslandWorld(
 
   let structureCullDist = 250;
 
-  const applyQuality = (quality: GraphicsQuality, isSoftwareGl: boolean) => {
-    if (quality === 'low' || isSoftwareGl) {
-      // SUAVE: máximo FPS no celular (sem IBL shader overhead, névoa próxima, distância enxuta)
-      texDistUniform.value = 72.0;
-      fog.near = 135;
-      fog.far = 365;
-      structureCullDist = 175;
+  const applyQuality = (
+    quality: GraphicsQuality,
+    isSoftwareGl: boolean,
+    textureQuality?: TextureQuality,
+    shadowQuality?: ShadowQuality,
+  ) => {
+    const resolvedTex: TextureQuality =
+      textureQuality ?? (quality === 'low' ? 'low' : quality === 'high' ? 'ultra' : 'medium');
+    const resolvedShadow: ShadowQuality = isSoftwareGl
+      ? 'off'
+      : (shadowQuality ?? (quality === 'low' ? 'off' : quality === 'high' ? 'high' : 'low'));
+
+    // 1. Texture Level (anisotropy + mipmap sharpness + shader detail distance)
+    textures.applyQuality(resolvedTex);
+    texDistUniform.value =
+      resolvedTex === 'low'
+        ? 68.0
+        : resolvedTex === 'medium'
+          ? 135.0
+          : resolvedTex === 'high'
+            ? 245.0
+            : 430.0;
+    terrainMat.roughness = resolvedTex === 'low' ? 0.94 : resolvedTex === 'ultra' ? 0.86 : 0.9;
+    asphaltRoadMat.roughness = resolvedTex === 'low' ? 0.88 : resolvedTex === 'ultra' ? 0.76 : 0.82;
+
+    // 2. Shadow Level (real-time directional shadow map resolution, radius & foliage casters)
+    if (resolvedShadow === 'off') {
       sunLight.castShadow = false;
-      sunLight.intensity = 1.95;
-      hemi.intensity = 1.65;
-      waterMat.roughness = 0.72;
-      waterMat.metalness = 0.02;
-      scene.environment = null;
-      scene.environmentIntensity = 0;
-    } else if (quality === 'medium') {
-      // PADRÃO: equilibrado, boa visão à distância sem peso de sombras
-      texDistUniform.value = 125.0;
-      fog.near = 220;
-      fog.far = 540;
-      structureCullDist = 260;
-      sunLight.castShadow = false;
-      sunLight.intensity = 1.9;
-      hemi.intensity = 1.38;
-      waterMat.roughness = 0.35;
-      waterMat.metalness = 0.16;
-      scene.environment = envMap;
-      scene.environmentIntensity = 0.52;
+      foliageCtrl.setFoliageShadows(false, false);
     } else {
-      // ULTRA: visão máxima com sombras suaves PCF e IBL completo
-      texDistUniform.value = 210.0;
-      fog.near = 350;
-      fog.far = 820;
-      structureCullDist = 400;
+      const mobile = isMobileHardware();
       sunLight.castShadow = true;
-      sunLight.shadow.mapSize.set(1024, 1024);
-      sunLight.intensity = 2.05;
-      hemi.intensity = 1.28;
-      waterMat.roughness = 0.18;
-      waterMat.metalness = 0.32;
-      scene.environment = envMap;
-      scene.environmentIntensity = 0.9;
+      const mapDim =
+        resolvedShadow === 'low'
+          ? 512
+          : resolvedShadow === 'medium'
+            ? 1024
+            : resolvedShadow === 'high'
+              ? 2048
+              : mobile
+                ? 2048
+                : 4096;
+      const frustumHalf =
+        resolvedShadow === 'low'
+          ? 58
+          : resolvedShadow === 'medium'
+            ? 78
+            : resolvedShadow === 'high'
+              ? 102
+              : 124;
+      sunLight.shadow.mapSize.set(mapDim, mapDim);
+      sunLight.shadow.camera.left = -frustumHalf;
+      sunLight.shadow.camera.right = frustumHalf;
+      sunLight.shadow.camera.top = frustumHalf;
+      sunLight.shadow.camera.bottom = -frustumHalf;
+      sunLight.shadow.camera.near = 8;
+      sunLight.shadow.camera.far = 290;
+      sunLight.shadow.camera.updateProjectionMatrix();
+      sunLight.shadow.radius =
+        resolvedShadow === 'low'
+          ? 1.0
+          : resolvedShadow === 'medium'
+            ? 1.5
+            : resolvedShadow === 'high'
+              ? 2.1
+              : 2.6;
+      sunLight.shadow.bias = resolvedShadow === 'ultra' ? -0.00032 : -0.00048;
+      sunLight.shadow.normalBias = resolvedShadow === 'ultra' ? 0.018 : 0.024;
+      foliageCtrl.setFoliageShadows(
+        resolvedShadow === 'high' || resolvedShadow === 'ultra',
+        resolvedShadow === 'ultra',
+      );
     }
     if (sunLight.shadow.map) {
       sunLight.shadow.map.dispose();
       sunLight.shadow.map = null;
+    }
+
+    // 3. Overall Preset (Draw Distance, Fog, Sky/Ocean Reflections, IBL)
+    if (quality === 'low' || isSoftwareGl) {
+      // SUAVE: máximo FPS no celular (sem IBL shader overhead, névoa próxima, distância enxuta)
+      fog.near = 145;
+      fog.far = 385;
+      structureCullDist = 185;
+      sunLight.intensity = 1.95;
+      hemi.intensity = 1.62;
+      waterMat.roughness = 0.72;
+      waterMat.metalness = 0.02;
+      waterMat.envMapIntensity = 0.4;
+      cloudMat.opacity = 0.6;
+      scene.environment = null;
+      scene.environmentIntensity = 0;
+    } else if (quality === 'medium') {
+      // PADRÃO: equilibrado, boa visão à distância
+      fog.near = 250;
+      fog.far = 610;
+      structureCullDist = 290;
+      sunLight.intensity = 1.98;
+      hemi.intensity = 1.38;
+      waterMat.roughness = 0.32;
+      waterMat.metalness = 0.2;
+      waterMat.envMapIntensity = 0.9;
+      cloudMat.opacity = 0.74;
+      scene.environment = envMap;
+      scene.environmentIntensity = 0.58;
+    } else {
+      // ULTRA: horizonte amplo, reflexo no oceano/vidros do Altiplano, IBL completo e luz vibrante
+      fog.near = 420;
+      fog.far = 1040;
+      structureCullDist = 520;
+      sunLight.intensity = 2.24;
+      hemi.intensity = 1.36;
+      waterMat.roughness = 0.12;
+      waterMat.metalness = 0.38;
+      waterMat.envMapIntensity = 1.35;
+      cloudMat.opacity = 0.86;
+      scene.environment = envMap;
+      scene.environmentIntensity = 1.05;
     }
   };
 

@@ -468,7 +468,7 @@ export class CharacterAnimator {
     const isAirborne =
       !input.isGrounded && !input.isOnSurfboard && !input.isHealing && !input.isReviving;
     const isAirborneWeaponHold =
-      isAirborne && hasWeapon && !input.isReloading;
+      isAirborne && hasWeapon && !input.isReloading && (isCombatActive || this.jumpCancelled);
 
     // While crouched with a weapon:
     // - stationary & not aiming/shooting -> hold weapon clearly lowered ("arma baixada")
@@ -530,7 +530,7 @@ export class CharacterAnimator {
     this.jumpPoseBlend = THREE.MathUtils.damp(
       this.jumpPoseBlend,
       targetJumpPose,
-      isAirborne ? 18 : 22,
+      isAirborne ? 24 : 26,
       dt,
     );
 
@@ -725,23 +725,37 @@ export class CharacterAnimator {
       }
     }
 
-    // 4. Smooth athletic airborne leg tuck (never snaps dryly, never runs in mid-air, arms stay tucked if unarmed)
+    // 4. Athletic jump pose: legs tucked cleanly + arms slightly open like subtle wings with hands forward ("estilo asa e mão para frente")
     if (this.jumpPoseBlend > 0.01) {
       vis.updateMatrixWorld(true);
       vis.getWorldQuaternion(_qVisW);
       const jW = this.jumpPoseBlend;
       if (rig.adamThighLBone) rotateBoneCharAxis(_qVisW, rig.adamThighLBone, 1, 0, 0, -0.46 * jW);
       if (rig.adamShinLBone) rotateBoneCharAxis(_qVisW, rig.adamShinLBone, 1, 0, 0, 0.78 * jW);
-      if (rig.adamThighRBone) rotateBoneCharAxis(_qVisW, rig.adamThighRBone, 1, 0, 0, 0.12 * jW);
-      if (rig.adamShinRBone) rotateBoneCharAxis(_qVisW, rig.adamShinRBone, 1, 0, 0, 0.38 * jW);
-      if (!hasWeapon && isAirborne) {
+      if (rig.adamThighRBone) rotateBoneCharAxis(_qVisW, rig.adamThighRBone, 1, 0, 0, 0.14 * jW);
+      if (rig.adamShinRBone) rotateBoneCharAxis(_qVisW, rig.adamShinRBone, 1, 0, 0, 0.42 * jW);
+
+      if (isAirborne && !isCombatActive && !this.jumpCancelled && !input.isReloading) {
+        // Left arm: slight outward wing flare + forearm/hand pointed forward
         if (rig.adamUpperArmLBone) {
-          rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 0, 0, 1, -0.18 * jW);
-          rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 1, 0, 0, -0.18 * jW);
+          rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 0, 0, 1, 0.52 * jW);
+          rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 1, 0, 0, -0.34 * jW);
+          rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 0, 1, 0, 0.12 * jW);
         }
+        if (rig.adamLowerArmLBone) {
+          rotateBoneCharAxis(_qVisW, rig.adamLowerArmLBone, 1, 0, 0, -1.05 * jW);
+          rotateBoneCharAxis(_qVisW, rig.adamLowerArmLBone, 0, 1, 0, -0.22 * jW);
+        }
+
+        // Right arm: matching subtle wing flare + hand forward (slightly higher forward angle if holding gun)
         if (rig.adamUpperArmRBone) {
-          rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, 0.18 * jW);
-          rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, -0.18 * jW);
+          rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, (hasWeapon ? -0.42 : -0.52) * jW);
+          rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, (hasWeapon ? -0.48 : -0.34) * jW);
+          rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 1, 0, (hasWeapon ? -0.08 : -0.12) * jW);
+        }
+        if (rig.adamLowerArmRBone) {
+          rotateBoneCharAxis(_qVisW, rig.adamLowerArmRBone, 1, 0, 0, (hasWeapon ? -0.92 : -1.05) * jW);
+          rotateBoneCharAxis(_qVisW, rig.adamLowerArmRBone, 0, 1, 0, (hasWeapon ? 0.16 : 0.22) * jW);
         }
       }
     }
@@ -1218,7 +1232,23 @@ export class CharacterAnimator {
     const hasWeapon = input.hasWeapon ?? true;
     const pitchInfluence = input.pitchRad * 0.55;
 
+    const isAirborneWingJump =
+      procAirborne && this.jumpPoseBlend > 0.05 && !isCombatNow && !this.jumpCancelled;
+
     if (!hasWeapon) {
+      if (isAirborneWingJump) {
+        rig.rightShoulder.rotation.x = THREE.MathUtils.damp(rig.rightShoulder.rotation.x, -0.34, 24, dt);
+        rig.rightShoulder.rotation.y = THREE.MathUtils.damp(rig.rightShoulder.rotation.y, -0.12, 24, dt);
+        rig.rightShoulder.rotation.z = THREE.MathUtils.damp(rig.rightShoulder.rotation.z, -0.52, 24, dt);
+        rig.rightElbow.rotation.x = THREE.MathUtils.damp(rig.rightElbow.rotation.x, -1.05, 24, dt);
+
+        rig.leftShoulder.rotation.x = THREE.MathUtils.damp(rig.leftShoulder.rotation.x, -0.34, 24, dt);
+        rig.leftShoulder.rotation.y = THREE.MathUtils.damp(rig.leftShoulder.rotation.y, 0.12, 24, dt);
+        rig.leftShoulder.rotation.z = THREE.MathUtils.damp(rig.leftShoulder.rotation.z, 0.52, 24, dt);
+        rig.leftElbow.rotation.x = THREE.MathUtils.damp(rig.leftElbow.rotation.x, -1.05, 24, dt);
+        return;
+      }
+
       if (this.punchTimer > 0) {
         const pNorm = Math.sin((this.punchTimer / 0.34) * Math.PI);
         const rPunch = this.punchSide > 0 ? pNorm : 0;
@@ -1263,7 +1293,8 @@ export class CharacterAnimator {
 
     const isLargeWeapon =
       hasWeapon && Boolean(input.weaponCategory && input.weaponCategory !== 'HG');
-    const isAirborneWeaponHold = !input.isGrounded && !input.isOnSurfboard && hasWeapon;
+    const isAirborneWeaponHold =
+      !input.isGrounded && !input.isOnSurfboard && hasWeapon && (isCombatNow || this.jumpCancelled);
     const isCrouchPointForward = isCrouch && curMoveInput;
     const isCrouchWeaponDown = isCrouch && !curMoveInput && !input.isAiming && this.recoil < 0.05;
     const aimRaise = isCrouchWeaponDown
@@ -1272,7 +1303,17 @@ export class CharacterAnimator {
         ? -1.42
         : -1.05;
 
-    if (input.isSprinting && !input.isAiming && !isAirborneWeaponHold && this.recoil < 0.05) {
+    if (isAirborneWingJump) {
+      rig.rightShoulder.rotation.x = THREE.MathUtils.damp(rig.rightShoulder.rotation.x, -0.48, 24, dt);
+      rig.rightShoulder.rotation.y = THREE.MathUtils.damp(rig.rightShoulder.rotation.y, -0.08, 24, dt);
+      rig.rightShoulder.rotation.z = THREE.MathUtils.damp(rig.rightShoulder.rotation.z, -0.42, 24, dt);
+      rig.rightElbow.rotation.x = THREE.MathUtils.damp(rig.rightElbow.rotation.x, -0.92, 24, dt);
+
+      rig.leftShoulder.rotation.x = THREE.MathUtils.damp(rig.leftShoulder.rotation.x, -0.34, 24, dt);
+      rig.leftShoulder.rotation.y = THREE.MathUtils.damp(rig.leftShoulder.rotation.y, 0.12, 24, dt);
+      rig.leftShoulder.rotation.z = THREE.MathUtils.damp(rig.leftShoulder.rotation.z, 0.52, 24, dt);
+      rig.leftElbow.rotation.x = THREE.MathUtils.damp(rig.leftElbow.rotation.x, -1.05, 24, dt);
+    } else if (input.isSprinting && !input.isAiming && !isAirborneWeaponHold && this.recoil < 0.05) {
       if (isLargeWeapon) {
         // Large weapon two-handed military low-ready carry with smooth side-to-side sway
         const sway = Math.sin(this.runSwayPhase);

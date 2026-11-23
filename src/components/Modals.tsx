@@ -1,15 +1,27 @@
 import React from 'react';
-import { X, Check, RotateCcw } from 'lucide-react';
+import { X, Check, RotateCcw, Keyboard, MousePointerClick } from 'lucide-react';
 import { getCharacterAvatar } from '../game/avatars';
 import {
   CharacterConfig,
   ControlMode,
+  DEFAULT_KEY_BINDINGS,
+  EMULATOR_KEY_BINDINGS,
+  formatKeyCodeLabel,
   GameSettings,
   GlooSkinId,
   GraphicsQuality,
+  KEY_BINDING_GROUPS,
+  KeyBindAction,
+  ShadowQuality,
+  TextureQuality,
   WEAPONS,
 } from '../game/types';
-import { DEFAULT_SETTINGS } from '../game/storage';
+import {
+  DEFAULT_SETTINGS,
+  defaultShadowForQuality,
+  defaultTextureForQuality,
+  normalizeKeyBindings,
+} from '../game/storage';
 import { WeaponIcon } from './WeaponIcon';
 
 interface CharacterModalProps {
@@ -200,6 +212,7 @@ interface SettingsModalProps {
   onChangeNickname: (name: string) => void;
   onChangeSettings: (next: GameSettings) => void;
   onOpenHudEditor: () => void;
+  onRebindingChange?: (active: boolean) => void;
   onClose: () => void;
 }
 
@@ -209,9 +222,100 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onChangeNickname,
   onChangeSettings,
   onOpenHudEditor,
+  onRebindingChange,
   onClose,
 }) => {
-  const [tab, setTab] = React.useState<'sens' | 'controls' | 'general'>('sens');
+  const [tab, setTab] = React.useState<'sens' | 'controls' | 'keys' | 'general'>('sens');
+  const [listeningAction, setListeningAction] = React.useState<KeyBindAction | null>(null);
+
+  const keyBindings = React.useMemo(
+    () => normalizeKeyBindings(settings.keyBindings),
+    [settings.keyBindings],
+  );
+
+  React.useEffect(() => {
+    onRebindingChange?.(listeningAction !== null);
+    return () => {
+      onRebindingChange?.(false);
+    };
+  }, [listeningAction, onRebindingChange]);
+
+  React.useEffect(() => {
+    if (!listeningAction) return;
+
+    const commitCode = (newCode: string) => {
+      if (!newCode || newCode === 'Escape') {
+        setListeningAction(null);
+        return;
+      }
+      const next = { ...keyBindings };
+      const previousCodeForTarget = next[listeningAction];
+      // Swap if another action already uses newCode so no action becomes unbound
+      (Object.keys(next) as KeyBindAction[]).forEach((act) => {
+        if (act !== listeningAction && next[act] === newCode) {
+          next[act] = previousCodeForTarget;
+        }
+      });
+      next[listeningAction] = newCode;
+      onChangeSettings({
+        ...settings,
+        keyBindings: next,
+      });
+      setListeningAction(null);
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.code === 'Escape') {
+        setListeningAction(null);
+        return;
+      }
+      commitCode(e.code);
+    };
+
+    const onMouseDown = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const map: Record<number, string> = {
+        0: 'MouseLeft',
+        1: 'MouseMiddle',
+        2: 'MouseRight',
+        3: 'MouseBack',
+        4: 'MouseForward',
+      };
+      if (map[e.button]) {
+        commitCode(map[e.button]);
+      }
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) < 4) return;
+      e.preventDefault();
+      e.stopPropagation();
+      commitCode(e.deltaY < 0 ? 'WheelUp' : 'WheelDown');
+    };
+
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+    };
+
+    // Defer listener attachment by 1 frame so the click that started listening isn't captured immediately
+    const timer = window.setTimeout(() => {
+      window.addEventListener('keydown', onKeyDown, true);
+      window.addEventListener('mousedown', onMouseDown, true);
+      window.addEventListener('wheel', onWheel, { capture: true, passive: false });
+      window.addEventListener('contextmenu', onContextMenu, true);
+    }, 40);
+
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('mousedown', onMouseDown, true);
+      window.removeEventListener('wheel', onWheel, true);
+      window.removeEventListener('contextmenu', onContextMenu, true);
+    };
+  }, [listeningAction, keyBindings, onChangeSettings, settings]);
 
   const sensRows: Array<{
     key:
@@ -232,21 +336,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
-      <div className="w-full max-w-lg bg-[#14181e] border-2 border-amber-500 text-white shadow-2xl">
+      <div className="w-full max-w-xl bg-[#14181e] border-2 border-amber-500 text-white shadow-2xl">
         <div className="flex items-center justify-between px-4 py-3 bg-[#1d232c] border-b border-neutral-700">
           <h2 className="font-black text-sm tracking-widest uppercase text-amber-400">
             CONFIGURAÇÕES
           </h2>
-          <button type="button" onClick={onClose} className="p-1 hover:bg-neutral-700 cursor-pointer">
+          <button
+            type="button"
+            onClick={() => {
+              setListeningAction(null);
+              onClose();
+            }}
+            className="p-1 hover:bg-neutral-700 cursor-pointer"
+          >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Category Tabs */}
-        <div className="grid grid-cols-3 bg-[#0f1318] border-b border-neutral-700 text-[11px] font-black uppercase">
+        <div className="grid grid-cols-4 bg-[#0f1318] border-b border-neutral-700 text-[10px] sm:text-[11px] font-black uppercase">
           <button
             type="button"
-            onClick={() => setTab('sens')}
+            onClick={() => {
+              setListeningAction(null);
+              setTab('sens');
+            }}
             className={`py-2.5 cursor-pointer border-b-2 ${
               tab === 'sens'
                 ? 'border-amber-400 text-amber-400 bg-[#181e27]'
@@ -257,25 +371,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => setTab('controls')}
+            onClick={() => {
+              setListeningAction(null);
+              setTab('controls');
+            }}
             className={`py-2.5 cursor-pointer border-b-2 ${
               tab === 'controls'
                 ? 'border-amber-400 text-amber-400 bg-[#181e27]'
                 : 'border-transparent text-neutral-400 hover:text-white'
             }`}
           >
-            CONTROLES & HUD
+            CONTROLES
           </button>
           <button
             type="button"
-            onClick={() => setTab('general')}
+            onClick={() => {
+              setListeningAction(null);
+              setTab('keys');
+            }}
+            className={`py-2.5 cursor-pointer border-b-2 flex items-center justify-center gap-1 ${
+              tab === 'keys'
+                ? 'border-amber-400 text-amber-400 bg-[#181e27]'
+                : 'border-transparent text-neutral-400 hover:text-white'
+            }`}
+          >
+            <Keyboard className="w-3.5 h-3.5 hidden sm:inline" />
+            <span>TECLAS / EMU</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setListeningAction(null);
+              setTab('general');
+            }}
             className={`py-2.5 cursor-pointer border-b-2 ${
               tab === 'general'
                 ? 'border-amber-400 text-amber-400 bg-[#181e27]'
                 : 'border-transparent text-neutral-400 hover:text-white'
             }`}
           >
-            GRÁFICOS & ÁUDIO
+            GRÁFICOS
           </button>
         </div>
 
@@ -452,6 +587,164 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </>
           )}
 
+          {tab === 'keys' && (
+            <>
+              <div className="bg-[#0f141c] border border-cyan-500/40 p-2.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-cyan-300 font-black uppercase text-[11px]">
+                    <MousePointerClick className="w-4 h-4 shrink-0" />
+                    <span>MODO EMULADOR & CONTROLE DE MOUSE</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeSettings({
+                        ...settings,
+                        emulatorMode: !settings.emulatorMode,
+                      })
+                    }
+                    className={`px-3 py-1 border font-black uppercase text-[10px] cursor-pointer ${
+                      settings.emulatorMode
+                        ? 'bg-emerald-500 text-black border-emerald-300'
+                        : 'bg-[#1a2028] text-neutral-300 border-neutral-600'
+                    }`}
+                  >
+                    {settings.emulatorMode ? 'ATIVADO' : 'DESATIVADO'}
+                  </button>
+                </div>
+                <p className="text-[10px] text-neutral-400 font-mono leading-snug">
+                  * Use <span className="text-amber-300 font-bold">{formatKeyCodeLabel(keyBindings.toggleMouse)}</span> para suspender o mouse e clicar na tela, e aperte de novo para voltar à câmera. Use <span className="text-cyan-300 font-bold">{formatKeyCodeLabel(keyBindings.resetMouse)}</span> para reiniciar o mouse caso trave.
+                </p>
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeSettings({
+                        ...settings,
+                        aimToggleMode: false,
+                      })
+                    }
+                    className={`py-1.5 px-2 border text-[10px] font-black uppercase cursor-pointer ${
+                      !settings.aimToggleMode
+                        ? 'bg-amber-500 text-black border-amber-400'
+                        : 'bg-[#1a2028] border-neutral-700 text-neutral-300'
+                    }`}
+                  >
+                    MIRA: SEGURAR BOTÃO
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeSettings({
+                        ...settings,
+                        aimToggleMode: true,
+                      })
+                    }
+                    className={`py-1.5 px-2 border text-[10px] font-black uppercase cursor-pointer ${
+                      settings.aimToggleMode
+                        ? 'bg-amber-500 text-black border-amber-400'
+                        : 'bg-[#1a2028] border-neutral-700 text-neutral-300'
+                    }`}
+                  >
+                    MIRA: CLICAR / ALTERNAR
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setListeningAction(null);
+                    onChangeSettings({
+                      ...settings,
+                      keyBindings: { ...DEFAULT_KEY_BINDINGS },
+                    });
+                  }}
+                  className="py-2 px-2 bg-[#1a2028] hover:bg-[#232b36] border border-neutral-600 text-[10px] font-black uppercase cursor-pointer"
+                >
+                  PRESET PADRÃO PC
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setListeningAction(null);
+                    onChangeSettings({
+                      ...settings,
+                      emulatorMode: true,
+                      keyBindings: { ...EMULATOR_KEY_BINDINGS },
+                    });
+                  }}
+                  className="py-2 px-2 bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-500/70 text-cyan-200 text-[10px] font-black uppercase cursor-pointer"
+                >
+                  PRESET EMULADOR (FF PC)
+                </button>
+              </div>
+
+              {listeningAction && (
+                <div className="bg-amber-500/20 border border-amber-400 px-3 py-2 text-[11px] font-black text-amber-200 flex items-center justify-between">
+                  <span>PRESSIONE QUALQUER TECLA, BOTÃO DO MOUSE OU SCROLL...</span>
+                  <button
+                    type="button"
+                    onClick={() => setListeningAction(null)}
+                    className="px-2 py-0.5 bg-black/60 border border-white/25 text-[10px] cursor-pointer"
+                  >
+                    CANCELAR (ESC)
+                  </button>
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {KEY_BINDING_GROUPS.map((group) => (
+                  <div key={group.title} className="space-y-1">
+                    <div className="text-[10px] font-black tracking-wider text-amber-400 uppercase border-b border-neutral-700 pb-1">
+                      {group.title}
+                    </div>
+                    <div className="space-y-1">
+                      {group.items.map((item) => {
+                        const isWaiting = listeningAction === item.action;
+                        const boundCode = keyBindings[item.action];
+                        return (
+                          <div
+                            key={item.action}
+                            className="flex items-center justify-between gap-2 bg-[#181e27] border border-neutral-700/80 px-2.5 py-1.5"
+                          >
+                            <div className="min-w-0">
+                              <div className="font-bold text-[11px] text-white truncate">
+                                {item.label}
+                              </div>
+                              {item.hint && (
+                                <div className="text-[9px] text-neutral-400 leading-tight">
+                                  {item.hint}
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setListeningAction((cur) =>
+                                  cur === item.action ? null : item.action,
+                                )
+                              }
+                              className={`shrink-0 min-w-[92px] px-2.5 py-1 border font-mono font-black text-[10px] uppercase cursor-pointer transition-colors ${
+                                isWaiting
+                                  ? 'bg-amber-400 text-black border-white animate-pulse'
+                                  : 'bg-[#0e1218] hover:bg-[#232c3a] text-amber-300 border-neutral-600'
+                              }`}
+                            >
+                              {isWaiting ? 'TECLE...' : formatKeyCodeLabel(boundCode)}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
           {tab === 'general' && (
             <>
               <div>
@@ -498,15 +791,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="grid grid-cols-3 gap-2">
                   {(
                     [
-                      { id: 'low', title: 'Suave', desc: 'Celular/PC Fraco · Render curta' },
-                      { id: 'medium', title: 'Padrão', desc: 'Celular Médio · Equilibrado' },
-                      { id: 'high', title: 'Ultra', desc: 'Máximo · Sombras HD & Vegetação' },
+                      { id: 'low', title: 'Suave', desc: 'Celular/PC Fraco · Máximo FPS' },
+                      { id: 'medium', title: 'Padrão', desc: 'Equilibrado · Reflexos leves' },
+                      { id: 'high', title: 'Ultra', desc: 'Máximo · Full HD, Reflexos & IBL' },
                     ] as Array<{ id: GraphicsQuality; title: string; desc: string }>
                   ).map((q) => (
                     <button
                       key={q.id}
                       type="button"
-                      onClick={() => onChangeSettings({ ...settings, quality: q.id })}
+                      onClick={() =>
+                        onChangeSettings({
+                          ...settings,
+                          quality: q.id,
+                          textureQuality: defaultTextureForQuality(q.id),
+                          shadowQuality: defaultShadowForQuality(q.id),
+                        })
+                      }
                       className={`py-2 px-1.5 border cursor-pointer flex flex-col items-center text-center gap-0.5 ${
                         settings.quality === q.id
                           ? 'bg-amber-500 text-black border-amber-400'
@@ -524,8 +824,78 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </button>
                   ))}
                 </div>
-                <p className="text-[10px] text-neutral-400 mt-1.5 font-mono">
-                  * Terreno distante perde texturas pesadas automaticamente mantendo a visão do mapa. Inimigos fora do alcance de render não são exibidos e não te enxergam.
+              </div>
+
+              <div>
+                <div className="font-bold uppercase text-neutral-300 mb-1.5">
+                  NÍVEL DAS TEXTURAS
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {(
+                    [
+                      { id: 'low', label: 'Baixo' },
+                      { id: 'medium', label: 'Médio' },
+                      { id: 'high', label: 'Alto' },
+                      { id: 'ultra', label: 'Ultra' },
+                    ] as Array<{ id: TextureQuality; label: string }>
+                  ).map((t) => {
+                    const activeTex =
+                      (settings.textureQuality ?? defaultTextureForQuality(settings.quality)) === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => onChangeSettings({ ...settings, textureQuality: t.id })}
+                        className={`py-2 border font-black uppercase text-[11px] cursor-pointer ${
+                          activeTex
+                            ? 'bg-amber-500 text-black border-amber-400'
+                            : 'bg-[#1a2028] border-neutral-700 text-neutral-300 hover:border-neutral-500'
+                        }`}
+                      >
+                        {t.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-neutral-400 mt-1 font-mono">
+                  * Controla filtragem anisotrópica (até 16x), mipmaps e nitidez do calçadão, areia, prédios e asfalto à distância.
+                </p>
+              </div>
+
+              <div>
+                <div className="font-bold uppercase text-neutral-300 mb-1.5">
+                  NÍVEL DE SOMBRAS
+                </div>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {(
+                    [
+                      { id: 'off', label: 'Off' },
+                      { id: 'low', label: 'Baixa' },
+                      { id: 'medium', label: 'Média' },
+                      { id: 'high', label: 'Alta' },
+                      { id: 'ultra', label: 'Ultra' },
+                    ] as Array<{ id: ShadowQuality; label: string }>
+                  ).map((s) => {
+                    const activeShd =
+                      (settings.shadowQuality ?? defaultShadowForQuality(settings.quality)) === s.id;
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => onChangeSettings({ ...settings, shadowQuality: s.id })}
+                        className={`py-2 border font-black uppercase text-[10px] cursor-pointer ${
+                          activeShd
+                            ? 'bg-amber-500 text-black border-amber-400'
+                            : 'bg-[#1a2028] border-neutral-700 text-neutral-300 hover:border-neutral-500'
+                        }`}
+                      >
+                        {s.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-neutral-400 mt-1 font-mono">
+                  * Ajusta a resolução das sombras em tempo real (512px a 4K PCFSoft) e sombras de coqueiros e árvores.
                 </p>
               </div>
 
@@ -548,14 +918,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         <div className="px-4 py-3 bg-[#1d232c] border-t border-neutral-700 flex items-center justify-between">
           <button
             type="button"
-            onClick={() =>
+            onClick={() => {
+              setListeningAction(null);
               onChangeSettings({
                 ...DEFAULT_SETTINGS,
+                keyBindings: { ...DEFAULT_KEY_BINDINGS },
                 hudLayout: settings.hudLayout,
                 activeHudSlot: settings.activeHudSlot ?? 1,
                 hudSlots: settings.hudSlots ?? DEFAULT_SETTINGS.hudSlots,
-              })
-            }
+              });
+            }}
             className="flex items-center gap-1.5 text-xs text-neutral-300 hover:text-white cursor-pointer"
           >
             <RotateCcw className="w-3.5 h-3.5" />
@@ -563,7 +935,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => {
+              setListeningAction(null);
+              onClose();
+            }}
             className="px-6 py-2 bg-amber-500 hover:bg-amber-400 text-black font-black text-xs uppercase tracking-widest cursor-pointer"
           >
             CONCLUIR

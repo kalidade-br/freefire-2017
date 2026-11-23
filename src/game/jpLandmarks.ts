@@ -1062,10 +1062,14 @@ export interface VegetationInput {
   obstacleMeshes: THREE.Object3D[];
 }
 
+export interface JpFoliageController {
+  setFoliageShadows: (castPalm: boolean, castForest: boolean) => void;
+}
+
 export function createInstancedJoaoPessoaFoliage(
   scene: THREE.Scene,
   input: VegetationInput,
-): void {
+): JpFoliageController {
   const {
     sampleGroundHeight,
     isOnRoad,
@@ -1075,6 +1079,10 @@ export function createInstancedJoaoPessoaFoliage(
     colliders,
     obstacleMeshes,
   } = input;
+  let palmTrunksMesh: THREE.InstancedMesh | null = null;
+  let palmCrownsMesh: THREE.InstancedMesh | null = null;
+  let forestTrunksMesh: THREE.InstancedMesh | null = null;
+  let forestCanopiesMesh: THREE.InstancedMesh | null = null;
 
   const dummy = new THREE.Object3D();
   const tmpColor = new THREE.Color();
@@ -1167,6 +1175,8 @@ export function createInstancedJoaoPessoaFoliage(
     const palmCrowns = new THREE.InstancedMesh(palmCrownGeo, palmCrownMat, palmSpots.length);
     palmTrunks.castShadow = false;
     palmCrowns.castShadow = false;
+    palmTrunksMesh = palmTrunks;
+    palmCrownsMesh = palmCrowns;
     palmSpots.forEach((p, idx) => {
       const py = sampleGroundHeight(p.x, p.z);
       dummy.position.set(p.x, py, p.z);
@@ -1261,6 +1271,8 @@ export function createInstancedJoaoPessoaFoliage(
     const forestCanopies = new THREE.InstancedMesh(treeCanopyGeo, treeCanopyMat, forestSpots.length);
     forestTrunks.castShadow = false;
     forestCanopies.castShadow = false;
+    forestTrunksMesh = forestTrunks;
+    forestCanopiesMesh = forestCanopies;
     forestSpots.forEach((f, idx) => {
       const fy = sampleGroundHeight(f.x, f.z);
       dummy.position.set(f.x, fy, f.z);
@@ -1418,4 +1430,13 @@ export function createInstancedJoaoPessoaFoliage(
     shrubMesh.computeBoundingSphere();
     scene.add(shrubMesh);
   }
+
+  return {
+    setFoliageShadows: (castPalm: boolean, castForest: boolean) => {
+      if (palmTrunksMesh) palmTrunksMesh.castShadow = castPalm;
+      if (palmCrownsMesh) palmCrownsMesh.castShadow = castPalm;
+      if (forestTrunksMesh) forestTrunksMesh.castShadow = castForest;
+      if (forestCanopiesMesh) forestCanopiesMesh.castShadow = castForest;
+    },
+  };
 }
