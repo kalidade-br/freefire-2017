@@ -51,6 +51,12 @@ export interface ProceduralTextureSet {
   containerRust: THREE.CanvasTexture;
   camoParachute: THREE.CanvasTexture;
   contactShadow: THREE.CanvasTexture;
+  calcadaoWave: THREE.CanvasTexture;
+  sandBeach: THREE.CanvasTexture;
+  falesiaClay: THREE.CanvasTexture;
+  modernGlass: THREE.CanvasTexture;
+  colonialPastel: THREE.CanvasTexture;
+  plazaStone: THREE.CanvasTexture;
   dispose: () => void;
 }
 
@@ -379,6 +385,101 @@ export function createProceduralTextures(
   contactShadow.colorSpace = THREE.SRGBColorSpace;
   contactShadow.needsUpdate = true;
 
+  // 9. Calçadão de Tambaú / Cabo Branco Pedra Portuguesa Wave Mosaic (128x128)
+  const [calcC, calcCtx] = makeCanvas(128);
+  calcCtx.fillStyle = '#e7e1d4';
+  calcCtx.fillRect(0, 0, 128, 128);
+  calcCtx.fillStyle = '#334155';
+  calcCtx.beginPath();
+  calcCtx.moveTo(0, 32);
+  calcCtx.bezierCurveTo(32, 8, 96, 56, 128, 32);
+  calcCtx.lineTo(128, 56);
+  calcCtx.bezierCurveTo(96, 80, 32, 32, 0, 56);
+  calcCtx.closePath();
+  calcCtx.fill();
+  calcCtx.fillStyle = '#9a3412';
+  calcCtx.beginPath();
+  calcCtx.moveTo(0, 86);
+  calcCtx.bezierCurveTo(32, 66, 96, 106, 128, 86);
+  calcCtx.lineTo(128, 100);
+  calcCtx.bezierCurveTo(96, 120, 32, 80, 0, 100);
+  calcCtx.closePath();
+  calcCtx.fill();
+  for (let i = 0; i < 90; i++) {
+    calcCtx.fillStyle = i % 2 === 0 ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.12)';
+    calcCtx.fillRect((i * 23) % 128, (i * 41) % 128, 3, 2);
+  }
+  const calcadaoWave = finalizeTexture(calcC, maxAnisotropy, 4, 24);
+
+  // 10. Golden Tropical Beach Sand (128x128)
+  const [sandC, sandCtx] = makeCanvas(128);
+  sandCtx.fillStyle = '#e6ce9e';
+  sandCtx.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 160; i++) {
+    sandCtx.fillStyle = i % 3 === 0 ? '#d8bd8b' : i % 3 === 1 ? '#f0dbb0' : '#c9ae7a';
+    sandCtx.fillRect((i * 29) % 128, (i * 43) % 128, 3, 2);
+  }
+  const sandBeach = finalizeTexture(sandC, maxAnisotropy, 16, 16);
+
+  // 11. Falésia do Cabo Branco Layered Terracotta Cliff (128x128)
+  const [falC, falCtx] = makeCanvas(128);
+  falCtx.fillStyle = '#a85334';
+  falCtx.fillRect(0, 0, 128, 128);
+  const cliffBands = ['#c26b44', '#8f4128', '#d48d5a', '#7c3621', '#b65f3c'];
+  for (let y = 0; y < 128; y += 16) {
+    falCtx.fillStyle = cliffBands[(y / 16) % cliffBands.length];
+    falCtx.fillRect(0, y, 128, 14);
+    falCtx.fillStyle = 'rgba(40,18,10,0.22)';
+    falCtx.fillRect(0, y + 14, 128, 2);
+  }
+  const falesiaClay = finalizeTexture(falC, maxAnisotropy, 3, 2);
+
+  // 12. Altiplano / Estação Cabo Branco Modern Glass & Aluminum Curtain Wall (128x128)
+  const [glassC, glassCtx] = makeCanvas(128);
+  glassCtx.fillStyle = '#e2e8f0';
+  glassCtx.fillRect(0, 0, 128, 128);
+  for (let y = 6; y < 128; y += 32) {
+    for (let x = 6; x < 128; x += 24) {
+      const gradG = glassCtx.createLinearGradient(x, y, x, y + 22);
+      gradG.addColorStop(0, '#38bdf8');
+      gradG.addColorStop(0.45, '#0284c7');
+      gradG.addColorStop(1, '#0f172a');
+      glassCtx.fillStyle = gradG;
+      glassCtx.fillRect(x, y, 18, 22);
+      glassCtx.fillStyle = 'rgba(255,255,255,0.28)';
+      glassCtx.fillRect(x + 2, y + 2, 4, 18);
+    }
+    glassCtx.fillStyle = '#f8fafc';
+    glassCtx.fillRect(0, y + 22, 128, 10);
+  }
+  const modernGlass = finalizeTexture(glassC, maxAnisotropy, 2, 3);
+
+  // 13. Centro Histórico Colonial Pastel Plaster Wall (128x128)
+  const [colC, colCtx] = makeCanvas(128);
+  colCtx.fillStyle = '#f4d99b';
+  colCtx.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 120; i++) {
+    colCtx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.14)' : 'rgba(161,98,7,0.10)';
+    colCtx.fillRect((i * 37) % 128, (i * 51) % 128, 5, 4);
+  }
+  colCtx.fillStyle = '#f8fafc';
+  colCtx.fillRect(0, 0, 128, 10);
+  colCtx.fillRect(0, 110, 128, 18);
+  const colonialPastel = finalizeTexture(colC, maxAnisotropy, 2, 1);
+
+  // 14. Parque da Lagoa / Centro Historic Granite Cobble Plaza (128x128)
+  const [plzC, plzCtx] = makeCanvas(128);
+  plzCtx.fillStyle = '#9aa1a8';
+  plzCtx.fillRect(0, 0, 128, 128);
+  for (let y = 0; y < 128; y += 16) {
+    const off = (y / 16) % 2 === 0 ? 0 : 12;
+    for (let x = -12; x < 128; x += 24) {
+      plzCtx.fillStyle = ((x + y) / 8) % 2 === 0 ? '#a7aeb5' : '#8d949b';
+      plzCtx.fillRect(x + off + 1, y + 1, 22, 14);
+    }
+  }
+  const plazaStone = finalizeTexture(plzC, maxAnisotropy, 8, 8);
+
   return {
     grass,
     foliage,
@@ -400,6 +501,12 @@ export function createProceduralTextures(
     containerRust,
     camoParachute,
     contactShadow,
+    calcadaoWave,
+    sandBeach,
+    falesiaClay,
+    modernGlass,
+    colonialPastel,
+    plazaStone,
     dispose: () => {
       grass.dispose();
       foliage.dispose();
@@ -421,6 +528,12 @@ export function createProceduralTextures(
       containerRust.dispose();
       camoParachute.dispose();
       contactShadow.dispose();
+      calcadaoWave.dispose();
+      sandBeach.dispose();
+      falesiaClay.dispose();
+      modernGlass.dispose();
+      colonialPastel.dispose();
+      plazaStone.dispose();
     },
   };
 }

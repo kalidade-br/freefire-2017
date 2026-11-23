@@ -332,30 +332,64 @@ export const GameHud: React.FC<GameHudProps> = ({
       ctx.stroke();
     }
 
-    // Sand beach & grassy terrain fill
-    ctx.fillStyle = '#5a6d3a';
-    ctx.strokeStyle = '#cbb480';
-    ctx.lineWidth = 5.5;
+    // Sand beach & urban/forest green terrain fill
+    ctx.fillStyle = '#5e7640';
+    ctx.strokeStyle = '#e5cb8f';
+    ctx.lineWidth = 6.5;
     drawMainPoly();
     ctx.fill();
     ctx.stroke();
 
+    // Warm golden-sand Orla belt on Eastern shoreline (+X > 275)
+    ctx.save();
+    drawMainPoly();
+    ctx.clip();
+    const beachGrad = ctx.createLinearGradient(toPx(265, 0).x, 0, toPx(380, 0).x, 0);
+    beachGrad.addColorStop(0, 'rgba(235, 206, 138, 0)');
+    beachGrad.addColorStop(0.55, 'rgba(235, 206, 138, 0.72)');
+    beachGrad.addColorStop(1, 'rgba(240, 214, 152, 0.95)');
+    ctx.fillStyle = beachGrad;
+    ctx.fillRect(toPx(265, 0).x, 0, size, size);
+
+    // Mata do Buraquinho (Central Atlantic Forest Reserve)
+    const mataP = toPx(10, 58);
+    const mataGrad = ctx.createRadialGradient(mataP.x, mataP.y, 6, mataP.x, mataP.y, 48);
+    mataGrad.addColorStop(0, 'rgba(26, 94, 42, 0.85)');
+    mataGrad.addColorStop(0.7, 'rgba(34, 112, 48, 0.55)');
+    mataGrad.addColorStop(1, 'rgba(34, 112, 48, 0)');
+    ctx.fillStyle = mataGrad;
+    ctx.beginPath();
+    ctx.arc(mataP.x, mataP.y, 48, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Altiplano Cabo Branco urban highland shading
+    const altiP = toPx(138, 48);
+    ctx.fillStyle = 'rgba(130, 144, 128, 0.42)';
+    ctx.beginPath();
+    ctx.ellipse(altiP.x, altiP.y, 26, 36, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Falésia / Ponta do Seixas reddish clay cliff plateau
+    const falP = toPx(245, 305);
+    ctx.fillStyle = 'rgba(176, 96, 62, 0.52)';
+    ctx.beginPath();
+    ctx.arc(falP.x, falP.y, 28, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Ilha de Areia Vermelha offshore sandbar (warm reddish-ochre sand)
     if (HAS_SENTOSA) {
+      ctx.fillStyle = '#cf7f56';
+      ctx.strokeStyle = '#ecd29e';
+      ctx.lineWidth = 4.5;
       drawSentosaPoly();
       ctx.fill();
       ctx.stroke();
     }
 
-    // Peak mountain elevation shading
-    const peakP = toPx(30, -55);
-    ctx.fillStyle = 'rgba(116, 112, 90, 0.45)';
-    ctx.beginPath();
-    ctx.arc(peakP.x, peakP.y, 28, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Northern River & Dam basin
+    // Rio Paraíba / Sanhauá channel across the North
     ctx.strokeStyle = '#1fc6df';
-    ctx.lineWidth = 11;
+    ctx.lineWidth = 11.5;
     ctx.beginPath();
     for (let wx = -540; wx <= 540; wx += 20) {
       const wz = riverCenterZ(wx);
@@ -368,7 +402,7 @@ export const GameHud: React.FC<GameHudProps> = ({
     roads.forEach((r) => {
       const p1 = toPx(r.x1, r.z1);
       const p2 = toPx(r.x2, r.z2);
-      ctx.strokeStyle = r.kind === 'asphalt' ? '#686e77' : '#a48a66';
+      ctx.strokeStyle = r.kind === 'asphalt' ? '#686e77' : '#b2976e';
       ctx.lineWidth = Math.max(2.6, r.width * worldToBg * 0.92);
       ctx.lineCap = 'round';
       ctx.beginPath();
@@ -386,8 +420,87 @@ export const GameHud: React.FC<GameHudProps> = ({
       ctx.translate(p.x, p.y);
       ctx.rotate(-b.rotY);
 
-      if (b.kind === 'bridge') {
-        ctx.fillStyle = '#cbd5e1';
+      if (b.kind === 'lagoa') {
+        const outerR = bw * 0.54;
+        const innerR = bw * 0.45;
+        ctx.fillStyle = '#94a3b8';
+        ctx.beginPath();
+        ctx.arc(0, 0, outerR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#168aad';
+        ctx.beginPath();
+        ctx.arc(0, 0, innerR, 0, Math.PI * 2);
+        ctx.fill();
+        // Footbridges
+        ctx.fillStyle = '#d97706';
+        ctx.fillRect(-innerR, -1.6, innerR * 2, 3.2);
+        // Central Fountain Island
+        ctx.fillStyle = '#f1f5f9';
+        ctx.beginPath();
+        ctx.arc(0, 0, innerR * 0.28, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        return;
+      }
+
+      if (b.kind === 'hotelTambau') {
+        const r = Math.max(6, bw * 0.5);
+        ctx.fillStyle = '#f8fafc';
+        ctx.strokeStyle = '#0284c7';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#22d3ee';
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.42, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        return;
+      }
+
+      if (b.kind === 'estacao') {
+        const r = Math.max(5, bw * 0.5);
+        ctx.fillStyle = '#e0f2fe';
+        ctx.strokeStyle = '#0284c7';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        return;
+      }
+
+      if (b.kind === 'farol') {
+        const r = Math.max(4, bw * 0.5);
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = '#eab308';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        return;
+      }
+
+      if (b.kind === 'quiosque') {
+        const r = Math.max(2.2, bw * 0.5);
+        ctx.fillStyle = '#f97316';
+        ctx.strokeStyle = '#fef3c7';
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        return;
+      }
+
+      if (b.kind === 'bridge' || b.kind === 'pier') {
+        ctx.fillStyle = b.kind === 'pier' ? '#b45309' : '#cbd5e1';
         ctx.strokeStyle = '#334155';
         ctx.lineWidth = 0.9;
         ctx.fillRect(-bw * 0.5, -bd * 0.5, bw, bd);
@@ -415,7 +528,16 @@ export const GameHud: React.FC<GameHudProps> = ({
         return;
       }
 
-      if (b.kind === 'casaGod') {
+      if (b.kind === 'skyscraper') {
+        ctx.fillStyle = '#bae6fd';
+        ctx.strokeStyle = '#0369a1';
+      } else if (b.kind === 'igreja') {
+        ctx.fillStyle = '#fef3c7';
+        ctx.strokeStyle = '#92400e';
+      } else if (b.kind === 'letreiro') {
+        ctx.fillStyle = '#06b6d4';
+        ctx.strokeStyle = '#facc15';
+      } else if (b.kind === 'casaGod') {
         ctx.fillStyle = '#f59e0b';
         ctx.strokeStyle = '#451a03';
       } else if (b.kind === 'celeiro') {
@@ -443,17 +565,29 @@ export const GameHud: React.FC<GameHudProps> = ({
       ctx.restore();
     });
 
-    ctx.font = 'bold 13px monospace';
+    const poiShortLabel = (name: string): string => {
+      if (name === 'A LAGOA') return 'LAGOA';
+      if (name === 'CABO BRANCO') return 'CABO BRANCO';
+      if (name === 'FAROL DO SEIXAS') return 'FAROL';
+      if (name === 'AREIA VERMELHA') return 'A. VERMELHA';
+      if (name === 'MATA BURAQUINHO') return 'BURAQUINHO';
+      if (name === 'CENTRO HISTÓRICO') return 'CENTRO';
+      if (name === 'PRAIA DO JACARÉ') return 'JACARÉ';
+      if (name === 'PORTO SANHAUÁ') return 'PORTO';
+      return name;
+    };
+
+    ctx.font = 'bold 12px monospace';
     ctx.textAlign = 'center';
     pois.forEach((poi) => {
-      if (poi.name.startsWith('PONTE') || poi.name.startsWith('NUREK')) return;
+      if (poi.name.startsWith('PONTE')) return;
       const p = toPx(poi.x, poi.z);
-      const label = poi.name.split(' ')[0];
+      const label = poiShortLabel(poi.name);
       ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(0,0,0,0.72)';
-      ctx.strokeText(label, p.x, p.y - 9);
-      ctx.fillStyle = 'rgba(255,255,255,0.9)';
-      ctx.fillText(label, p.x, p.y - 9);
+      ctx.strokeStyle = 'rgba(0,0,0,0.78)';
+      ctx.strokeText(label, p.x, p.y - 8);
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.fillText(label, p.x, p.y - 8);
     });
 
     minimapBgRef.current = off;

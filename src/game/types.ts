@@ -669,7 +669,16 @@ export interface MinimapBuilding {
     | 'shed'
     | 'container'
     | 'tower'
-    | 'bridge';
+    | 'bridge'
+    | 'hotelTambau'
+    | 'skyscraper'
+    | 'farol'
+    | 'estacao'
+    | 'igreja'
+    | 'letreiro'
+    | 'quiosque'
+    | 'lagoa'
+    | 'pier';
 }
 
 export interface MinimapRoad {

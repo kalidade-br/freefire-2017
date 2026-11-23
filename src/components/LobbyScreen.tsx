@@ -828,7 +828,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                   {isRanked ? 'BR-RANQUEADO' : 'CLÁSSICO · BR'}
                 </div>
                 <div className="text-[9px] font-mono text-amber-300 truncate">
-                  Bermuda · {isRanked ? 'Pontos Rank' : 'Sem Pontos'}
+                  João Pessoa · {isRanked ? 'Pontos Rank' : 'Sem Pontos'}
                 </div>
               </div>
             </button>

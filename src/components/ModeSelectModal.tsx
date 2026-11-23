@@ -140,7 +140,7 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                         BR RANQUEADO
                       </div>
                       <div className="text-[10px] font-mono text-white/85">
-                        Bermuda ⇄ · Pontos de Patente
+                        João Pessoa ⇄ · Pontos de Patente
                       </div>
                     </div>
                     <span className="px-2 py-0.5 bg-black/55 border border-amber-400/60 text-[10px] font-mono text-amber-200">
@@ -178,7 +178,7 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                   <div className="my-auto text-center py-4 space-y-1">
                     <Award className="w-11 h-11 text-amber-300 mx-auto drop-shadow" />
                     <div className="text-xs font-mono text-sky-100">
-                      51 Sobreviventes · Bermuda Completa
+                      51 Sobreviventes · João Pessoa Completa
                     </div>
                   </div>
 
@@ -187,7 +187,7 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                       BATTLE ROYALE
                     </div>
                     <div className="text-[10px] font-mono text-white/85">
-                      Bermuda ⇄ · Sem perda de patente
+                      João Pessoa ⇄ · Sem perda de patente
                     </div>
                   </div>
                 </button>

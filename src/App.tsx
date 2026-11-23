@@ -742,12 +742,12 @@ export default function App() {
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-black">
-      {/* Fullscreen Nostalgic Bermuda Lobby Backdrop behind transparent 3D character canvas */}
+      {/* Fullscreen Nostalgic Lobby Backdrop behind transparent 3D character canvas */}
       {gameState === GameState.LOBBY && (
         <div className="fixed inset-0 z-0 pointer-events-none">
           <img
             src="/assets/lobby_bg_clean.jpg"
-            alt="Lobby Free Fire Bermuda"
+            alt="Lobby Free Fire João Pessoa"
             className="w-full h-full object-cover object-center"
           />
           <div className="absolute inset-0 bg-gradient-to-b from-black/35 via-transparent to-black/45" />

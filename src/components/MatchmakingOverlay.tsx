@@ -30,7 +30,7 @@ export const MatchmakingOverlay: React.FC<MatchmakingOverlayProps> = ({
             {playerCount} / 51
           </div>
           <div className="text-[11px] font-mono text-neutral-400 mt-1">
-            BERMUDA · {matchMode.toUpperCase()} {isOnline ? '· MULTIPLAYER ONLINE' : '(BOTS)'}
+            JOÃO PESSOA · {matchMode.toUpperCase()} {isOnline ? '· MULTIPLAYER ONLINE' : '(BOTS)'}
           </div>
         </div>
 

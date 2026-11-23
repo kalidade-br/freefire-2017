@@ -18,10 +18,10 @@ export const BootAndLoadingScreen: React.FC<BootAndLoadingProps> = ({
       onPointerDown={() => soundEngine.unlock()}
       className="fixed inset-0 z-50 bg-black text-white select-none overflow-hidden"
     >
-      {/* Clean Nostalgic Widescreen Bermuda Loading Artwork */}
+      {/* Clean Nostalgic Widescreen Loading Artwork */}
       <img
         src="/assets/loading_bg.jpg"
-        alt="Carregando Free Fire Bermuda"
+        alt="Carregando Free Fire João Pessoa"
         className="w-full h-full object-cover object-center"
       />
 

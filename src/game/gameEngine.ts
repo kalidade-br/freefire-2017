@@ -336,7 +336,7 @@ const ALLY_NAME_POOL = [
   'Arthur_BR',
   'Cauã_Top1',
   'Davi_Mestre',
-  'Igor_Bermuda',
+  'Igor_Jampa',
   'Thiago_FF',
   'Yuri_AWM',
   'Luan_Rush',
@@ -1212,7 +1212,7 @@ export class BattleRoyaleEngine {
 
   private beginMatchLoading(target: 'waiting' | 'playing'): void {
     this.clearLoadTimers();
-    this.onLoadProgress?.(10, 'Conectando à Ilha Bermuda...');
+    this.onLoadProgress?.(10, 'Conectando à Orla de João Pessoa...');
     this.stateMachine.forceState(GameState.LOADING);
     const steps = [
       { p: 32, t: 'Preparando sobreviventes e equipes...' },
@@ -3093,9 +3093,9 @@ export class BattleRoyaleEngine {
     }
     const chosenAllyNicks = shuffledNicks.slice(0, 3);
 
-    // Pick land POIs excluding bridges and Nurek Dam
+    // Pick land POIs excluding bridges
     const landPois = this.world.pois.filter(
-      (p) => !p.name.startsWith('PONTE') && !p.name.startsWith('NUREK'),
+      (p) => !p.name.startsWith('PONTE'),
     );
 
     // Reset all 50 bots with Solo/Duo/Squad team assignments
