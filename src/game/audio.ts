@@ -5,6 +5,7 @@ export type LobbyMusicMode = 'off' | 'lobby' | 'waiting' | 'drop';
 
 type SfxBufferKey =
   | 'kill'
+  | 'headshot'
   | 'g18'
   | 'deagle'
   | 'ump45'
@@ -28,6 +29,7 @@ type SfxBufferKey =
 
 const SFX_URLS: Record<SfxBufferKey, string> = {
   kill: '/audio/kill_sfx.mp3',
+  headshot: '/audio/head.mp3',
   g18: '/audio/g18-1tiro.mp3',
   deagle: '/audio/desert-1tiro.mp3',
   ump45: '/audio/ump-1tiro.mp3',
@@ -362,7 +364,9 @@ class SoundEngine {
       const fileName = localUrl.split('/').pop() || '';
       const rawGithubUrl = `https://raw.githubusercontent.com/kalidade-br/freefire-soms/main/${encodeURIComponent(fileName)}`;
       const netlifyUrl = `https://freefire-soms.netlify.app/${encodeURIComponent(fileName)}`;
+      const headGithubUrl = 'https://kalidade-br.github.io/freefire-2017/som/head.mp3';
       void fetchAudioBuffer(localUrl)
+        .catch(() => (key === 'headshot' ? fetchAudioBuffer(headGithubUrl) : Promise.reject()))
         .catch(() => fetchAudioBuffer(rawGithubUrl))
         .catch(() => fetchAudioBuffer(netlifyUrl))
         .then((arr) => ctx.decodeAudioData(arr))
@@ -947,9 +951,40 @@ class SoundEngine {
     this.playHeal();
   }
 
-  public playHitmarker(): void {
+  public playHitmarker(isHeadshot = false): void {
     if (!this.ready() || !this.ctx || !this.masterGain) return;
     const now = this.ctx.currentTime;
+
+    if (isHeadshot) {
+      this.preloadAllBuffers();
+      const headBuf = this.sfxBuffers.get('headshot');
+      if (headBuf) {
+        const src = this.ctx.createBufferSource();
+        src.buffer = headBuf;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(1.18, now);
+        src.connect(g);
+        g.connect(this.masterGain);
+        const offset = headBuf.duration > 0.12 ? 0.042 : 0;
+        src.start(now, offset);
+        return;
+      }
+
+      // Crisp metallic "tic" synth fallback before head.mp3 finishes decoding
+      const tic = this.ctx.createOscillator();
+      const tg = this.ctx.createGain();
+      tic.type = 'triangle';
+      tic.frequency.setValueAtTime(2750, now);
+      tic.frequency.exponentialRampToValueAtTime(1320, now + 0.036);
+      tg.gain.setValueAtTime(0.32, now);
+      tg.gain.exponentialRampToValueAtTime(0.001, now + 0.045);
+      tic.connect(tg);
+      tg.connect(this.masterGain);
+      tic.start(now);
+      tic.stop(now + 0.05);
+      return;
+    }
+
     const osc = this.ctx.createOscillator();
     const g = this.ctx.createGain();
     osc.type = 'triangle';
@@ -1568,6 +1603,9 @@ class SoundEngine {
 
   public playPunchHit(isHead = false): void {
     if (!this.ready() || !this.ctx || !this.masterGain) return;
+    if (isHead) {
+      this.playHitmarker(true);
+    }
     const now = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
     const g = this.ctx.createGain();

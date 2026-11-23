@@ -161,6 +161,7 @@ const INITIAL_HUD: HudSnapshot = {
   damagePopups: [],
   damageIndicators: [],
   killFeed: [],
+  combatIconPopup: null,
   fps: 60,
   pointerLocked: false,
   mouseSuspended: false,

@@ -1654,6 +1654,10 @@ export const GameHud: React.FC<GameHudProps> = ({
             const fade =
               kf.age > 3.4 ? Math.max(0, 1 - (kf.age - 3.4) / 1.0) : 1;
             const enterLift = Math.max(0, 1 - kf.age * 5) * 6;
+            const isKnockdown = kf.killerName.includes('(DERRUBOU)');
+            const cleanKiller = isKnockdown
+              ? kf.killerName.replace(' (DERRUBOU)', '')
+              : kf.killerName;
             return (
               <div
                 key={kf.id}
@@ -1669,13 +1673,18 @@ export const GameHud: React.FC<GameHudProps> = ({
                     kf.isPlayerKiller ? 'text-amber-300 font-black' : 'text-white'
                   }
                 >
-                  {kf.killerName}
+                  {cleanKiller}
                 </span>
+                <img
+                  src={isKnockdown ? '/icons/knockdown-icon.png' : '/icons/kill-icon.png'}
+                  alt={isKnockdown ? 'Derrubou' : 'Abate'}
+                  className="w-4 h-4 object-contain shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]"
+                />
                 <span className="text-[9px] font-mono px-1 bg-black/55 border border-white/20 text-neutral-200">
-                  {kf.isHeadshot ? `☠ ${kf.weaponShort}` : kf.weaponShort}
+                  {kf.isHeadshot ? `CAPA · ${kf.weaponShort}` : kf.weaponShort}
                 </span>
-                <span className="text-amber-300">
-                  {kf.victimName} Eliminado
+                <span className={isKnockdown ? 'text-orange-300' : 'text-amber-300'}>
+                  {kf.victimName} {isKnockdown ? 'Derrubado' : 'Eliminado'}
                 </span>
               </div>
             );
@@ -2168,6 +2177,56 @@ export const GameHud: React.FC<GameHudProps> = ({
             </div>
           );
         })}
+
+      {/* Classic Free Fire Knockdown / Kill Emblem Popup */}
+      {isGroundCombat &&
+        !isPaused &&
+        hud.combatIconPopup &&
+        (() => {
+          const pop = hud.combatIconPopup;
+          const enterT = Math.min(1, pop.age / 0.16);
+          const scale = 1.48 - 0.48 * (1 - Math.pow(1 - enterT, 3));
+          const opacity = pop.age > 1.72 ? Math.max(0, 1 - (pop.age - 1.72) / 0.48) : 1;
+          const isKnock = pop.kind === 'knockdown';
+          return (
+            <div
+              key={pop.id}
+              className="pointer-events-none absolute left-1/2 top-[67%] z-25 flex flex-col items-center select-none"
+              style={{
+                opacity,
+                transform: `translate(-50%, -50%) scale(${scale.toFixed(3)})`,
+              }}
+            >
+              <img
+                src={isKnock ? '/icons/knockdown-icon.png' : '/icons/kill-icon.png'}
+                alt={isKnock ? 'Derrubou oponente' : 'Abate confirmado'}
+                className={
+                  isKnock
+                    ? 'w-20 h-20 sm:w-24 sm:h-24 object-contain drop-shadow-[0_4px_16px_rgba(245,158,11,0.75)]'
+                    : 'w-24 h-24 sm:w-28 sm:h-28 object-contain drop-shadow-[0_4px_20px_rgba(239,68,68,0.85)]'
+                }
+              />
+              <div
+                className={`-mt-1 flex items-center gap-1.5 px-2.5 py-0.5 text-[10px] sm:text-[11px] font-black uppercase tracking-wider ${
+                  isKnock ? 'text-amber-300' : 'text-red-400'
+                }`}
+                style={{
+                  background:
+                    'linear-gradient(90deg, transparent 0%, rgba(0,0,0,0.78) 20%, rgba(0,0,0,0.78) 80%, transparent 100%)',
+                  textShadow: '0 1px 3px #000',
+                }}
+              >
+                <span>{isKnock ? 'DERRUBOU' : 'ABATE'}</span>
+                <span className="text-white">{pop.victimName}</span>
+                {pop.isHeadshot && (
+                  <span className="text-[9px] px-1 bg-red-600/90 text-white font-mono">
+                    CAPA
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
       {/* CUSTOMIZABLE Tactical Gloo Wall / Grenade Active Mode Banner */}
       {isGroundCombat && !hideGameplayHud && !hud.isPlayerDowned && !isPaused && (hud.isPlacingGloo || hud.isHoldingGrenade) && (

@@ -550,6 +550,15 @@ export interface KillFeedEntry {
   age: number; // 0 .. 4.2s
 }
 
+export interface CombatIconPopup {
+  id: number;
+  kind: 'knockdown' | 'kill';
+  victimName: string;
+  weaponShort: string;
+  isHeadshot: boolean;
+  age: number; // 0 .. 2.2s
+}
+
 export interface DamageIndicator {
   id: number;
   angleRad: number; // relative to player's look direction: 0 = front, +PI/2 = right, PI = behind
@@ -707,6 +716,7 @@ export interface HudSnapshot {
   damagePopups: DamagePopup[];
   damageIndicators: DamageIndicator[];
   killFeed: KillFeedEntry[];
+  combatIconPopup: CombatIconPopup | null;
   fps: number;
   pointerLocked: boolean;
   mouseSuspended: boolean;

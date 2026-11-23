@@ -38,6 +38,7 @@ import {
   BuildingNavZone,
   CharacterConfig,
   CharacterModelId,
+  CombatIconPopup,
   DamagePopup,
   DeathBoxItemEntry,
   GameSettings,
@@ -688,6 +689,14 @@ export class BattleRoyaleEngine {
   private nextDamageIndicatorId = 1;
   private killFeed: KillFeedEntry[] = [];
   private nextKillFeedId = 1;
+  private combatIconPopup: CombatIconPopup | null = null;
+  private nextCombatIconId = 1;
+  private lastAttackedRemote: {
+    accountId: number;
+    weaponShort: string;
+    isHead: boolean;
+    atMs: number;
+  } | null = null;
   private playerNick = 'SOBREVIVENTE';
   private matchMode: MatchMode = 'solo';
   private brMapId: BrMapId = 'bermuda';
@@ -1851,13 +1860,24 @@ export class BattleRoyaleEngine {
     if (ev.type === 'kill_feed_event') {
       if (!this.seenRemoteKillIds.has(ev.entry.id)) {
         this.seenRemoteKillIds.add(ev.entry.id);
+        const isMe = ev.entry.killerAccountId === this.onlineAccountId;
         this.pushKillFeed(
           ev.entry.killerName,
           ev.entry.victimName,
           ev.entry.weaponShort,
           ev.entry.isHeadshot,
-          ev.entry.killerAccountId === this.onlineAccountId,
+          isMe,
         );
+        if (isMe && ev.entry.victimName !== this.playerNick) {
+          soundEngine.playKillSound(ev.entry.isHeadshot);
+          const isKnock = ev.entry.killerName.includes('(DERRUBOU)');
+          this.triggerCombatIcon(
+            isKnock ? 'knockdown' : 'kill',
+            ev.entry.victimName,
+            ev.entry.weaponShort,
+            ev.entry.isHeadshot,
+          );
+        }
       }
       return;
     }
@@ -1910,7 +1930,7 @@ export class BattleRoyaleEngine {
       if (ev.isHeadshot) {
         this.headshotFlashTimer = 0.45;
       }
-      soundEngine.playHitmarker();
+      soundEngine.playHitmarker(ev.isHeadshot);
     }
   }
 
@@ -1944,7 +1964,24 @@ export class BattleRoyaleEngine {
         entity.targetPos.set(rh.x, rh.y, rh.z);
         entity.targetYaw = rh.yaw;
       }
+      const wasDowned = Boolean(entity.lastState?.isDowned);
       entity.lastState = rh;
+      if (
+        !wasDowned &&
+        rh.isDowned &&
+        this.lastAttackedRemote &&
+        this.lastAttackedRemote.accountId === rh.accountId &&
+        Date.now() - this.lastAttackedRemote.atMs < 2500
+      ) {
+        soundEngine.playKillSound(this.lastAttackedRemote.isHead);
+        this.triggerCombatIcon(
+          'knockdown',
+          rh.nickname,
+          this.lastAttackedRemote.weaponShort,
+          this.lastAttackedRemote.isHead,
+        );
+        this.lastAttackedRemote = null;
+      }
       if (typeof rh.level === 'number') entity.level = rh.level;
       if (typeof rh.rankPoints === 'number') entity.rankPoints = rh.rankPoints;
       if (typeof rh.isTeamLeader === 'boolean') entity.isTeamLeader = rh.isTeamLeader;
@@ -3384,6 +3421,8 @@ export class BattleRoyaleEngine {
     this.damageFlashTimer = 0;
     this.hitmarkerTimer = 0;
     this.headshotFlashTimer = 0;
+    this.combatIconPopup = null;
+    this.lastAttackedRemote = null;
     this.damagePopups = [];
     this.damageIndicators = [];
     this.isSpectating = false;
@@ -3706,6 +3745,8 @@ export class BattleRoyaleEngine {
     this.activeVehicleId = null;
     this.prevCharYawForTurn = 0;
     this.headshotFlashTimer = 0;
+    this.combatIconPopup = null;
+    this.lastAttackedRemote = null;
     this.damagePopups = [];
     this.damageIndicators = [];
     this.killFeed = [];
@@ -4288,6 +4329,13 @@ export class BattleRoyaleEngine {
       if (this.killFeed[i].age >= 4.4) {
         this.killFeed.splice(i, 1);
       }
+    }
+    if (this.combatIconPopup) {
+      this.combatIconPopup.age += dt;
+      if (this.combatIconPopup.age >= 2.2) {
+        this.combatIconPopup = null;
+      }
+      this.hudDirty = true;
     }
     for (let i = this.likeToasts.length - 1; i >= 0; i--) {
       this.likeToasts[i].age += dt;
@@ -7352,7 +7400,13 @@ export class BattleRoyaleEngine {
               pelletTotalDmg += dmg;
               pelletAnyHead = pelletAnyHead || isHead;
               pelletHitPoint = tHit.point;
-              soundEngine.playHitmarker();
+              soundEngine.playHitmarker(isHead);
+              this.lastAttackedRemote = {
+                accountId: remoteAccId,
+                weaponShort: def.shortName,
+                isHead,
+                atMs: Date.now(),
+              };
               this.queueOrSendRoomAction({
                 type: 'damage_player',
                 targetAccountId: remoteAccId,
@@ -7380,7 +7434,7 @@ export class BattleRoyaleEngine {
               pelletArmor = Math.max(pelletArmor, armorBlocked);
               pelletHitPoint = tHit.point;
 
-              soundEngine.playHitmarker();
+              soundEngine.playHitmarker(isHead);
               this.applyBotHitDamage(
                 dummy,
                 dmg,
@@ -7491,6 +7545,7 @@ export class BattleRoyaleEngine {
       this.kills += 1;
       this.ffCoins += 100;
       soundEngine.playKillSound(isHeadshot);
+      this.triggerCombatIcon('kill', bot.nick, weaponShort, isHeadshot);
       if (isPlaying && !this.isDead && Math.random() < 0.78) {
         const giveLike = Math.random() < 0.58;
         const likeDelay = 1.5 + Math.random() * 4.0;
@@ -7624,13 +7679,31 @@ export class BattleRoyaleEngine {
         bot.knockedByPlayer = attackerIsPlayer;
         bot.targetId = null;
         if (attackerIsPlayer) {
-          soundEngine.playHitmarker();
+          soundEngine.playKillSound(isHeadshot);
+          this.triggerCombatIcon('knockdown', bot.nick, weaponShort, isHeadshot);
         }
         this.pushKillFeed(`${attackerName} (DERRUBOU)`, bot.nick, weaponShort, isHeadshot, attackerIsPlayer);
       } else {
         this.finalizeBotElimination(bot, attackerIsPlayer, attackerName, weaponShort, isHeadshot);
       }
     }
+  }
+
+  private triggerCombatIcon(
+    kind: 'knockdown' | 'kill',
+    victimName: string,
+    weaponShort: string,
+    isHeadshot: boolean,
+  ): void {
+    this.combatIconPopup = {
+      id: this.nextCombatIconId++,
+      kind,
+      victimName,
+      weaponShort,
+      isHeadshot,
+      age: 0,
+    };
+    this.hudDirty = true;
   }
 
   private pushKillFeed(
@@ -9740,7 +9813,7 @@ export class BattleRoyaleEngine {
                     }
                     this.getBotBodyPoint(targetBot, isHead ? 'head' : 'chest', _v2);
                     this.pushDamagePopup(_v2, dealt, isHead, armorBlocked);
-                    soundEngine.playHitmarker();
+                    soundEngine.playHitmarker(isHead);
                   }
                   if (!prevDead && (targetBot.eliminated || targetBot.downTimer > 0)) {
                     bot.kills += 1;
@@ -12073,6 +12146,7 @@ export class BattleRoyaleEngine {
         };
       }),
       killFeed: this.killFeed.map((k) => ({ ...k })),
+      combatIconPopup: this.combatIconPopup ? { ...this.combatIconPopup } : null,
       fps: this.currentFps,
       pointerLocked: this.input.pointerLocked,
       mouseSuspended: this.input.mouseSuspended,
