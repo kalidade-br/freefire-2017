@@ -64,6 +64,78 @@ import {
   profileFromLocal,
 } from './components/PlayerProfileModal';
 
+type FullscreenDocument = Document & {
+  webkitFullscreenElement?: Element | null;
+  mozFullScreenElement?: Element | null;
+  msFullscreenElement?: Element | null;
+  webkitFullscreenEnabled?: boolean;
+};
+
+type FullscreenElement = HTMLElement & {
+  webkitRequestFullscreen?: () => Promise<void> | void;
+  mozRequestFullScreen?: () => Promise<void> | void;
+  msRequestFullscreen?: () => Promise<void> | void;
+};
+
+function getFullscreenElement(): Element | null {
+  const doc = document as FullscreenDocument;
+  return (
+    doc.fullscreenElement ??
+    doc.webkitFullscreenElement ??
+    doc.mozFullScreenElement ??
+    doc.msFullscreenElement ??
+    null
+  );
+}
+
+function isTouchMobileDevice(): boolean {
+  if (typeof window === 'undefined') return false;
+  const coarse = window.matchMedia?.('(pointer: coarse)').matches ?? false;
+  const uaMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+    navigator.userAgent || '',
+  );
+  const smallTouch =
+    (navigator.maxTouchPoints ?? 0) > 0 &&
+    Math.min(window.innerWidth, window.innerHeight) <= 950;
+  return coarse || uaMobile || smallTouch;
+}
+
+function requestAppFullscreen(): void {
+  if (typeof document === 'undefined') return;
+  if (getFullscreenElement()) return;
+  const docEl = document.documentElement as FullscreenElement | null;
+  if (!docEl) return;
+
+  try {
+    let req: Promise<void> | void | undefined;
+    if (typeof docEl.requestFullscreen === 'function') {
+      req = docEl.requestFullscreen();
+    } else if (typeof docEl.webkitRequestFullscreen === 'function') {
+      req = docEl.webkitRequestFullscreen();
+    } else if (typeof docEl.mozRequestFullScreen === 'function') {
+      req = docEl.mozRequestFullScreen();
+    } else if (typeof docEl.msRequestFullscreen === 'function') {
+      req = docEl.msRequestFullscreen();
+    }
+    if (req && typeof (req as Promise<void>).catch === 'function') {
+      (req as Promise<void>).catch(() => undefined);
+    }
+  } catch {
+    // Fullscreen may be restricted in sandboxed iframes or unsupported browsers
+  }
+
+  if (isTouchMobileDevice()) {
+    try {
+      const orientation = screen.orientation as unknown as {
+        lock?: (mode: string) => Promise<void>;
+      };
+      orientation?.lock?.('landscape')?.catch?.(() => undefined);
+    } catch {
+      // Orientation lock unsupported on some mobile browsers
+    }
+  }
+}
+
 const INITIAL_HUD: HudSnapshot = {
   hp: 200,
   maxHp: 200,
@@ -258,10 +330,44 @@ export default function App() {
   const [lastRankDelta, setLastRankDelta] = useState<number | null>(null);
   const [webglError, setWebglError] = useState<string | null>(null);
   const [onlineStarting, setOnlineStarting] = useState(false);
+  const [needsRotateLandscape, setNeedsRotateLandscape] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return isTouchMobileDevice() && window.innerHeight > window.innerWidth;
+  });
 
   const prevBackpackOpenRef = useRef(false);
   const activeLaunchedRoomIdRef = useRef<string | null>(null);
   const firebaseUserRef = useRef<FirebaseUser | null>(null);
+
+  // Auto-open Fullscreen on any click/tap + detect mobile portrait orientation
+  useEffect(() => {
+    const checkOrientation = () => {
+      const portrait = window.innerHeight > window.innerWidth;
+      setNeedsRotateLandscape(isTouchMobileDevice() && portrait);
+    };
+    checkOrientation();
+
+    const onGestureFullscreen = (e: Event) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      requestAppFullscreen();
+    };
+
+    window.addEventListener('resize', checkOrientation);
+    window.addEventListener('orientationchange', checkOrientation);
+    screen.orientation?.addEventListener?.('change', checkOrientation);
+    window.addEventListener('click', onGestureFullscreen, { capture: true, passive: true });
+    window.addEventListener('touchend', onGestureFullscreen, { capture: true, passive: true });
+
+    return () => {
+      window.removeEventListener('resize', checkOrientation);
+      window.removeEventListener('orientationchange', checkOrientation);
+      screen.orientation?.removeEventListener?.('change', checkOrientation);
+      window.removeEventListener('click', onGestureFullscreen, { capture: true });
+      window.removeEventListener('touchend', onGestureFullscreen, { capture: true });
+    };
+  }, []);
 
   const applyServerAccount = useCallback((acc: PublicPlayerAccount) => {
     setAccount(acc);
@@ -1386,6 +1492,50 @@ export default function App() {
               className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-black text-xs uppercase tracking-widest cursor-pointer"
             >
               RECARREGAR JOGO
+            </button>
+          </div>
+        </div>
+      )}
+
+      {needsRotateLandscape && (
+        <div className="fixed inset-0 z-[120] flex flex-col items-center justify-center bg-black/95 backdrop-blur-md p-6 text-center text-white select-none">
+          <div className="max-w-xs w-full flex flex-col items-center gap-5">
+            <div
+              className="w-20 h-20 flex items-center justify-center"
+              style={{ animation: 'ffPhoneRotate 2.4s ease-in-out infinite' }}
+            >
+              <svg
+                viewBox="0 0 64 64"
+                className="w-16 h-16 text-amber-400"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <rect x="18" y="6" width="28" height="52" rx="5" />
+                <line x1="28" y1="51" x2="36" y2="51" />
+                <path d="M8 24 C8 16 12 11 18 9" stroke="#fbbf24" strokeWidth="2.4" />
+                <polyline points="5,20 8,25 13,22" stroke="#fbbf24" strokeWidth="2.4" />
+              </svg>
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-xl font-black uppercase tracking-wider text-amber-400">
+                Vire a Tela
+              </h2>
+              <p className="text-xs text-neutral-300 leading-relaxed">
+                Gire o celular para a posição horizontal (deitada) para jogar em tela cheia.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                soundEngine.unlock();
+                requestAppFullscreen();
+              }}
+              className="w-full py-3 px-4 bg-amber-500 hover:bg-amber-400 active:scale-[0.98] text-black font-black text-xs uppercase tracking-wider cursor-pointer transition-transform"
+            >
+              Ativar Tela Cheia e Girar
             </button>
           </div>
         </div>

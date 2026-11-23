@@ -1,1 +1,65 @@
 @import "tailwindcss";
+
+@keyframes ffLogoSlowCycle {
+  0% {
+    opacity: 0;
+    transform: scale(0.86);
+  }
+  6% {
+    opacity: 0;
+    transform: scale(0.86);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  68% {
+    opacity: 1;
+    transform: scale(1.02);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes ffPercentBlink {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.28;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes ffBarShimmer {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+@keyframes ffKenBurns {
+  0% {
+    transform: scale(1);
+  }
+  100% {
+    transform: scale(1.045);
+  }
+}
+
+@keyframes ffPhoneRotate {
+  0%, 18% {
+    transform: rotate(0deg);
+  }
+  45%, 78% {
+    transform: rotate(-90deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}

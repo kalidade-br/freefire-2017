@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import * as THREE from 'three';
 import { soundEngine } from '../game/audio';
 import { GameState } from '../game/types';
 
@@ -8,38 +9,313 @@ interface BootAndLoadingProps {
   statusText: string;
 }
 
+const GARENA_LOGO_PATH = '/assets/aistudio/garena-logo_bba77b2c.png';
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+const BootThreeSplash: React.FC = () => {
+  const mountRef = useRef<HTMLDivElement | null>(null);
+  const [webglUnavailable, setWebglUnavailable] = useState(false);
+
+  useEffect(() => {
+    const container = mountRef.current;
+    if (!container) return;
+
+    let renderer: THREE.WebGLRenderer | null = null;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: false,
+        powerPreference: 'high-performance',
+      });
+    } catch {
+      setWebglUnavailable(true);
+      return;
+    }
+
+    const canvas = renderer.domElement;
+    const width = container.clientWidth || window.innerWidth || 1280;
+    const height = container.clientHeight || window.innerHeight || 720;
+
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(width, height, false);
+    renderer.setClearColor(0x000000, 1);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.display = 'block';
+    container.appendChild(canvas);
+
+    const onContextLost = (e: Event) => {
+      e.preventDefault();
+      setWebglUnavailable(true);
+    };
+    const onContextRestored = () => {
+      setWebglUnavailable(false);
+    };
+    canvas.addEventListener('webglcontextlost', onContextLost);
+    canvas.addEventListener('webglcontextrestored', onContextRestored);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+    scene.fog = new THREE.FogExp2(0x000000, 0.08);
+
+    const camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 50);
+    camera.position.set(0, 0, 5.4);
+
+    // Subtle glowing crimson particles drifting in 3D space
+    const sparkCount = 72;
+    const sparkPositions = new Float32Array(sparkCount * 3);
+    const sparkSpeeds = new Float32Array(sparkCount);
+    const sparkPhases = new Float32Array(sparkCount);
+    for (let i = 0; i < sparkCount; i++) {
+      sparkPositions[i * 3] = (Math.random() - 0.5) * 9.0;
+      sparkPositions[i * 3 + 1] = (Math.random() - 0.5) * 5.2;
+      sparkPositions[i * 3 + 2] = (Math.random() - 0.5) * 3.0 - 0.5;
+      sparkSpeeds[i] = 0.14 + Math.random() * 0.35;
+      sparkPhases[i] = Math.random() * Math.PI * 2;
+    }
+    const sparkGeo = new THREE.BufferGeometry();
+    sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPositions, 3));
+
+    const sparkCanvas = document.createElement('canvas');
+    sparkCanvas.width = 32;
+    sparkCanvas.height = 32;
+    const sCtx = sparkCanvas.getContext('2d');
+    if (sCtx) {
+      const grad = sCtx.createRadialGradient(16, 16, 1, 16, 16, 15);
+      grad.addColorStop(0, 'rgba(255, 210, 140, 0.95)');
+      grad.addColorStop(0.45, 'rgba(220, 38, 38, 0.55)');
+      grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      sCtx.fillStyle = grad;
+      sCtx.fillRect(0, 0, 32, 32);
+    }
+    const sparkTex = new THREE.CanvasTexture(sparkCanvas);
+    const sparkMat = new THREE.PointsMaterial({
+      size: 0.11,
+      map: sparkTex,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const sparks = new THREE.Points(sparkGeo, sparkMat);
+    scene.add(sparks);
+
+    // Dead-center 3D Garena Logo PNG (includes emblem + "Garena" wordmark inside PNG)
+    const logoGroup = new THREE.Group();
+    logoGroup.position.set(0, 0, 0);
+    scene.add(logoGroup);
+
+    const logoGeo = new THREE.PlaneGeometry(2.15, 2.15);
+    const logoMat = new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+    const logoMesh = new THREE.Mesh(logoGeo, logoMat);
+    logoGroup.add(logoMesh);
+
+    const texLoader = new THREE.TextureLoader();
+    let logoTexture: THREE.Texture | null = null;
+    let textureReady = false;
+    let disposed = false;
+
+    texLoader.load(
+      GARENA_LOGO_PATH,
+      (tex) => {
+        if (disposed) {
+          tex.dispose();
+          return;
+        }
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        logoTexture = tex;
+        const img = tex.image as { width?: number; height?: number } | undefined;
+        if (img?.width && img?.height) {
+          const aspect = img.width / img.height;
+          logoMesh.scale.set(aspect, 1, 1);
+        }
+        logoMat.map = tex;
+        logoMat.needsUpdate = true;
+        textureReady = true;
+      },
+      undefined,
+      () => {
+        if (!disposed) setWebglUnavailable(true);
+      },
+    );
+
+    const handleResize = () => {
+      if (!container || !renderer) return;
+      const w = container.clientWidth || window.innerWidth;
+      const h = container.clientHeight || window.innerHeight;
+      if (w <= 0 || h <= 0) return;
+      camera.aspect = w / h;
+      const isNarrow = w < h;
+      camera.position.z = isNarrow ? 7.4 : 5.4;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false);
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+
+    let rafId = 0;
+    const startTime = performance.now();
+    let prevTime = startTime;
+
+    const animate = (now: number) => {
+      if (disposed || !renderer) return;
+      const elapsed = (now - startTime) / 1000;
+      const dt = Math.min(0.05, (now - prevTime) / 1000);
+      prevTime = now;
+
+      // Very slow, smooth ~11.5s cycle:
+      // 0.0..0.6s pure black -> 0.6..5.2s slow gentle fade-in -> 5.2..7.8s hold -> 7.8..11.5s slow fade-out to black
+      const fadeIn = smoothstep(0.6, 5.2, elapsed);
+      const fadeOut = 1 - smoothstep(7.8, 11.4, elapsed);
+      const visibility = textureReady ? fadeIn * fadeOut : 0;
+
+      // Subtle slow 3D depth glide + gentle scale breath (zero sudden pop)
+      const glideT = smoothstep(0.6, 11.4, elapsed);
+      logoGroup.scale.setScalar(THREE.MathUtils.lerp(0.86, 1.03, glideT));
+      logoGroup.position.z = THREE.MathUtils.lerp(-0.9, 0.18, glideT);
+      logoGroup.rotation.y = Math.sin(elapsed * 0.45) * 0.025;
+      logoMat.opacity = visibility;
+
+      // Drift ambient embers slowly in sync with logo visibility
+      const posAttr = sparkGeo.getAttribute('position') as THREE.BufferAttribute;
+      for (let i = 0; i < sparkCount; i++) {
+        let y = posAttr.getY(i) + sparkSpeeds[i] * dt;
+        const x = posAttr.getX(i) + Math.sin(elapsed * 0.9 + sparkPhases[i]) * 0.08 * dt;
+        if (y > 2.8) y = -2.8;
+        posAttr.setXY(i, x, y);
+      }
+      posAttr.needsUpdate = true;
+      sparkMat.opacity = 0.42 * visibility;
+
+      renderer.render(scene, camera);
+      rafId = requestAnimationFrame(animate);
+    };
+
+    rafId = requestAnimationFrame(animate);
+
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', handleResize);
+      canvas.removeEventListener('webglcontextlost', onContextLost);
+      canvas.removeEventListener('webglcontextrestored', onContextRestored);
+      sparkGeo.dispose();
+      sparkMat.dispose();
+      sparkTex.dispose();
+      logoGeo.dispose();
+      logoMat.dispose();
+      logoTexture?.dispose();
+      renderer?.dispose();
+      if (canvas.parentElement === container) {
+        container.removeChild(canvas);
+      }
+    };
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black select-none overflow-hidden">
+      {/* Pure Black Three.js 3D Stage */}
+      <div ref={mountRef} className="absolute inset-0 w-full h-full pointer-events-none" />
+
+      {/* Fallback only if WebGL is unavailable */}
+      {webglUnavailable && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <img
+            src={GARENA_LOGO_PATH}
+            alt="Garena"
+            referrerPolicy="no-referrer"
+            className="w-[46vh] h-[46vh] max-w-[260px] max-h-[260px] object-contain"
+            style={{ animation: 'ffLogoSlowCycle 11.5s ease-in-out forwards' }}
+          />
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const BootAndLoadingScreen: React.FC<BootAndLoadingProps> = ({
   state,
   progress,
   statusText,
 }) => {
+  const [dotStep, setDotStep] = useState(1);
+
+  useEffect(() => {
+    if (state !== GameState.LOADING) return;
+    const id = window.setInterval(() => {
+      setDotStep((prev) => (prev % 3) + 1);
+    }, 360);
+    return () => window.clearInterval(id);
+  }, [state]);
+
+  if (state === GameState.BOOT) {
+    return (
+      <div onPointerDown={() => soundEngine.unlock()}>
+        <BootThreeSplash />
+      </div>
+    );
+  }
+
+  const clampedProgress = Math.max(0, Math.min(100, Math.round(progress)));
+  const dots = '.'.repeat(dotStep);
+
   return (
     <div
       onPointerDown={() => soundEngine.unlock()}
       className="fixed inset-0 z-50 bg-black text-white select-none overflow-hidden"
     >
-      {/* Clean Nostalgic Widescreen Loading Artwork */}
+      {/* Classic Widescreen Free Fire Loading Artwork with subtle slow motion */}
       <img
         src="/assets/loading_bg.jpg"
-        alt="Carregando Free Fire João Pessoa"
+        alt="Carregando Free Fire 2017"
+        referrerPolicy="no-referrer"
         className="w-full h-full object-cover object-center"
+        style={{ animation: 'ffKenBurns 11s ease-in-out infinite alternate' }}
       />
 
-      {/* Bottom atmospheric scrim + iconic amber-orange Free Fire loading bar */}
-      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent pt-16 pb-5 px-6 sm:px-10">
+      {/* Bottom atmospheric scrim + iconic animated Free Fire loading bar */}
+      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/80 to-transparent pt-16 pb-5 px-6 sm:px-10">
         <div className="max-w-3xl mx-auto space-y-2">
           <div className="flex items-center justify-between text-xs font-mono tracking-wider uppercase text-amber-100">
-            <span>{state === GameState.BOOT ? 'INICIALIZANDO SISTEMA...' : statusText}</span>
-            <span className="text-amber-400 font-black tabular-nums">
-              {state === GameState.BOOT ? '...' : `${progress}%`}
+            <span className="flex items-center gap-2.5 min-w-0">
+              <span
+                className="inline-block w-3.5 h-3.5 rounded-full border-2 border-amber-400/35 border-t-amber-400 animate-spin shrink-0"
+                aria-hidden="true"
+              />
+              <span className="truncate">
+                {statusText}
+                <span className="inline-block w-4 text-left text-amber-300">{dots}</span>
+              </span>
+            </span>
+            <span
+              className="text-amber-400 font-black tabular-nums text-sm shrink-0 ml-3 drop-shadow-[0_0_8px_rgba(251,191,36,0.65)]"
+              style={{ animation: 'ffPercentBlink 0.85s ease-in-out infinite' }}
+            >
+              {clampedProgress}%
             </span>
           </div>
 
-          <div className="w-full h-3.5 bg-neutral-900/95 border border-amber-400/50 p-0.5 shadow-lg">
+          <div className="relative w-full h-3.5 bg-neutral-900/95 border border-amber-400/55 p-0.5 shadow-lg overflow-hidden">
             <div
-              className="h-full bg-gradient-to-r from-amber-500 via-yellow-400 to-orange-500 transition-[width] duration-200"
-              style={{ width: `${state === GameState.BOOT ? 12 : progress}%` }}
-            />
+              className="relative h-full bg-gradient-to-r from-amber-500 via-yellow-400 to-orange-500 transition-[width] duration-300 ease-out overflow-hidden"
+              style={{ width: `${clampedProgress}%` }}
+            >
+              <div
+                className="absolute inset-y-0 w-1/2 bg-gradient-to-r from-transparent via-white/55 to-transparent"
+                style={{ animation: 'ffBarShimmer 1.15s linear infinite' }}
+              />
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-neutral-300 pt-0.5">

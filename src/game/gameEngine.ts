@@ -1345,30 +1345,59 @@ export class BattleRoyaleEngine {
     this.onLoadProgress = onProgress;
     this.clearLoadTimers();
     this.stateMachine.forceState(GameState.BOOT);
+
+    let bgProgress = 12;
+    let bgLabel = 'Carregando ilha e terreno 3D...';
+    const reportDuringLoading = (pct: number, label: string) => {
+      bgProgress = Math.max(bgProgress, pct);
+      bgLabel = label;
+      if (this.stateMachine.getState() === GameState.LOADING && !this.disposed) {
+        onProgress(bgProgress, bgLabel);
+      }
+    };
+
+    // Preload models in background while the silent ~11.5s Garena logo plays
+    const preloadPromise = Promise.all([
+      preloadAdamAssets((pct, label) => {
+        if (!this.disposed) reportDuringLoading(Math.min(72, pct), label);
+      }),
+      preloadExternalWorldAssets((pct, label) => {
+        if (!this.disposed) reportDuringLoading(Math.min(78, pct), label);
+      }),
+    ]);
+
     this.loadTimers.push(
       window.setTimeout(async () => {
         if (this.disposed) return;
-        this.stateMachine.transition(GameState.LOADING);
-        onProgress(22, 'Carregando ilha e terreno 3D...');
 
-        const [, extAssets] = await Promise.all([
-          preloadAdamAssets((pct, label) => {
-            if (!this.disposed) onProgress(Math.min(72, pct), label);
-          }),
-          preloadExternalWorldAssets((pct, label) => {
-            if (!this.disposed) onProgress(pct, label);
-          }),
-        ]);
+        // Exit Garena logo -> show Free Fire loading screen & start music while loading continues
+        this.stateMachine.transition(GameState.LOADING);
+        onProgress(Math.min(78, bgProgress), bgLabel);
+
+        const [, extAssets] = await preloadPromise;
         if (this.disposed) return;
 
         onProgress(82, 'Montando avião, lobby e arena Gladiadores...');
+        await new Promise<void>((resolve) => {
+          this.loadTimers.push(window.setTimeout(resolve, 420));
+        });
+        if (this.disposed) return;
         this.world.attachExternalWorldModels(extAssets);
         this.world.setActiveBrMap(this.brMapId);
         this.rebuildSolidObstaclesNoTerrain();
 
-        onProgress(88, 'Montando personagens 3D e equipamentos...');
+        onProgress(90, 'Montando personagens 3D e equipamentos...');
+        await new Promise<void>((resolve) => {
+          this.loadTimers.push(window.setTimeout(resolve, 450));
+        });
+        if (this.disposed) return;
         this.rebuildPlayerAndLobbyRigs();
 
+        onProgress(96, 'Compilando gráficos e shaders 3D...');
+        await new Promise<void>((resolve) => {
+          this.loadTimers.push(window.setTimeout(resolve, 380));
+        });
+        if (this.disposed) return;
         if (!this.isSoftwareGl && !this.contextLost) {
           this.renderer.compile(this.lobbyScene.scene, this.lobbyScene.camera);
         }
@@ -1379,9 +1408,9 @@ export class BattleRoyaleEngine {
             if (!this.disposed) {
               this.stateMachine.transition(GameState.MENU);
             }
-          }, 320),
+          }, 480),
         );
-      }, 360),
+      }, 11500),
     );
   }
 
@@ -4239,12 +4268,11 @@ export class BattleRoyaleEngine {
             : 'none',
     );
 
-    // Lobby 2017 theme: plays in Lobby/Waiting Island and softly through Airplane/Parachute drop
+    // Lobby 2017 theme: stays silent during Garena BOOT splash, starts on LOADING and plays through Lobby/Drop
     soundEngine.setLobbyMusicMode(
       state === GameState.MENU ||
         state === GameState.LOBBY ||
         state === GameState.MATCHMAKING ||
-        state === GameState.BOOT ||
         state === GameState.LOADING
         ? 'lobby'
         : state === GameState.WAITING
