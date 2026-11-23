@@ -2134,52 +2134,52 @@ export const GameHud: React.FC<GameHudProps> = ({
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="relative flex items-center justify-center">
             <div
-              className={`border rounded-full transition-all duration-75 flex items-center justify-center ${
+              className={`border rounded-full flex items-center justify-center ${
                 hud.aimLockedTarget
-                  ? 'w-4.5 h-4.5 border-red-500/80 border-[1.5px]'
+                  ? 'w-4 h-4 border-red-500/55 border-[1.2px]'
                   : hud.isAiming
-                    ? 'w-3.5 h-3.5 border-amber-300/65'
+                    ? 'w-3 h-3 border-amber-300/45'
                     : hud.isSprinting
-                      ? 'w-6 h-6 border-white/30'
-                      : 'w-4 h-4 border-white/45'
+                      ? 'w-5.5 h-5.5 border-white/20'
+                      : 'w-3.5 h-3.5 border-white/30'
               }`}
             >
               <div
-                className="absolute -top-1 w-[1px] h-1.5"
+                className="absolute -top-1 w-[1px] h-1"
                 style={{
                   backgroundColor: hud.aimLockedTarget
-                    ? 'rgba(239,68,68,0.85)'
-                    : 'rgba(255,255,255,0.45)',
+                    ? 'rgba(239,68,68,0.55)'
+                    : 'rgba(255,255,255,0.28)',
                 }}
               />
               <div
-                className="absolute -bottom-1 w-[1px] h-1.5"
+                className="absolute -bottom-1 w-[1px] h-1"
                 style={{
                   backgroundColor: hud.aimLockedTarget
-                    ? 'rgba(239,68,68,0.85)'
-                    : 'rgba(255,255,255,0.45)',
+                    ? 'rgba(239,68,68,0.55)'
+                    : 'rgba(255,255,255,0.28)',
                 }}
               />
               <div
-                className="absolute -left-1 h-[1px] w-1.5"
+                className="absolute -left-1 h-[1px] w-1"
                 style={{
                   backgroundColor: hud.aimLockedTarget
-                    ? 'rgba(239,68,68,0.85)'
-                    : 'rgba(255,255,255,0.45)',
+                    ? 'rgba(239,68,68,0.55)'
+                    : 'rgba(255,255,255,0.28)',
                 }}
               />
               <div
-                className="absolute -right-1 h-[1px] w-1.5"
+                className="absolute -right-1 h-[1px] w-1"
                 style={{
                   backgroundColor: hud.aimLockedTarget
-                    ? 'rgba(239,68,68,0.85)'
-                    : 'rgba(255,255,255,0.45)',
+                    ? 'rgba(239,68,68,0.55)'
+                    : 'rgba(255,255,255,0.28)',
                 }}
               />
             </div>
             <div
-              className={`absolute w-1 h-1 rounded-full ${
-                hud.aimLockedTarget ? 'bg-red-500/90' : 'bg-white/65'
+              className={`absolute w-[2.5px] h-[2.5px] rounded-full ${
+                hud.aimLockedTarget ? 'bg-red-500/55' : 'bg-white/42'
               }`}
             />
             {hud.hitmarkerActive && (

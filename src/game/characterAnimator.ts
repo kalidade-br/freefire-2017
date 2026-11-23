@@ -58,7 +58,7 @@ export interface CharacterAnimInput {
   pitchRad: number;
 }
 
-export const WEAPON_DRAW_DURATION = 0.4;
+export const WEAPON_DRAW_DURATION = 0.06;
 
 export function computeWeaponDrawWeights(drawTimer: number): {
   progress: number;
@@ -228,7 +228,7 @@ export class CharacterAnimator {
   private playAdamClip(
     rig: CharacterRig,
     clipName: string,
-    fadeSec = 0.16,
+    fadeSec = 0.025,
     timeScale = 1.0,
     restart = false,
   ): void {
@@ -379,7 +379,7 @@ export class CharacterAnimator {
       this.playAdamClip(
         rig,
         isMoving ? 'Crouch_Fwd_Loop' : 'Crouch_Idle_Loop',
-        0.16,
+        0.03,
         isMoving ? 0.95 : 0.8,
       );
       mixer.update(dt);
@@ -397,7 +397,7 @@ export class CharacterAnimator {
       const crawl = isMoving ? Math.sin(this.walkPhase) : 0;
       vis.position.set(0, 0.23, -0.74);
       vis.rotation.set(1.45, 0, crawl * 0.07);
-      this.playAdamClip(rig, 'Idle_Loop', 0.14, 0.75);
+      this.playAdamClip(rig, 'Idle_Loop', 0.025, 0.75);
       mixer.update(dt);
       vis.updateMatrixWorld(true);
       vis.getWorldQuaternion(_qVisW);
@@ -507,19 +507,19 @@ export class CharacterAnimator {
     this.combatUpperBlend = THREE.MathUtils.damp(
       this.combatUpperBlend,
       lockCombatUpper ? 1 : 0,
-      isAirborneWeaponHold ? 34 : lockCombatUpper ? 28 : 18,
+      lockCombatUpper ? 120 : 85,
       dt,
     );
     this.tacCarryBlend = THREE.MathUtils.damp(
       this.tacCarryBlend,
       wantsTacCarry ? 1 : 0,
-      wantsTacCarry ? 16 : 18,
+      80,
       dt,
     );
     this.crouchLowBlend = THREE.MathUtils.damp(
       this.crouchLowBlend,
       wantsCrouchLow ? 1 : 0,
-      24,
+      95,
       dt,
     );
     const targetJumpPose = isAirborne
@@ -530,77 +530,77 @@ export class CharacterAnimator {
     this.jumpPoseBlend = THREE.MathUtils.damp(
       this.jumpPoseBlend,
       targetJumpPose,
-      isAirborne ? 24 : 26,
+      95,
       dt,
     );
 
-    const fastCrouchFade = this.crouchFast ? 0.035 : 0.14;
-    const fastJumpExitFade = !input.isGrounded ? 0.11 : fastCrouchFade;
+    const fastCrouchFade = 0.02;
+    const fastJumpExitFade = 0.025;
 
     if (input.isReviving) {
-      this.playAdamClip(rig, 'Fixing_Kneeling', 0.14, 1.1);
+      this.playAdamClip(rig, 'Fixing_Kneeling', 0.03, 1.1);
     } else if (!hasWeapon && this.punchTimer > 0 && !input.isHealing) {
       const punchClip = this.punchSide > 0 ? 'Punch_Jab' : 'Punch_Cross';
-      this.playAdamClip(rig, punchClip, 0.06, 1.45, this.punchTimer > 0.31);
+      this.playAdamClip(rig, punchClip, 0.02, 1.45, this.punchTimer > 0.31);
     } else if (input.stance === 'crouch') {
       this.playAdamClip(
         rig,
         isMoving ? 'Crouch_Fwd_Loop' : 'Crouch_Idle_Loop',
-        0.035,
+        0.02,
         isMoving ? THREE.MathUtils.clamp(input.speed / 2.8, 0.85, 1.45) : 1.15,
       );
     } else if (input.isHealing) {
       this.playAdamClip(
         rig,
         isMoving ? 'Jog_Fwd_Loop' : 'Idle_Loop',
-        Math.min(0.08, fastCrouchFade),
+        0.025,
         isMoving ? THREE.MathUtils.clamp(input.speed / 5.2, 0.72, 1.28) : 1.0,
       );
     } else if (isAirborne) {
       // Keep erect Idle_Loop base in the air (never run Sprint_Loop/Jog_Fwd_Loop in the sky!)
-      this.playAdamClip(rig, 'Idle_Loop', 0.07, 1.0);
+      this.playAdamClip(rig, 'Idle_Loop', 0.025, 1.0);
     } else if (input.isReloading && hasWeapon) {
-      this.playAdamClip(rig, 'Pistol_Reload', 0.12, 1.35);
+      this.playAdamClip(rig, 'Pistol_Reload', 0.025, 1.35);
     } else if (input.isOnSurfboard) {
       if (hasWeapon) {
         if (input.isFiring || this.recoil > 0.25 || this.fireHold > 0.22) {
-          this.playAdamClip(rig, 'Pistol_Shoot', 0.06, 1.35);
+          this.playAdamClip(rig, 'Pistol_Shoot', 0.02, 1.35);
         } else if (input.isAiming || isCombatActive) {
-          this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.1, 1.0);
+          this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.02, 1.0);
         } else {
-          this.playAdamClip(rig, 'Pistol_Idle_Loop', 0.14, 1.0);
+          this.playAdamClip(rig, 'Pistol_Idle_Loop', 0.025, 1.0);
         }
       } else {
-        this.playAdamClip(rig, 'Idle_Loop', 0.14, 1.0);
+        this.playAdamClip(rig, 'Idle_Loop', 0.025, 1.0);
       }
     } else if (isMoving) {
       if (input.isSprinting && !isCombatActive) {
         this.playAdamClip(
           rig,
           'Sprint_Loop',
-          Math.min(0.11, fastJumpExitFade),
+          fastJumpExitFade,
           THREE.MathUtils.clamp(input.speed / 7.2, 0.85, 1.35),
         );
       } else if (isCombatActive && input.speed < 1.6) {
-        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.07, 1.0);
+        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.02, 1.0);
       } else {
         this.playAdamClip(
           rig,
           'Jog_Fwd_Loop',
-          Math.min(0.11, fastJumpExitFade),
+          fastJumpExitFade,
           THREE.MathUtils.clamp(input.speed / 5.2, 0.72, 1.28),
         );
       }
     } else if (hasWeapon) {
       if (input.isFiring || this.recoil > 0.25 || this.fireHold > 0.22) {
-        this.playAdamClip(rig, 'Pistol_Shoot', 0.05, 1.35);
+        this.playAdamClip(rig, 'Pistol_Shoot', 0.02, 1.35);
       } else if (input.isAiming || isCombatActive) {
-        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.06, 1.0);
+        this.playAdamClip(rig, 'Pistol_Aim_Neutral', 0.02, 1.0);
       } else {
-        this.playAdamClip(rig, 'Pistol_Idle_Loop', fastJumpExitFade, 1.0);
+        this.playAdamClip(rig, 'Pistol_Idle_Loop', fastCrouchFade, 1.0);
       }
     } else {
-      this.playAdamClip(rig, 'Idle_Loop', fastJumpExitFade, 1.0);
+      this.playAdamClip(rig, 'Idle_Loop', fastCrouchFade, 1.0);
     }
 
     mixer.update(dt);
@@ -771,7 +771,7 @@ export class CharacterAnimator {
               ? 0.30
               : 0.25
             : 0.20;
-    this.spineFwdTarget = THREE.MathUtils.damp(this.spineFwdTarget, desiredFwdLean, 14, dt);
+    this.spineFwdTarget = THREE.MathUtils.damp(this.spineFwdTarget, desiredFwdLean, 65, dt);
     const spineBaseBone = rig.adamUpperBones?.[0]?.bone ?? rig.adamSpineBone;
     const torsoTopBone = rig.adamUpperBones?.[3]?.bone ?? rig.adamHeadBone;
     if (spineBaseBone && torsoTopBone && !input.isReviving) {
@@ -824,20 +824,20 @@ export class CharacterAnimator {
   public update(rig: CharacterRig, input: CharacterAnimInput): void {
     const dt = input.dt;
     this.idleTime += dt;
-    this.recoil = THREE.MathUtils.damp(this.recoil, 0, 18, dt);
+    this.recoil = THREE.MathUtils.damp(this.recoil, 0, 48, dt);
     this.fireHold = Math.max(0, this.fireHold - dt);
     this.punchTimer = Math.max(0, this.punchTimer - dt);
     this.drawTimer = Math.max(0, this.drawTimer - dt);
-    this.hitFlash = THREE.MathUtils.damp(this.hitFlash, 0, 10, dt);
-    this.hitStagger = THREE.MathUtils.damp(this.hitStagger, 0, 12, dt);
-    this.landingDip = THREE.MathUtils.damp(this.landingDip, 0, 11, dt);
+    this.hitFlash = THREE.MathUtils.damp(this.hitFlash, 0, 28, dt);
+    this.hitStagger = THREE.MathUtils.damp(this.hitStagger, 0, 36, dt);
+    this.landingDip = THREE.MathUtils.damp(this.landingDip, 0, 45, dt);
 
     const isMovingNow = input.speed > 0.35;
     if (isMovingNow && input.isGrounded) {
       this.runSwayPhase += dt * (input.isSprinting ? 10.8 : 8.2);
     } else {
       const restSway = Math.round(this.runSwayPhase / Math.PI) * Math.PI;
-      this.runSwayPhase = THREE.MathUtils.damp(this.runSwayPhase, restSway, 12, dt);
+      this.runSwayPhase = THREE.MathUtils.damp(this.runSwayPhase, restSway, 40, dt);
     }
 
     const curMoveInput = Boolean(input.hasMoveInput ?? isMovingNow);
@@ -872,14 +872,14 @@ export class CharacterAnimator {
     this.turnBank = THREE.MathUtils.damp(
       this.turnBank,
       THREE.MathUtils.clamp(turnRate * 4.5, -0.22, 0.22),
-      14,
+      40,
       dt,
     );
 
     if (input.isReloading) {
       this.reloadPhase += dt * 9.5;
     } else {
-      this.reloadPhase = THREE.MathUtils.damp(this.reloadPhase, 0, 14, dt);
+      this.reloadPhase = THREE.MathUtils.damp(this.reloadPhase, 0, 45, dt);
     }
 
     if (input.isHealing) {
@@ -888,7 +888,7 @@ export class CharacterAnimator {
     this.bandageBlend = THREE.MathUtils.damp(
       this.bandageBlend,
       input.isHealing ? 1 : 0,
-      input.isHealing ? 22 : 18,
+      70,
       dt,
     );
     const showBandage =
@@ -1080,20 +1080,20 @@ export class CharacterAnimator {
 
     if (input.stance === 'prone') {
       const crawl = Math.sin(this.walkPhase) * 0.24 * strideBlend;
-      rig.pelvis.position.y = THREE.MathUtils.damp(rig.pelvis.position.y, 0.22, 14, dt);
-      rig.pelvis.rotation.x = THREE.MathUtils.damp(rig.pelvis.rotation.x, 1.46, 14, dt);
-      rig.pelvis.rotation.z = THREE.MathUtils.damp(rig.pelvis.rotation.z, crawl * 0.18, 12, dt);
-      rig.torso.rotation.x = THREE.MathUtils.damp(rig.torso.rotation.x, -0.46, 12, dt);
+      rig.pelvis.position.y = THREE.MathUtils.damp(rig.pelvis.position.y, 0.22, 65, dt);
+      rig.pelvis.rotation.x = THREE.MathUtils.damp(rig.pelvis.rotation.x, 1.46, 65, dt);
+      rig.pelvis.rotation.z = THREE.MathUtils.damp(rig.pelvis.rotation.z, crawl * 0.18, 55, dt);
+      rig.torso.rotation.x = THREE.MathUtils.damp(rig.torso.rotation.x, -0.46, 55, dt);
       rig.headGroup.rotation.x = THREE.MathUtils.damp(
         rig.headGroup.rotation.x,
         -0.84 + input.pitchRad * 0.28,
-        12,
+        55,
         dt,
       );
       rig.rightShoulder.rotation.x = THREE.MathUtils.damp(
         rig.rightShoulder.rotation.x,
         -1.92 - this.recoil * 0.2,
-        20,
+        75,
         dt,
       );
       rig.rightShoulder.rotation.y = 0.14;
@@ -1109,7 +1109,7 @@ export class CharacterAnimator {
     }
 
     const isCrouch = input.stance === 'crouch';
-    const crouchRate = this.crouchFast ? 44 : 16;
+    const crouchRate = 85;
     const healDip = 0;
     const landCompression = this.landingDip * (isCrouch ? 0.08 : 0.16);
     const bobAmp = input.isSprinting ? 0.058 : isCrouch ? 0.028 : 0.032;
@@ -1124,10 +1124,10 @@ export class CharacterAnimator {
     rig.pelvis.rotation.y = THREE.MathUtils.damp(
       rig.pelvis.rotation.y,
       isMoving && !input.isAiming ? swing * (input.isSprinting ? 0.08 : 0.05) : 0,
-      14,
+      55,
       dt,
     );
-    rig.pelvis.rotation.z = THREE.MathUtils.damp(rig.pelvis.rotation.z, 0, 14, dt);
+    rig.pelvis.rotation.z = THREE.MathUtils.damp(rig.pelvis.rotation.z, 0, 55, dt);
 
     // Relaxed, slightly lowered athletic forward lean (matching original Free Fire)
     const procTorsoLean =
@@ -1145,13 +1145,13 @@ export class CharacterAnimator {
             : isMoving && input.isSprinting
               ? -swing * 0.1
               : 0,
-      16,
+      70,
       dt,
     );
     rig.torso.rotation.z = THREE.MathUtils.damp(
       rig.torso.rotation.z,
       isMoving ? -this.turnBank * 0.18 : 0,
-      14,
+      55,
       dt,
     );
     rig.headGroup.rotation.x = THREE.MathUtils.damp(
@@ -1160,7 +1160,7 @@ export class CharacterAnimator {
       crouchRate,
       dt,
     );
-    rig.headGroup.rotation.y = THREE.MathUtils.damp(rig.headGroup.rotation.y, 0, 12, dt);
+    rig.headGroup.rotation.y = THREE.MathUtils.damp(rig.headGroup.rotation.y, 0, 55, dt);
 
     const procAirborne =
       !input.isGrounded && !input.isOnSurfboard && !input.isHealing && !input.isReviving;
@@ -1342,7 +1342,7 @@ export class CharacterAnimator {
       }
     } else {
       const idleSway = (1 - strideBlend) * breath * 0.025 + swing * 0.06;
-      const twoHandJumpDamp = isAirborneWeaponHold ? 28 : 22;
+      const twoHandJumpDamp = 90;
       const targetElbowR = isCrouchWeaponDown ? -0.74 : -0.38 - this.recoil * 0.12;
       const targetElbowL = isCrouchWeaponDown ? -0.86 : -0.58;
       rig.rightShoulder.rotation.x = THREE.MathUtils.damp(
@@ -1351,8 +1351,8 @@ export class CharacterAnimator {
         twoHandJumpDamp,
         dt,
       );
-      rig.rightShoulder.rotation.y = THREE.MathUtils.damp(rig.rightShoulder.rotation.y, 0.16, 18, dt);
-      rig.rightShoulder.rotation.z = THREE.MathUtils.damp(rig.rightShoulder.rotation.z, -0.06, 18, dt);
+      rig.rightShoulder.rotation.y = THREE.MathUtils.damp(rig.rightShoulder.rotation.y, 0.16, 75, dt);
+      rig.rightShoulder.rotation.z = THREE.MathUtils.damp(rig.rightShoulder.rotation.z, -0.06, 75, dt);
       rig.rightElbow.rotation.x = THREE.MathUtils.damp(rig.rightElbow.rotation.x, targetElbowR, twoHandJumpDamp, dt);
 
       rig.leftShoulder.rotation.x = THREE.MathUtils.damp(
@@ -1361,8 +1361,8 @@ export class CharacterAnimator {
         twoHandJumpDamp,
         dt,
       );
-      rig.leftShoulder.rotation.y = THREE.MathUtils.damp(rig.leftShoulder.rotation.y, -0.46, 18, dt);
-      rig.leftShoulder.rotation.z = THREE.MathUtils.damp(rig.leftShoulder.rotation.z, 0.14, 18, dt);
+      rig.leftShoulder.rotation.y = THREE.MathUtils.damp(rig.leftShoulder.rotation.y, -0.46, 75, dt);
+      rig.leftShoulder.rotation.z = THREE.MathUtils.damp(rig.leftShoulder.rotation.z, 0.14, 75, dt);
       rig.leftElbow.rotation.x = THREE.MathUtils.damp(rig.leftElbow.rotation.x, targetElbowL, twoHandJumpDamp, dt);
     }
 

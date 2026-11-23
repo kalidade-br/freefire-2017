@@ -5163,32 +5163,41 @@ export class BattleRoyaleEngine {
       const rayY = camPos.y + fy * proj;
       const rayZ = camPos.z + fz * proj;
 
-      // Dynamic vertical bounds track standing, crouching, medkit-kneeling, and crawling poses
-      const distVertPad = THREE.MathUtils.clamp(proj * 0.026, 0.24, 1.25);
-      const headTopWorldY = Math.max(_v3.y + 0.34, by + 0.95) + distVertPad * 0.72;
+      // Dynamic vertical bounds track standing, crouching, medkit-kneeling, and crawling poses (scaled generously at long range)
+      const distVertPad = THREE.MathUtils.clamp(proj * 0.048, 0.28, 3.6);
+      const headTopWorldY = Math.max(_v3.y + 0.36, by + 0.95) + distVertPad * 0.78;
       const minWorldY = Math.min(_v2.y - 0.95, by - 0.28) - distVertPad;
       if (rayY > headTopWorldY || rayY < minWorldY) continue;
 
-      // Wide close-range & angular sticky zone around torso
+      // Wide close & long-range sticky zone around torso (no shrinking penalty at far distances)
       const horizErr = Math.hypot(rayX - _v2.x, rayZ - _v2.z);
-      const farFalloff =
-        proj > 120 ? THREE.MathUtils.clamp(1 - (proj - 120) / 145, 0.55, 1.0) : 1.0;
-      const minStickRadius = playerDist < 12 ? 2.25 : 1.55;
+      const distBoost =
+        proj > 60 ? THREE.MathUtils.clamp(1 + (proj - 60) / 170, 1.0, 1.7) : 1.0;
+      const minStickRadius =
+        playerDist < 14
+          ? 2.4
+          : THREE.MathUtils.clamp(1.75 + proj * 0.032, 1.75, 6.5);
       const maxHorizErr = THREE.MathUtils.clamp(
-        Math.tan(maxAngleRad) * proj * farFalloff,
+        Math.tan(maxAngleRad) * proj * distBoost,
         minStickRadius,
-        7.8 * farFalloff,
+        18.0,
       );
 
-      // Screen-space reticle halo capture helps close-quarters engagements snap cleanly
+      // Screen-space reticle halo capture helps close-quarters AND distant scope engagements snap cleanly
       let inScreenHalo = false;
-      if (playerDist < 16) {
-        _camDesired.copy(_v2).project(cam);
-        if (_camDesired.z >= -1 && _camDesired.z <= 1) {
-          const ndcDist = Math.hypot(_camDesired.x, _camDesired.y);
-          if (ndcDist <= (this.isAiming ? 0.38 : 0.34)) {
-            inScreenHalo = true;
-          }
+      _camDesired.copy(_v2).project(cam);
+      if (_camDesired.z >= -1 && _camDesired.z <= 1) {
+        const ndcDist = Math.hypot(_camDesired.x, _camDesired.y);
+        const haloRadiusNdc =
+          playerDist < 18
+            ? this.isAiming
+              ? 0.4
+              : 0.36
+            : this.isAiming
+              ? 0.24
+              : 0.16;
+        if (ndcDist <= haloRadiusNdc) {
+          inScreenHalo = true;
         }
       }
 
@@ -5268,7 +5277,7 @@ export class BattleRoyaleEngine {
     }
 
     // 2. Classic FF red proximity zone near the crosshair (wide distance-scaled sticky capture)
-    const redZoneCone = this.isAiming ? 0.31 : 0.28;
+    const redZoneCone = this.isAiming ? 0.42 : 0.36;
     return this.findAimAssistTarget(redZoneCone, maxRange) !== null;
   }
 
@@ -5740,7 +5749,7 @@ export class BattleRoyaleEngine {
     }
 
     if (prevStance !== this.stance) {
-      this.stanceSnapTimer = 0.16;
+      this.stanceSnapTimer = 0.06;
       if (this.stance === 'prone') {
         soundEngine.playProneDown();
       } else if (prevStance === 'prone') {
@@ -5768,7 +5777,11 @@ export class BattleRoyaleEngine {
       this.isPlacingGloo = false;
       this.isHoldingGrenade = false;
     }
+    if (this.isAiming !== this.wasAiming) {
+      this.hudDirty = true;
+    }
     const justStartedAiming = this.isAiming && !this.wasAiming;
+    const justStoppedAiming = !this.isAiming && this.wasAiming;
     const fireDown = this.isSwimming ? false : (this.input.getFireActive() || edges.fireTap);
     const justStartedFiring = (fireDown && !this.wasFireDown) || edges.fireTap;
 
@@ -5820,9 +5833,19 @@ export class BattleRoyaleEngine {
         ? 1.0
         : Math.max(0.18, 1.0 - (this.consecutiveShots - 4) * 0.12);
 
+    const assistMaxRange = activeDef
+      ? activeDef.category === 'SG'
+        ? Math.max(activeDef.range, 62)
+        : Math.max(activeDef.range, this.isAiming ? 265 : 225)
+      : 180;
+
     // Camera Look with per-scope sensitivity (zero weapon recoil)
     const sensScale = this.getScopeSensitivityScale(activeScope);
-    const sens = 0.0028 * sensScale;
+    const adsTargetFriction =
+      assistAllowed && this.isAiming && !weaponFireDown && !justStartedAiming && this.aimLockedTarget
+        ? 0.62
+        : 1.0;
+    const sens = 0.0028 * sensScale * adsTargetFriction;
     const invert = this.settings.invertY ? -1 : 1;
     const rawYawInput = -edges.dx * sens;
     const rawPitchInput = -edges.dy * sens * invert;
@@ -5869,7 +5892,7 @@ export class BattleRoyaleEngine {
 
     // Track if crouched with target inside crosshair area (even before firing, for Bug do Capa)
     if (this.stance === 'crouch' && activeDef && !weaponFireDown) {
-      const crouchPreview = this.findAimAssistTarget(this.isAiming ? 0.31 : 0.28, activeDef.range);
+      const crouchPreview = this.findAimAssistTarget(this.isAiming ? 0.42 : 0.36, assistMaxRange);
       if (crouchPreview) {
         this.wasLockedWhileCrouched = true;
       }
@@ -5895,7 +5918,7 @@ export class BattleRoyaleEngine {
             _rayOrigin.set(this.pos.x, this.pos.y + targetCamHeight, this.pos.z);
             const dist = _v2.distanceTo(_rayOrigin);
             if (
-              dist <= activeDef.range &&
+              dist <= assistMaxRange &&
               (this.hasLineOfSightToPoint(_rayOrigin, _v2) ||
                 this.hasLineOfSightToPoint(_rayOrigin, _v3) ||
                 this.hasLineOfSightToPoint(this.world.camera.position, _v3))
@@ -5915,12 +5938,12 @@ export class BattleRoyaleEngine {
           const coneRad =
             justStartedFiring || justStartedAiming
               ? this.isAiming
-                ? 0.33
-                : 0.30
+                ? 0.44
+                : 0.38
               : this.isAiming
-                ? 0.30
-                : 0.27;
-          target = this.findAimAssistTarget(coneRad, activeDef.range);
+                ? 0.38
+                : 0.33;
+          target = this.findAimAssistTarget(coneRad, assistMaxRange);
           if (target) {
             this.lockedTargetId = target.id;
             this.aimBreakAccum = 0;
@@ -5991,9 +6014,9 @@ export class BattleRoyaleEngine {
                 const distQuality =
                   chestAim.horiz < 6
                     ? chestAim.horiz / 6
-                    : chestAim.horiz <= 46
+                    : chestAim.horiz <= 85
                       ? 1.0
-                      : Math.max(0.35, 1.0 - (chestAim.horiz - 46) / 55);
+                      : Math.max(0.55, 1.0 - (chestAim.horiz - 85) / 140);
                 const bugPitch = THREE.MathUtils.lerp(
                   chestAim.pitch,
                   headAim.pitch + 0.004,
@@ -6062,8 +6085,8 @@ export class BattleRoyaleEngine {
           this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput, -1.05, 1.18);
         }
       } else if (justStartedAiming) {
-        // One-time Aim-FOV snap when opening scope using actual distance-scaled body capture
-        const aimSnapTarget = this.findAimAssistTarget(0.31, activeDef.range);
+        // One-time Aim-FOV snap when opening scope using widened distance-scaled body capture
+        const aimSnapTarget = this.findAimAssistTarget(0.42, assistMaxRange);
         if (aimSnapTarget) {
           this.getBotBodyPoint(aimSnapTarget, 'chest', _v1);
           this.getBotBodyPoint(aimSnapTarget, 'head', _v3);
@@ -6102,9 +6125,9 @@ export class BattleRoyaleEngine {
             while (deltaYaw > Math.PI) deltaYaw -= Math.PI * 2;
             while (deltaYaw < -Math.PI) deltaYaw += Math.PI * 2;
 
-            // Snap cleanly once onto exact center of chest (no side offset, no tracking next frames)
-            this.yaw += deltaYaw * 0.96;
-            this.pitch = THREE.MathUtils.lerp(this.pitch, desired.pitch, 0.96);
+            // Snap cleanly onto exact center of chest (or head if already aligned)
+            this.yaw += deltaYaw;
+            this.pitch = desired.pitch;
             justAimSnapped = true;
           }
         }
@@ -6406,7 +6429,7 @@ export class BattleRoyaleEngine {
     let diffCharYaw = desiredCharYaw - this.characterYaw;
     while (diffCharYaw > Math.PI) diffCharYaw -= Math.PI * 2;
     while (diffCharYaw < -Math.PI) diffCharYaw += Math.PI * 2;
-    const charTurnRate = this.combatFacingTimer > 0 ? 22 : 14;
+    const charTurnRate = this.combatFacingTimer > 0 ? 60 : 38;
     this.prevCharYawForTurn = this.characterYaw;
     this.characterYaw += diffCharYaw * (1 - Math.exp(-charTurnRate * dt));
     let turnDeltaRad = this.characterYaw - this.prevCharYawForTurn;
@@ -6483,9 +6506,13 @@ export class BattleRoyaleEngine {
       this.world.sunLight.target.updateMatrixWorld();
     }
 
-    // Update camera BEFORE firing so aim-assist snaps apply cleanly with zero rotational skew!
+    // Update camera BEFORE firing so aim-assist snaps apply cleanly with zero rotational skew or scope-open delay!
     const snapCameraNow =
-      (justStartedFiring && this.aimAssistActive) || justAimSnapped || isFirstPersonAds;
+      (justStartedFiring && this.aimAssistActive) ||
+      justAimSnapped ||
+      isFirstPersonAds ||
+      justStoppedAiming ||
+      justSwitchedSlot;
     this.updateThirdPersonCamera(
       dt,
       targetCamDist,
@@ -6516,9 +6543,9 @@ export class BattleRoyaleEngine {
     this.wasFireDown = this.input.getFireActive();
 
     this.crosshairCheckAccum += dt;
-    if (this.crosshairCheckAccum >= 0.05) {
+    if (this.crosshairCheckAccum >= 0.05 || justStartedAiming || justStoppedAiming || justSwitchedSlot) {
       this.crosshairCheckAccum = 0;
-      this.aimLockedTarget = this.checkCrosshairTargetLock(activeDef?.range ?? 180);
+      this.aimLockedTarget = this.checkCrosshairTargetLock(assistMaxRange);
     }
   }
 
@@ -7513,7 +7540,11 @@ export class BattleRoyaleEngine {
     let spreadMult = 1.0;
     if (slotState.attachments.muzzle === 'compensator') spreadMult *= 0.68;
     if (slotState.attachments.foregrip === 'grip') spreadMult *= 0.78;
-    const effectiveRange = isSilenced ? def.range * 1.08 : def.range;
+    const baseEffectiveRange = isSilenced ? def.range * 1.08 : def.range;
+    const effectiveRange = Math.max(
+      baseEffectiveRange,
+      def.category === 'AR' || def.category === 'SR' ? 280 : baseEffectiveRange,
+    );
 
     // Progressive spray bloom after 3 consecutive shots
     const sprayBloom =
@@ -12075,10 +12106,10 @@ export class BattleRoyaleEngine {
       this.camShoulderCurrent = THREE.MathUtils.damp(
         this.camShoulderCurrent,
         rightShoulderOffset,
-        24,
+        60,
         dt,
       );
-      this.camDistCurrent = THREE.MathUtils.damp(this.camDistCurrent, distance, 20, dt);
+      this.camDistCurrent = THREE.MathUtils.damp(this.camDistCurrent, distance, 55, dt);
     }
 
     _camTarget.set(
@@ -12090,8 +12121,8 @@ export class BattleRoyaleEngine {
     if (snapInstant) {
       this.camLookCurrent.copy(_camTarget);
     } else {
-      const xzAlpha = 1 - Math.exp(-30 * dt);
-      const yRate = this.stanceSnapTimer > 0 ? 52 : 22;
+      const xzAlpha = 1 - Math.exp(-65 * dt);
+      const yRate = this.stanceSnapTimer > 0 ? 90 : 60;
       const yAlpha = 1 - Math.exp(-yRate * dt);
       this.camLookCurrent.x = THREE.MathUtils.lerp(this.camLookCurrent.x, _camTarget.x, xzAlpha);
       this.camLookCurrent.z = THREE.MathUtils.lerp(this.camLookCurrent.z, _camTarget.z, xzAlpha);
@@ -12176,9 +12207,12 @@ export class BattleRoyaleEngine {
         : this.isSprinting
           ? 68
           : 62;
-    if (Math.abs(this.world.camera.fov - targetFov) > 0.1) {
-      const fovRate = this.isAiming || isOpticalLens ? 34 : 18;
-      this.world.camera.fov = THREE.MathUtils.damp(this.world.camera.fov, targetFov, fovRate, dt);
+    if (Math.abs(this.world.camera.fov - targetFov) > 0.05) {
+      if (snapInstant) {
+        this.world.camera.fov = targetFov;
+      } else {
+        this.world.camera.fov = THREE.MathUtils.damp(this.world.camera.fov, targetFov, 65, dt);
+      }
       this.world.camera.updateProjectionMatrix();
     }
 

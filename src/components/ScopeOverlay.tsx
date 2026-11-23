@@ -13,12 +13,14 @@ export const ScopeOverlay: React.FC<ScopeOverlayProps> = ({
   aimLockedTarget,
   headshotFlashActive,
 }) => {
-  // Padrão ('none') & Mira 1x: Moldura aberta estilo reflex/holográfica com PONTO AZUL exato no centro da tela
+  // Padrão ('none') & Mira 1x: Moldura aberta estilo reflex/holográfica com PONTO pequeno e translúcido no centro exato da tela
   if (scope === 'none' || scope === '1x') {
-    const dotColor = aimLockedTarget ? '#ef4444' : '#38bdf8';
+    const dotColor = aimLockedTarget
+      ? 'rgba(239,68,68,0.58)'
+      : 'rgba(56,189,248,0.52)';
     const dotGlow = aimLockedTarget
-      ? '0 0 10px 3px rgba(239,68,68,0.92)'
-      : '0 0 11px 3px rgba(56,189,248,0.92)';
+      ? '0 0 3px 0.5px rgba(239,68,68,0.34)'
+      : '0 0 3px 0.5px rgba(56,189,248,0.32)';
 
     return (
       <div className="fixed inset-0 z-10 pointer-events-none flex items-center justify-center">
@@ -64,9 +66,9 @@ export const ScopeOverlay: React.FC<ScopeOverlayProps> = ({
             <rect x="64" y="202" width="112" height="72" rx="4" fill="#14181f" stroke="#262b33" strokeWidth="2" />
           </svg>
 
-          {/* Exact screen-center glowing blue dot matching raycast (50%, 50%) */}
+          {/* Exact screen-center tiny translucent dot matching raycast (50%, 50%) */}
           <div
-            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full transition-colors duration-75"
+            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[3.5px] h-[3.5px] rounded-full"
             style={{
               backgroundColor: dotColor,
               boxShadow: dotGlow,
@@ -122,22 +124,24 @@ export const ScopeOverlay: React.FC<ScopeOverlayProps> = ({
             <circle cx="180" cy="180" r="146" fill="none" stroke="#262b33" strokeWidth="3" />
             <circle cx="180" cy="180" r="174" fill="none" stroke="#1e222a" strokeWidth="2" />
 
-            {/* Exact 2x Reticle: Dot in center + circle around the dot */}
+            {/* Exact 2x Reticle: Tiny translucent dot in center + thin ring around it */}
             <circle
               cx="180"
               cy="180"
-              r="14"
+              r="11"
               fill="none"
               stroke={reticleColor}
-              strokeWidth="2.4"
-              style={{ filter: 'drop-shadow(0 0 6px rgba(239,68,68,0.85))' }}
+              strokeWidth="1.2"
+              strokeOpacity={0.56}
+              style={{ filter: 'drop-shadow(0 0 2px rgba(239,68,68,0.34))' }}
             />
             <circle
               cx="180"
               cy="180"
-              r="3.2"
+              r="1.3"
               fill={reticleColor}
-              style={{ filter: 'drop-shadow(0 0 6px rgba(239,68,68,0.95))' }}
+              fillOpacity={0.54}
+              style={{ filter: 'drop-shadow(0 0 2px rgba(239,68,68,0.38))' }}
             />
           </svg>
 
@@ -180,9 +184,9 @@ export const ScopeOverlay: React.FC<ScopeOverlayProps> = ({
             <circle cx="200" cy="200" r="158" fill="url(#lens4x)" />
 
             {/* Black horizontal & vertical stadia lines (leaving clean gap around center V) */}
-            <line x1="42" y1="200" x2="182" y2="200" stroke="#0b0d10" strokeWidth="2.2" />
-            <line x1="218" y1="200" x2="358" y2="200" stroke="#0b0d10" strokeWidth="2.2" />
-            <line x1="200" y1="216" x2="200" y2="358" stroke="#0b0d10" strokeWidth="2.1" />
+            <line x1="42" y1="200" x2="184" y2="200" stroke="#0b0d10" strokeWidth="1.5" strokeOpacity={0.78} />
+            <line x1="216" y1="200" x2="358" y2="200" stroke="#0b0d10" strokeWidth="1.5" strokeOpacity={0.78} />
+            <line x1="200" y1="214" x2="200" y2="358" stroke="#0b0d10" strokeWidth="1.5" strokeOpacity={0.78} />
 
             {/* Small black tick marks along horizontal line */}
             {[-120, -96, -72, -48, -28, 28, 48, 72, 96, 120].map((dx) => (
@@ -210,18 +214,19 @@ export const ScopeOverlay: React.FC<ScopeOverlayProps> = ({
               />
             ))}
 
-            {/* Glowing green/cyan chevron "V" apex at exact dead-center (200, 200) */}
+            {/* Fine translucent green/cyan chevron "V" apex at exact dead-center (200, 200) */}
             <path
-              d="M 192 208 L 200 198 L 208 208"
+              d="M 195 205 L 200 199 L 205 205"
               fill="none"
               stroke={vColor}
-              strokeWidth="2.8"
+              strokeWidth="1.35"
+              strokeOpacity={0.58}
               strokeLinecap="round"
               strokeLinejoin="round"
               style={{
                 filter: aimLockedTarget
-                  ? 'drop-shadow(0 0 6px rgba(255,59,59,0.95))'
-                  : 'drop-shadow(0 0 7px rgba(16,185,129,0.95))',
+                  ? 'drop-shadow(0 0 2px rgba(255,59,59,0.4))'
+                  : 'drop-shadow(0 0 2px rgba(16,185,129,0.4))',
               }}
             />
 
@@ -272,9 +277,9 @@ export const ScopeOverlay: React.FC<ScopeOverlayProps> = ({
 
           <circle cx="210" cy="210" r="172" fill="url(#lens8x)" />
 
-          {/* Full black crosshairs */}
-          <line x1="38" y1="210" x2="382" y2="210" stroke="#08090b" strokeWidth="1.9" />
-          <line x1="210" y1="38" x2="210" y2="382" stroke="#08090b" strokeWidth="1.9" />
+          {/* Full fine black crosshairs */}
+          <line x1="38" y1="210" x2="382" y2="210" stroke="#08090b" strokeWidth="1.25" strokeOpacity={0.78} />
+          <line x1="210" y1="38" x2="210" y2="382" stroke="#08090b" strokeWidth="1.25" strokeOpacity={0.78} />
 
           {/* Thicker outer black bezel stadia posts */}
           <line x1="38" y1="210" x2="96" y2="210" stroke="#050608" strokeWidth="4.2" />
@@ -323,13 +328,14 @@ export const ScopeOverlay: React.FC<ScopeOverlayProps> = ({
             );
           })}
 
-          {/* Crisp central red dot */}
+          {/* Tiny translucent central red dot */}
           <circle
             cx="210"
             cy="210"
-            r="3.4"
+            r="1.4"
             fill={centerDotColor}
-            style={{ filter: 'drop-shadow(0 0 6px rgba(239,68,68,0.9))' }}
+            fillOpacity={0.55}
+            style={{ filter: 'drop-shadow(0 0 2px rgba(239,68,68,0.4))' }}
           />
 
           {/* Outer black scope frame */}
