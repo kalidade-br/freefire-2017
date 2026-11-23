@@ -1,4 +1,4 @@
-import type { CharacterConfig, GlooSkinId, MatchMode, WeaponId } from '../game/types.ts';
+import type { BrMapId, CharacterConfig, GlooSkinId, MatchMode, WeaponId } from '../game/types.ts';
 
 export type PresenceStatus = 'offline' | 'lobby' | 'matchmaking' | 'in_match';
 
@@ -48,6 +48,7 @@ export interface PartyState {
   partyId: string;
   leaderId: number;
   mode: MatchMode;
+  mapId?: BrMapId;
   isRanked: boolean;
   autoFillBots: boolean;
   status: 'idle' | 'matchmaking' | 'in_match';
@@ -63,6 +64,7 @@ export interface PartyInvitePayload {
   fromNickname: string;
   fromRankPoints: number;
   mode: MatchMode;
+  mapId?: BrMapId;
   isRanked: boolean;
   createdAt: number;
 }
@@ -106,6 +108,7 @@ export interface MatchRoomJoinInfo {
   roomId: string;
   seed: number;
   mode: MatchMode;
+  mapId?: BrMapId;
   isRanked: boolean;
   autoFillBots: boolean;
   hostAccountId: number;
@@ -186,6 +189,7 @@ export interface RemoteBotSync {
   inParachute: boolean;
   isSwimming: boolean;
   kills: number;
+  hidden?: boolean;
 }
 
 export interface RemoteGlooWallSync {

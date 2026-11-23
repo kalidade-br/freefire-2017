@@ -1067,7 +1067,7 @@ export interface JpFoliageController {
 }
 
 export function createInstancedJoaoPessoaFoliage(
-  scene: THREE.Scene,
+  scene: THREE.Object3D,
   input: VegetationInput,
 ): JpFoliageController {
   const {

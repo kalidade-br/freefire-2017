@@ -23,6 +23,7 @@ export const EndMatchModal: React.FC<EndMatchModalProps> = ({
   onReturnLobby,
 }) => {
   const isWin = state === GameState.WIN;
+  const isGladiadores = hud.gameVariant === 'gladiadores' && Boolean(hud.gladiadores);
   const rank = getRankInfo(rankPoints);
   const placement = isWin ? 1 : Math.max(2, hud.aliveCount);
 
@@ -40,19 +41,48 @@ export const EndMatchModal: React.FC<EndMatchModalProps> = ({
             <Skull className="w-12 h-12 text-red-500" />
           )}
           <div className="text-xs font-mono uppercase tracking-[0.25em] text-neutral-400">
-            {isWin ? 'BOOYAH! POSIÇÃO #1 / 51' : `ELIMINADO · #${placement} / 51`}
+            {isGladiadores && hud.gladiadores
+              ? `GLADIADORES ${hud.gladiadores.format.toUpperCase()} · META ${hud.gladiadores.targetRounds} RODADAS`
+              : isWin
+                ? 'BOOYAH! POSIÇÃO #1 / 51'
+                : `ELIMINADO · #${placement} / 51`}
           </div>
           <h2
             className={`text-3xl font-black uppercase tracking-wider ${
               isWin ? 'text-amber-400' : 'text-red-500'
             }`}
           >
-            {isWin ? 'VITÓRIA! SOBREVIVENTE #1' : 'FIM DE PARTIDA'}
+            {isGladiadores
+              ? isWin
+                ? 'CAMPEÃO DA ARENA!'
+                : 'DERROTA NA ARENA'
+              : isWin
+                ? 'VITÓRIA! SOBREVIVENTE #1'
+                : 'FIM DE PARTIDA'}
           </h2>
         </div>
 
-        {/* Ranked Delta Card */}
-        {isRanked && (
+        {/* Gladiadores Final Round Scoreboard */}
+        {isGladiadores && hud.gladiadores && (
+          <div className="bg-[#0e1217] border border-red-500/45 p-4 flex items-center justify-around font-mono">
+            <div>
+              <div className="text-[10px] text-emerald-300 uppercase font-bold">VOCÊ</div>
+              <div className="text-3xl font-black text-emerald-400 tabular-nums">
+                {hud.gladiadores.playerScore}
+              </div>
+            </div>
+            <div className="text-lg font-black text-neutral-500">X</div>
+            <div>
+              <div className="text-[10px] text-red-300 uppercase font-bold">INIMIGO</div>
+              <div className="text-3xl font-black text-red-400 tabular-nums">
+                {hud.gladiadores.enemyScore}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Ranked Delta Card (BR Ranqueado only) */}
+        {!isGladiadores && isRanked && (
           <div className="bg-[#0e1217] border border-amber-500/45 p-3 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 text-left">
               <RankEmblemSvg

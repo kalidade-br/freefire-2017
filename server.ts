@@ -39,7 +39,7 @@ import type {
   RoomHumanSlot,
   SafeZoneSyncState,
 } from './src/shared/multiplayerTypes.ts';
-import type { MatchMode } from './src/game/types.ts';
+import type { BrMapId, MatchMode } from './src/game/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -66,6 +66,7 @@ interface ServerMatchRoom {
   roomId: string;
   seed: number;
   mode: MatchMode;
+  mapId: BrMapId;
   isRanked: boolean;
   autoFillBots: boolean;
   hostAccountId: number;
@@ -166,6 +167,7 @@ function ensurePartyForAccount(acc: PublicPlayerAccount): PartyState {
     partyId,
     leaderId: acc.id,
     mode: 'solo',
+    mapId: 'bermuda',
     isRanked: false,
     autoFillBots: true,
     status: 'idle',
@@ -204,13 +206,14 @@ function maxMembersForMode(mode: MatchMode): number {
 
 function computeServerSafeZone(room: ServerMatchRoom, nowMs: number): SafeZoneSyncState {
   const elapsedAfterPlane = Math.max(0, (nowMs - room.planeStartedAtMs) / 1000);
+  const isBermuda = (room.mapId ?? 'bermuda') === 'bermuda';
   // Deterministic safe center derived from room seed
   const s1 = Math.sin(room.seed * 0.0017) * 0.5 + 0.5;
   const s2 = Math.cos(room.seed * 0.0029) * 0.5 + 0.5;
-  const targetCenterX = (s1 - 0.5) * 420;
-  const targetCenterZ = (s2 - 0.5) * 420;
+  const targetCenterX = (s1 - 0.5) * (isBermuda ? 680 : 420);
+  const targetCenterZ = (s2 - 0.5) * (isBermuda ? 560 : 420);
 
-  const radii = [890, 560, 340, 185, 85, 22];
+  const radii = isBermuda ? [820, 480, 300, 175, 85, 22] : [890, 560, 340, 185, 85, 22];
   const dmgRates = [2, 5, 11, 18, 28];
   const holdDur = 14;
   const shrinkDur = 24;
@@ -252,10 +255,14 @@ function computeServerSafeZone(room: ServerMatchRoom, nowMs: number): SafeZoneSy
   };
 }
 
-function createAirplaneRoute(seed: number, startedAtMs: number): AirplaneRouteSync {
+function createAirplaneRoute(
+  seed: number,
+  startedAtMs: number,
+  mapId: BrMapId = 'bermuda',
+): AirplaneRouteSync {
   const angle = ((seed % 3600) / 3600) * Math.PI * 2;
-  const radius = 840;
-  const offset = (((seed * 7) % 1000) / 1000 - 0.5) * 240;
+  const radius = mapId === 'bermuda' ? 840 : 630;
+  const offset = (((seed * 7) % 1000) / 1000 - 0.5) * (mapId === 'bermuda' ? 320 : 240);
   const perpX = -Math.sin(angle);
   const perpZ = Math.cos(angle);
   return {
@@ -274,6 +281,7 @@ function buildJoinInfo(room: ServerMatchRoom, yourAccountId: number): MatchRoomJ
     roomId: room.roomId,
     seed: room.seed,
     mode: room.mode,
+    mapId: room.mapId,
     isRanked: room.isRanked,
     autoFillBots: room.autoFillBots,
     hostAccountId: room.hostAccountId,
@@ -881,7 +889,7 @@ export async function createExpressApp(
     if (party.leaderId !== acc.id) {
       return res.status(403).json({ error: 'Apenas o líder do grupo pode alterar o modo.' });
     }
-    const { mode, isRanked, autoFillBots } = req.body ?? {};
+    const { mode, mapId, isRanked, autoFillBots } = req.body ?? {};
     if (mode === 'solo' || mode === 'duo' || mode === 'squad') {
       if (mode === 'solo' && party.members.length > 1) {
         return res.status(400).json({ error: 'Saia do grupo com amigos para jogar Solo.' });
@@ -890,6 +898,9 @@ export async function createExpressApp(
         return res.status(400).json({ error: 'Você tem mais de 2 jogadores no grupo.' });
       }
       party.mode = mode;
+    }
+    if (mapId === 'bermuda' || mapId === 'joao_pessoa') {
+      party.mapId = mapId;
     }
     if (typeof isRanked === 'boolean') party.isRanked = isRanked;
     if (typeof autoFillBots === 'boolean') party.autoFillBots = autoFillBots;
@@ -926,6 +937,7 @@ export async function createExpressApp(
       fromNickname: acc.nickname,
       fromRankPoints: acc.rankPoints,
       mode: party.mode,
+      mapId: party.mapId ?? 'bermuda',
       isRanked: party.isRanked,
       createdAt: Date.now(),
     };
@@ -1008,16 +1020,18 @@ export async function createExpressApp(
       return res.status(400).json({ error: 'Máximo de 4 jogadores por esquadrão.' });
     }
 
-    // Find an existing open room matching mode + ranked where total online humans <= 4
+    // Find an existing open room matching mode + map + ranked where total online humans <= 20
+    const partyMapId: BrMapId = party.mapId === 'joao_pessoa' ? 'joao_pessoa' : 'bermuda';
     const now = Date.now();
     let matchedRoom: ServerMatchRoom | undefined;
     for (const r of rooms.values()) {
       if (
         r.joinOpen &&
         r.mode === party.mode &&
+        r.mapId === partyMapId &&
         r.isRanked === party.isRanked &&
         now < r.waitingEndsAtMs - 1500 &&
-        r.humans.size + partySize <= 4
+        r.humans.size + partySize <= 20
       ) {
         matchedRoom = r;
         break;
@@ -1027,12 +1041,13 @@ export async function createExpressApp(
     if (!matchedRoom) {
       const seed = Math.floor(100000 + Math.random() * 899999);
       const roomId = `rm_${Date.now().toString(36)}_${seed.toString(36)}`;
-      const waitingEndsAtMs = now + 7500;
+      const waitingEndsAtMs = now + 10000;
       const planeStartedAtMs = waitingEndsAtMs;
       matchedRoom = {
         roomId,
         seed,
         mode: party.mode,
+        mapId: partyMapId,
         isRanked: party.isRanked,
         autoFillBots: party.autoFillBots,
         hostAccountId: party.members[0].accountId,
@@ -1041,7 +1056,7 @@ export async function createExpressApp(
         planeStartedAtMs,
         joinOpen: true,
         nextTeamId: 1,
-        airplane: createAirplaneRoute(seed, planeStartedAtMs),
+        airplane: createAirplaneRoute(seed, planeStartedAtMs, partyMapId),
         humans: new Map(),
         humanMeta: new Map(),
         vehicles: new Map(),
@@ -1050,7 +1065,7 @@ export async function createExpressApp(
         glooWalls: new Map(),
         killFeed: [],
         nextKillFeedId: 1,
-        aliveCount: 51,
+        aliveCount: 20,
         winnerTeamId: null,
         lastRequestMs: new Map(),
       };
@@ -1058,11 +1073,14 @@ export async function createExpressApp(
     }
 
     const assignedTeamId = matchedRoom.nextTeamId;
-    matchedRoom.nextTeamId = Math.min(12, matchedRoom.nextTeamId + 1);
+    matchedRoom.nextTeamId = Math.min(20, matchedRoom.nextTeamId + 1);
 
     party.members.forEach((m, idx) => {
       const slotInTeam = idx + 1;
       const isTeamLeader = m.accountId === party.leaderId;
+      const spawnSlotIdx = matchedRoom!.humans.size;
+      const spawnDx = ((spawnSlotIdx % 5) - 2) * 1.45;
+      const spawnDz = Math.floor(spawnSlotIdx / 5) * 1.45;
       const meta: RoomHumanSlot = {
         accountId: m.accountId,
         publicId: m.publicId,
@@ -1086,9 +1104,9 @@ export async function createExpressApp(
         slotInTeam,
         isTeamLeader,
         character: m.character,
-        x: -60 + idx * 2.4,
-        y: 2.2,
-        z: 68,
+        x: 2598 + spawnDx,
+        y: 18.12,
+        z: 2596 + spawnDz,
         yaw: 0,
         pitch: -0.14,
         stance: 'stand',

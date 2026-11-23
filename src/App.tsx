@@ -15,9 +15,12 @@ import {
   saveSettings,
 } from './game/storage';
 import {
+  BrMapId,
   CharacterConfig,
   GameSettings,
   GameState,
+  GameVariant,
+  GladiadoresFormat,
   HudSnapshot,
   MatchMode,
   MinimapBuilding,
@@ -26,6 +29,7 @@ import {
   PoiMarker,
   computeRankedPointDelta,
 } from './game/types';
+import { BERMUDA_MAP_RANGE } from './game/worldBuilder';
 import {
   MatchRoomJoinInfo,
   PartyInvitePayload,
@@ -75,6 +79,8 @@ const INITIAL_HUD: HudSnapshot = {
   glooCount: 2,
   grenadeCount: 2,
   ffCoins: 100,
+  mapId: 'bermuda',
+  gameVariant: 'br',
   isRanked: false,
   isPlacingGloo: false,
   glooSkin: 'classic',
@@ -126,10 +132,10 @@ const INITIAL_HUD: HudSnapshot = {
     timerSec: 90,
     currentX: 0,
     currentZ: 0,
-    currentRadius: 890,
+    currentRadius: 820,
     nextX: 0,
     nextZ: 0,
-    nextRadius: 560,
+    nextRadius: 480,
     damagePerSec: 2,
     playerOutside: false,
   },
@@ -190,7 +196,17 @@ export default function App() {
     buildings: MinimapBuilding[];
     roads: MinimapRoad[];
     pois: PoiMarker[];
-  }>({ buildings: [], roads: [], pois: [] });
+    mapId: BrMapId;
+    mapRange: number;
+    bermudaMinimapCanvas: HTMLCanvasElement | null;
+  }>({
+    buildings: [],
+    roads: [],
+    pois: [],
+    mapId: 'bermuda',
+    mapRange: BERMUDA_MAP_RANGE,
+    bermudaMinimapCanvas: null,
+  });
 
   const [settings, setSettings] = useState<GameSettings>(() => loadSettings());
   const [character, setCharacter] = useState<CharacterConfig>(() =>
@@ -230,6 +246,10 @@ export default function App() {
   const [isPaused, setIsPaused] = useState(false);
   const [isBackpackOpen, setIsBackpackOpen] = useState(false);
   const [isShopOpen, setIsShopOpen] = useState(false);
+  const [brMapId, setBrMapId] = useState<BrMapId>('bermuda');
+  const [gameVariant, setGameVariant] = useState<GameVariant>('br');
+  const [gladiadoresFormat, setGladiadoresFormat] = useState<GladiadoresFormat>('1v1');
+  const [gladiadoresTargetRounds, setGladiadoresTargetRounds] = useState<number>(5);
   const [matchMode, setMatchMode] = useState<MatchMode>('solo');
   const [isRanked, setIsRanked] = useState(false);
   const [lastRankDelta, setLastRankDelta] = useState<number | null>(null);
@@ -275,13 +295,19 @@ export default function App() {
   }, []);
 
   const syncPartyConfigState = useCallback((nextParty: PartyState) => {
+    const nextMap: BrMapId = nextParty.mapId === 'joao_pessoa' ? 'joao_pessoa' : 'bermuda';
     setParty(nextParty);
+    setBrMapId(nextMap);
     setMatchMode(nextParty.mode);
     setIsRanked(nextParty.isRanked);
     setAutoFillBots(nextParty.autoFillBots);
+    engineRef.current?.setBrMapId(nextMap);
     engineRef.current?.setMatchMode(nextParty.mode);
     engineRef.current?.setRankedMode(nextParty.isRanked);
     engineRef.current?.setAutoFillBots(nextParty.autoFillBots);
+    if (engineRef.current) {
+      setMapMeta(engineRef.current.getMapMetadata());
+    }
   }, []);
 
   const launchOnlineRoom = useCallback((joinInfo: MatchRoomJoinInfo, fillBotsOverride?: boolean) => {
@@ -408,6 +434,37 @@ export default function App() {
   // Keep 3D Lobby Squad characters synced side-by-side with current party & mode
   useEffect(() => {
     if (!engineRef.current) return;
+    if (gameVariant === 'gladiadores') {
+      if (gladiadoresFormat === '1v1' || !party || party.members.length === 0) {
+        engineRef.current.setLobbySquadMembers([
+          {
+            accountId: account?.id ?? -1,
+            nickname: profile.nickname,
+            modelId: character.modelId === 'eva' ? 'eva' : 'adam',
+            isLeader: true,
+            isSelf: true,
+          },
+        ]);
+        return;
+      }
+      engineRef.current.setLobbySquadMembers(
+        party.members.slice(0, 2).map((m) => ({
+          accountId: m.accountId,
+          nickname: m.nickname,
+          modelId:
+            m.accountId === account?.id
+              ? character.modelId === 'eva'
+                ? 'eva'
+                : 'adam'
+              : m.character?.modelId === 'eva'
+                ? 'eva'
+                : 'adam',
+          isLeader: m.isLeader,
+          isSelf: account ? m.accountId === account.id : false,
+        })),
+      );
+      return;
+    }
     if (matchMode === 'solo' || !party || party.members.length === 0) {
       engineRef.current.setLobbySquadMembers([
         {
@@ -436,7 +493,7 @@ export default function App() {
         isSelf: account ? m.accountId === account.id : false,
       })),
     );
-  }, [account, character.modelId, gameState, matchMode, party, profile.nickname]);
+  }, [account, character.modelId, gameState, gameVariant, gladiadoresFormat, matchMode, party, profile.nickname]);
 
   // Release pointer lock when Backpack / Shop / Pause opens & handle keyboard shortcuts to close
   useEffect(() => {
@@ -531,6 +588,15 @@ export default function App() {
       setIsBackpackOpen(false);
       setIsShopOpen(false);
 
+      if (
+        next === GameState.MENU ||
+        next === GameState.LOBBY ||
+        next === GameState.WAITING ||
+        next === GameState.PLAYING
+      ) {
+        setMapMeta(engine.getMapMetadata());
+      }
+
       if (next === GameState.LOBBY || next === GameState.MATCHMAKING) {
         setLastRankDelta(null);
       }
@@ -549,7 +615,7 @@ export default function App() {
       if (next === GameState.WIN || next === GameState.GAMEOVER) {
         activeLaunchedRoomIdRef.current = null;
         const snap = hudRef.current;
-        const rankedActive = engine.getRankedMode();
+        const rankedActive = snap.gameVariant !== 'gladiadores' && engine.getRankedMode();
         const isWin = next === GameState.WIN;
         const placement = isWin ? 1 : (snap.playerPlacement ?? Math.max(2, snap.aliveCount));
         const curProfile = profileRef.current;
@@ -703,8 +769,43 @@ export default function App() {
     }
   };
 
+  const handleChangeBrMap = (nextMap: BrMapId) => {
+    setBrMapId(nextMap);
+    engineRef.current?.setBrMapId(nextMap);
+    if (engineRef.current) {
+      setMapMeta(engineRef.current.getMapMetadata());
+    }
+    if (account) {
+      void multiplayerClient
+        .setPartyConfig({ mapId: nextMap })
+        .then((res) => syncPartyConfigState(res.party))
+        .catch(() => undefined);
+    }
+  };
+
+  const handleChangeGameVariant = (variant: GameVariant) => {
+    setGameVariant(variant);
+    engineRef.current?.setGameVariant(variant);
+  };
+
+  const handleChangeGladiadoresFormat = (fmt: GladiadoresFormat) => {
+    setGladiadoresFormat(fmt);
+    engineRef.current?.setGladiadoresFormat(fmt);
+  };
+
+  const handleChangeGladiadoresTargetRounds = (rounds: number) => {
+    setGladiadoresTargetRounds(rounds);
+    engineRef.current?.setGladiadoresTargetRounds(rounds);
+  };
+
   const handleStartMatch = async () => {
     if (!engineRef.current) return;
+    if (gameVariant === 'gladiadores') {
+      engineRef.current.setGladiadoresFormat(gladiadoresFormat);
+      engineRef.current.setGladiadoresTargetRounds(gladiadoresTargetRounds);
+      engineRef.current.startGladiadoresMatch();
+      return;
+    }
     if (account) {
       setOnlineStarting(true);
       try {
@@ -819,12 +920,17 @@ export default function App() {
         <LobbyScreen
           profile={profile}
           character={character}
+          brMapId={brMapId}
+          gameVariant={gameVariant}
+          gladiadoresFormat={gladiadoresFormat}
+          gladiadoresTargetRounds={gladiadoresTargetRounds}
           matchMode={matchMode}
           isRanked={isRanked}
           autoFillBots={autoFillBots}
           account={account}
           party={party}
           invites={invites}
+          onChangeGladiadoresFormat={handleChangeGladiadoresFormat}
           onChangeMatchMode={handleChangeMatchMode}
           onChangeRanked={handleChangeRanked}
           onChangeAutoFillBots={handleChangeAutoFillBots}
@@ -924,6 +1030,9 @@ export default function App() {
           buildings={mapMeta.buildings}
           roads={mapMeta.roads}
           pois={mapMeta.pois}
+          mapId={mapMeta.mapId}
+          mapRange={mapMeta.mapRange}
+          bermudaMinimapCanvas={mapMeta.bermudaMinimapCanvas}
           input={engineRef.current.input}
           controlMode={settings.controlMode}
           keyBindings={settings.keyBindings}
@@ -1156,11 +1265,19 @@ export default function App() {
 
       {showModeModal && (
         <ModeSelectModal
+          brMapId={brMapId}
+          gameVariant={gameVariant}
+          gladiadoresFormat={gladiadoresFormat}
+          gladiadoresTargetRounds={gladiadoresTargetRounds}
           matchMode={matchMode}
           isRanked={isRanked}
           autoFillBots={autoFillBots}
           rankPoints={profile.rankPoints}
           isPartyLeader={!party || !account || party.leaderId === account.id}
+          onChangeBrMap={handleChangeBrMap}
+          onChangeGameVariant={handleChangeGameVariant}
+          onChangeGladiadoresFormat={handleChangeGladiadoresFormat}
+          onChangeGladiadoresTargetRounds={handleChangeGladiadoresTargetRounds}
           onChangeMatchMode={handleChangeMatchMode}
           onChangeRanked={handleChangeRanked}
           onChangeAutoFillBots={handleChangeAutoFillBots}

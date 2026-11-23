@@ -1,6 +1,15 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
+  BERMUDA_GLB_MAP_RANGE,
+  BERMUDA_GLB_WATER_Y,
+  ExternalWorldAssets,
+  MeshCollisionGrid,
+  extractAirplanePropellers,
+  extractBermudaBuildingSpots,
+  generateBermudaMinimapCanvas,
+} from './externalAssets';
+import {
   cloneCharacterScene,
   FF_SCENE_SCALE,
   FFModelId,
@@ -42,6 +51,7 @@ import {
 } from './jpLandmarks';
 import {
   AttachmentKind,
+  BrMapId,
   BuildingNavZone,
   DeathBoxItemEntry,
   GraphicsQuality,
@@ -55,6 +65,7 @@ import {
   VehicleKind,
   WalkablePlatform,
   WeaponId,
+  WEAPONS,
   WorldObbCollider,
 } from './types';
 import { isMobileHardware } from './storage';
@@ -106,6 +117,7 @@ export interface TargetDummy {
   knockedByPlayer: boolean;
   downTimer: number;
   eliminated: boolean;
+  waitingActive?: boolean;
   kills: number;
   hitFlash: number;
   chestOffsetY: number;
@@ -239,7 +251,17 @@ export interface WorldHandle {
   camera: THREE.PerspectiveCamera;
   sunLight: THREE.DirectionalLight;
   airplaneGroup: THREE.Group;
-  airplaneProps: THREE.Mesh[];
+  airplaneProps: THREE.Object3D[];
+  waitLobbyGroup: THREE.Group;
+  gladiadoresGroup: THREE.Group;
+  waitCollisionGrid: MeshCollisionGrid;
+  gladiadoresCollisionGrid: MeshCollisionGrid;
+  bermudaCollisionGrid: MeshCollisionGrid;
+  bermudaMinimapCanvas: HTMLCanvasElement | null;
+  bermudaMapRange: number;
+  getActiveBrMap: () => BrMapId;
+  setActiveBrMap: (mapId: BrMapId) => void;
+  attachExternalWorldModels: (assets: ExternalWorldAssets) => void;
   safeZoneMesh: THREE.Mesh;
   colliders: WorldObbCollider[];
   staticColliderCount: number;
@@ -289,7 +311,19 @@ export interface WorldHandle {
 export const BERMUDA_HALF = 660;
 export const BERMUDA_MAP_RANGE = 690;
 export const HAS_SENTOSA = true;
-export const WAIT_SPAWN = { x: -20, z: -372 } as const;
+export const WAIT_LOBBY_ORIGIN = { x: 2600, y: 18, z: 2600 } as const;
+export const WAIT_SPAWN = {
+  x: WAIT_LOBBY_ORIGIN.x - 2.0,
+  z: WAIT_LOBBY_ORIGIN.z - 4.0,
+} as const;
+export const GLADIADORES_ORIGIN = { x: -2600, y: 18, z: -2600 } as const;
+export const GLADIADORES_FLOOR_Y = GLADIADORES_ORIGIN.y + 0.57;
+export const GLADIADORES_BOUNDS = {
+  minX: GLADIADORES_ORIGIN.x - 29.0,
+  maxX: GLADIADORES_ORIGIN.x - 2.0,
+  minZ: GLADIADORES_ORIGIN.z - 19.0,
+  maxZ: GLADIADORES_ORIGIN.z + 19.0,
+} as const;
 export const SENTOSA_CENTER = { x: 475, z: -265 } as const;
 
 export const POIS: PoiMarker[] = [
@@ -798,9 +832,10 @@ function createVendingMachineProp(
   label: string,
   colliders: WorldObbCollider[],
   obstacleMeshes: THREE.Object3D[],
+  groundYOverride?: number,
 ): { group: THREE.Group; data: VendingMachineProp } {
   const group = new THREE.Group();
-  const y = sampleGroundHeight(x, z);
+  const y = groundYOverride !== undefined ? groundYOverride : sampleGroundHeight(x, z);
   group.position.set(x, y, z);
   group.rotation.y = rotY;
 
@@ -872,10 +907,11 @@ function createDrivableVehicle(
   rotY: number,
   colliders: WorldObbCollider[],
   obstacleMeshes: THREE.Object3D[],
+  groundYOverride?: number,
 ): VehicleEntity {
   const isSports = kind === 'sport';
   const maxHp = isSports ? 420 : 620;
-  const y = sampleGroundHeight(x, z);
+  const y = groundYOverride !== undefined ? groundYOverride : sampleGroundHeight(x, z);
 
   const group = new THREE.Group();
   group.position.set(x, y, z);
@@ -2013,6 +2049,14 @@ export function createIslandWorld(
   scene.add(sunLight);
   scene.add(sunLight.target);
 
+  const joaoPessoaGroup = new THREE.Group();
+  joaoPessoaGroup.visible = false;
+  scene.add(joaoPessoaGroup);
+
+  const bermudaGroup = new THREE.Group();
+  bermudaGroup.visible = true;
+  scene.add(bermudaGroup);
+
   const colliders: WorldObbCollider[] = [];
   const platforms: WalkablePlatform[] = [];
   const obstacleMeshes: THREE.Object3D[] = [];
@@ -2112,7 +2156,7 @@ export function createIslandWorld(
   const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
   terrainMesh.name = 'terrain-mesh';
   terrainMesh.receiveShadow = true;
-  scene.add(terrainMesh);
+  joaoPessoaGroup.add(terrainMesh);
   obstacleMeshes.push(terrainMesh);
 
   // 2. Tropical Atlantic Ocean & Turquoise Coastal Reefs (44x44 lightweight mesh)
@@ -2154,7 +2198,21 @@ export function createIslandWorld(
   const water = new THREE.Mesh(waterGeo, waterMat);
   water.position.y = -0.35;
   water.receiveShadow = false;
-  scene.add(water);
+  joaoPessoaGroup.add(water);
+
+  // Seamless surrounding tropical ocean skirt for Bermuda 3D map
+  const bermudaOceanSkirt = new THREE.Mesh(
+    new THREE.PlaneGeometry(4600, 4600),
+    new THREE.MeshStandardMaterial({
+      map: textures.waterWave,
+      color: 0x1680b0,
+      roughness: 0.28,
+      metalness: 0.18,
+    }),
+  );
+  bermudaOceanSkirt.rotation.x = -Math.PI / 2;
+  bermudaOceanSkirt.position.y = BERMUDA_GLB_WATER_Y - 0.18;
+  bermudaGroup.add(bermudaOceanSkirt);
 
   // 3. Distant Horizon Coastal Headlands (12 low-cost islands/dunes)
   const mountainMat = new THREE.MeshStandardMaterial({
@@ -2176,7 +2234,7 @@ export function createIslandWorld(
     mountains.setMatrixAt(i, dummy.matrix);
   }
   mountains.computeBoundingSphere();
-  scene.add(mountains);
+  joaoPessoaGroup.add(mountains);
 
   // 4. Terrain-Conforming Continuous Asphalt Highways, Dirt Eco-Trails & Calçadão de Pedra Portuguesa!
   const dirtRoadMat = new THREE.MeshStandardMaterial({
@@ -2272,13 +2330,13 @@ export function createIslandWorld(
   if (asphaltGeos.length > 0) {
     const mAsphalt = new THREE.Mesh(mergeGeometries(asphaltGeos, false), asphaltRoadMat);
     mAsphalt.receiveShadow = true;
-    scene.add(mAsphalt);
+    joaoPessoaGroup.add(mAsphalt);
     asphaltGeos.forEach((g) => g.dispose());
   }
   if (dirtGeos.length > 0) {
     const mDirt = new THREE.Mesh(mergeGeometries(dirtGeos, false), dirtRoadMat);
     mDirt.receiveShadow = true;
-    scene.add(mDirt);
+    joaoPessoaGroup.add(mDirt);
     dirtGeos.forEach((g) => g.dispose());
   }
 
@@ -2295,7 +2353,7 @@ export function createIslandWorld(
   if (calcGeos.length > 0) {
     const calcMesh = new THREE.Mesh(mergeGeometries(calcGeos, false), calcadaoMat);
     calcMesh.receiveShadow = true;
-    scene.add(calcMesh);
+    joaoPessoaGroup.add(calcMesh);
     calcGeos.forEach((g) => g.dispose());
   }
 
@@ -2429,25 +2487,25 @@ export function createIslandWorld(
 
   // 5. Bridges over Rio Paraíba / Sanhauá + Wooden Reef Bridge to Ilha de Areia Vermelha
   const ponteSanhauaZ = riverCenterZ(-215);
-  scene.add(
+  joaoPessoaGroup.add(
     createBridge(-215, ponteSanhauaZ, 9.2, 50, 3.4, 0, concreteMat, steelMat, colliders, platforms, obstacleMeshes),
   );
   buildings.push({ x: -215, z: ponteSanhauaZ, w: 9.2, d: 50, rotY: 0, kind: 'bridge' });
 
   const ponteJacareZ = riverCenterZ(-20);
-  scene.add(
+  joaoPessoaGroup.add(
     createBridge(-20, ponteJacareZ, 10.0, 50, 3.6, 0, concreteMat, whiteModernMat, colliders, platforms, obstacleMeshes),
   );
   buildings.push({ x: -20, z: ponteJacareZ, w: 10.0, d: 50, rotY: 0, kind: 'bridge' });
 
   const ponteCabedeloZ = riverCenterZ(195);
-  scene.add(
+  joaoPessoaGroup.add(
     createBridge(195, ponteCabedeloZ, 9.6, 50, 3.4, 0, concreteMat, steelMat, colliders, platforms, obstacleMeshes),
   );
   buildings.push({ x: 195, z: ponteCabedeloZ, w: 9.6, d: 50, rotY: 0, kind: 'bridge' });
 
   // Wooden Reef Walkway to Ilha de Areia Vermelha
-  scene.add(
+  joaoPessoaGroup.add(
     createBridge(AREIA_BRIDGE.x, AREIA_BRIDGE.z, 8.2, 84, AREIA_BRIDGE.targetH, AREIA_BRIDGE_ROT, woodWallMat, steelMat, colliders, platforms, obstacleMeshes),
   );
   buildings.push({ x: AREIA_BRIDGE.x, z: AREIA_BRIDGE.z, w: 8.2, d: 84, rotY: AREIA_BRIDGE_ROT, kind: 'bridge' });
@@ -2471,7 +2529,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(letreiro);
+    joaoPessoaGroup.add(letreiro);
     cullableStructures.push({ obj: letreiro, x: lx, z: lz, radiusScale: 1.2 });
     buildings.push({ x: lx, z: lz, w: 4, d: 20, rotY: 0, kind: 'letreiro' });
   }
@@ -2490,7 +2548,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(hotel.group);
+    joaoPessoaGroup.add(hotel.group);
     cullableStructures.push({ obj: hotel.group, x: hx, z: hz, radiusScale: 1.4 });
     buildings.push({ x: hx, z: hz, w: 42, d: 42, rotY: 0, kind: 'hotelTambau' });
     buildingNavZones.push(...hotel.navZones);
@@ -2511,7 +2569,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(farol);
+    joaoPessoaGroup.add(farol);
     cullableStructures.push({ obj: farol, x: fx, z: fz, radiusScale: 1.35 });
     buildings.push({ x: fx, z: fz, w: 14, d: 14, rotY: 0, kind: 'farol' });
   }
@@ -2530,7 +2588,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(estacao.group);
+    joaoPessoaGroup.add(estacao.group);
     cullableStructures.push({ obj: estacao.group, x: ex, z: ez, radiusScale: 1.45 });
     buildings.push({ x: ex, z: ez, w: 30, d: 30, rotY: 0, kind: 'estacao' });
     buildingNavZones.push(...estacao.navZones);
@@ -2560,7 +2618,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(res.group);
+    joaoPessoaGroup.add(res.group);
     cullableStructures.push({ obj: res.group, x: sx, z: sz, radiusScale: 1.55 });
     buildings.push({ x: sx, z: sz, w: sw, d: sd, rotY: srot, kind: 'skyscraper' });
     buildingNavZones.push(...res.navZones);
@@ -2582,7 +2640,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(igreja.group);
+    joaoPessoaGroup.add(igreja.group);
     cullableStructures.push({ obj: igreja.group, x: ix, z: iz, radiusScale: 1.4 });
     buildings.push({ x: ix, z: iz, w: 14, d: 20, rotY: Math.PI / 2, kind: 'igreja' });
     buildingNavZones.push(...igreja.navZones);
@@ -2603,7 +2661,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(lagoa);
+    joaoPessoaGroup.add(lagoa);
     cullableStructures.push({ obj: lagoa, x: lx, z: lz, radiusScale: 1.8 });
     buildings.push({ x: lx, z: lz, w: 94, d: 94, rotY: 0, kind: 'lagoa' });
   }
@@ -2634,7 +2692,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(q);
+    joaoPessoaGroup.add(q);
     cullableStructures.push({ obj: q, x: qx, z: qz, radiusScale: 0.8 });
     buildings.push({ x: qx, z: qz, w: 7, d: 7, rotY: qrot, kind: 'quiosque' });
   });
@@ -2657,7 +2715,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(pier);
+    joaoPessoaGroup.add(pier);
     cullableStructures.push({ obj: pier, x: px, z: pz, radiusScale: 1.1 });
     buildings.push({ x: px, z: pz, w: 5.2, d: 28, rotY: prot, kind: 'pier' });
   });
@@ -2714,7 +2772,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(houseRes.group);
+    joaoPessoaGroup.add(houseRes.group);
     cullableStructures.push({ obj: houseRes.group, x: hx, z: hz, radiusScale: 1.0 });
     buildingNavZones.push(houseRes.navZone);
     buildings.push({
@@ -2750,7 +2808,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(res.group);
+    joaoPessoaGroup.add(res.group);
     cullableStructures.push({ obj: res.group, x: bx, z: bz, radiusScale: 1.25 });
     buildings.push({ x: bx, z: bz, w: 10.8, d: 10.6, rotY: brot, kind: 'casaL' });
     buildingNavZones.push(res.navZone);
@@ -2778,7 +2836,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(res.group);
+    joaoPessoaGroup.add(res.group);
     cullableStructures.push({ obj: res.group, x: bx, z: bz, radiusScale: 1.22 });
     buildings.push({ x: bx, z: bz, w: 9.8, d: 9.8, rotY: brot, kind: 'casaGod' });
     buildingNavZones.push(res.navZone);
@@ -2804,7 +2862,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(res.group);
+    joaoPessoaGroup.add(res.group);
     cullableStructures.push({ obj: res.group, x: bx, z: bz, radiusScale: 1.3 });
     buildings.push({ x: bx, z: bz, w: 10.6, d: 14.0, rotY: brot, kind: 'celeiro' });
     buildingNavZones.push(res.navZone);
@@ -2834,7 +2892,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(res.group);
+    joaoPessoaGroup.add(res.group);
     cullableStructures.push({ obj: res.group, x: bx, z: bz, radiusScale: 1.15 });
     buildings.push({ x: bx, z: bz, w: 8.8, d: 7.8, rotY: brot, kind: 'sobrado' });
     buildingNavZones.push(res.navZone);
@@ -2865,7 +2923,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(res.group);
+    joaoPessoaGroup.add(res.group);
     cullableStructures.push({ obj: res.group, x: bx, z: bz, radiusScale: 0.78 });
     buildings.push({ x: bx, z: bz, w: 3.4, d: 3.4, rotY: brot, kind: 'guarita' });
     buildingNavZones.push(res.navZone);
@@ -2896,7 +2954,7 @@ export function createIslandWorld(
       platforms,
       obstacleMeshes,
     );
-    scene.add(shedObj);
+    joaoPessoaGroup.add(shedObj);
     cullableStructures.push({ obj: shedObj, x: sx, z: sz, radiusScale: 1.08 });
     buildings.push({ x: sx, z: sz, w: sw, d: sd, rotY: srot, kind: 'shed' });
     const cos = Math.cos(srot);
@@ -2928,7 +2986,7 @@ export function createIslandWorld(
   const runway = new THREE.Mesh(new THREE.BoxGeometry(12, 0.16, 60), concreteMat);
   runway.position.set(-20, runwayY + 0.04, -376);
   runway.receiveShadow = true;
-  scene.add(runway);
+  joaoPessoaGroup.add(runway);
   platforms.push({
     cx: -20,
     cz: -376,
@@ -2960,7 +3018,7 @@ export function createIslandWorld(
       obstacleMeshes,
       yOff,
     );
-    scene.add(cObj);
+    joaoPessoaGroup.add(cObj);
     cullableStructures.push({ obj: cObj, x: cx, z: cz, radiusScale: 0.85 });
     buildings.push({ x: cx, z: cz, w: 2.6, d: 6.2, rotY: crot, kind: 'container' });
   });
@@ -2974,7 +3032,7 @@ export function createIslandWorld(
   ];
   wtCoords.forEach(([wx, wz]) => {
     const wt = createWatchTowerLOD(wx, wz, concreteMat, steelMat, colliders, obstacleMeshes);
-    scene.add(wt);
+    joaoPessoaGroup.add(wt);
     cullableStructures.push({ obj: wt, x: wx, z: wz, radiusScale: 1.25 });
     buildings.push({ x: wx, z: wz, w: 7.2, d: 7.2, rotY: 0, kind: 'tower' });
   });
@@ -2990,7 +3048,7 @@ export function createIslandWorld(
     { id: 'vm_porto', x: -146, z: 294, rotY: -0.6, label: 'Lojinha Porto Sanhauá' },
     { id: 'vm_bessa', x: 208, z: -322, rotY: 0.4, label: 'Lojinha Bessa' },
   ];
-  const vendingMachines: VendingMachineProp[] = vendingSpecs.map((vs) => {
+  const jpVendingMachines: VendingMachineProp[] = vendingSpecs.map((vs) => {
     const vm = createVendingMachineProp(
       vs.id,
       vs.x,
@@ -3000,7 +3058,7 @@ export function createIslandWorld(
       colliders,
       obstacleMeshes,
     );
-    scene.add(vm.group);
+    joaoPessoaGroup.add(vm.group);
     cullableStructures.push({ obj: vm.group, x: vs.x, z: vs.z, radiusScale: 0.7 });
     return vm.data;
   });
@@ -3043,7 +3101,7 @@ export function createIslandWorld(
     });
   });
   barrierInst.computeBoundingSphere();
-  scene.add(barrierInst);
+  joaoPessoaGroup.add(barrierInst);
   obstacleMeshes.push(barrierInst);
 
   const crateCoords: Array<[number, number, number]> = [
@@ -3079,7 +3137,7 @@ export function createIslandWorld(
     });
   });
   crateInst.computeBoundingSphere();
-  scene.add(crateInst);
+  joaoPessoaGroup.add(crateInst);
   obstacleMeshes.push(crateInst);
 
   const barrelCoords: Array<[number, number]> = [
@@ -3110,7 +3168,7 @@ export function createIslandWorld(
   barrelInst.receiveShadow = true;
   barrelInst.userData.isExplosiveBarrelInst = true;
 
-  const explosiveBarrels: ExplosiveBarrel[] = [];
+  const jpExplosiveBarrels: ExplosiveBarrel[] = [];
   const barrelColliders: WorldObbCollider[] = [];
   barrelCoords.forEach(([bx, bz], idx) => {
     const by = sampleGroundHeight(bx, bz);
@@ -3119,7 +3177,7 @@ export function createIslandWorld(
     dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
     barrelInst.setMatrixAt(idx, dummy.matrix);
-    explosiveBarrels.push({
+    jpExplosiveBarrels.push({
       id: `barrel_${idx}`,
       x: bx,
       y: by + 0.625,
@@ -3141,41 +3199,8 @@ export function createIslandWorld(
     barrelColliders.push(col);
   });
   barrelInst.computeBoundingSphere();
-  scene.add(barrelInst);
+  joaoPessoaGroup.add(barrelInst);
   obstacleMeshes.push(barrelInst);
-
-  const hideExplosiveBarrel = (idx: number) => {
-    const eb = explosiveBarrels[idx];
-    if (!eb || eb.exploded) return;
-    eb.exploded = true;
-    dummy.position.set(eb.x, -50, eb.z);
-    dummy.scale.set(0.001, 0.001, 0.001);
-    dummy.updateMatrix();
-    barrelInst.setMatrixAt(idx, dummy.matrix);
-    barrelInst.instanceMatrix.needsUpdate = true;
-    const col = barrelColliders[idx];
-    if (col) {
-      col.minY = -99;
-      col.maxY = -98;
-    }
-  };
-  const resetExplosiveBarrels = () => {
-    for (let i = 0; i < explosiveBarrels.length; i++) {
-      const eb = explosiveBarrels[i];
-      eb.exploded = false;
-      dummy.position.set(eb.x, eb.y, eb.z);
-      dummy.rotation.set(0, i * 0.5, 0);
-      dummy.scale.set(1, 1, 1);
-      dummy.updateMatrix();
-      barrelInst.setMatrixAt(i, dummy.matrix);
-      const col = barrelColliders[i];
-      if (col) {
-        col.minY = eb.y - 0.625;
-        col.maxY = eb.y + 0.655;
-      }
-    }
-    barrelInst.instanceMatrix.needsUpdate = true;
-  };
 
   // 6 Tactical Launch Pads ("Lançadores" across João Pessoa!)
   const launchPadSpecs: Array<[number, number, number, number, string]> = [
@@ -3186,7 +3211,7 @@ export function createIslandWorld(
     [452, -264, 255, -135, 'LANÇADOR -> MANAÍRA'],
     [-10, -352, -175, -15, 'LANÇADOR -> A LAGOA'],
   ];
-  const launchPads: LaunchPadProp[] = [];
+  const jpLaunchPads: LaunchPadProp[] = [];
   const padBaseGeo = new THREE.CylinderGeometry(1.15, 1.35, 0.25, 14);
   const padPlateGeo = new THREE.BoxGeometry(1.3, 0.14, 1.6);
   const padBaseMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5, metalness: 0.6 });
@@ -3205,9 +3230,9 @@ export function createIslandWorld(
     plate.position.set(0, 0.26, 0.15);
     plate.rotation.x = -0.48;
     padG.add(base, plate);
-    scene.add(padG);
+    joaoPessoaGroup.add(padG);
     cullableStructures.push({ obj: padG, x: lx, z: lz, radiusScale: 0.7 });
-    launchPads.push({
+    jpLaunchPads.push({
       x: lx,
       y: ly,
       z: lz,
@@ -3293,12 +3318,12 @@ export function createIslandWorld(
       });
     });
     muretaInst.computeBoundingSphere();
-    scene.add(muretaInst);
+    joaoPessoaGroup.add(muretaInst);
     obstacleMeshes.push(muretaInst);
   }
 
   // Batched InstancedMesh Coqueiros, Mata Atlântica, Ipês Amarelos, Arbustos, Guarda-sóis & Postes!
-  const foliageCtrl = createInstancedJoaoPessoaFoliage(scene, {
+  const foliageCtrl = createInstancedJoaoPessoaFoliage(joaoPessoaGroup, {
     sampleGroundHeight,
     isOnRoad: isOnRoadCheck,
     isInsideBuildingFootprint,
@@ -3309,7 +3334,52 @@ export function createIslandWorld(
   });
 
   // Capture staticColliderCount BEFORE dynamic vehicles & runtime gloo walls!
-  const staticColliderCount = colliders.length;
+  const jpStaticColliders = [...colliders];
+  const jpPlatforms = [...platforms];
+  const jpBuildingNavZones = [...buildingNavZones];
+  const jpObstacleMeshes = [...obstacleMeshes];
+  const jpBuildings = [...buildings];
+  const jpRoads = [...roads];
+  const jpPois = [...POIS];
+
+  let activeBrMap: BrMapId = 'bermuda';
+  const bermudaCollisionGrid = new MeshCollisionGrid(8.0);
+  let bermudaAttached = false;
+  let bermudaMinimapCanvas: HTMLCanvasElement | null = null;
+
+  const bermudaStaticColliders: WorldObbCollider[] = [];
+  const bermudaPlatforms: WalkablePlatform[] = [];
+  const bermudaBuildingNavZones: BuildingNavZone[] = [];
+  const bermudaObstacleMeshes: THREE.Object3D[] = [];
+  const bermudaBuildings: MinimapBuilding[] = [];
+  const bermudaRoads: MinimapRoad[] = [];
+  const bermudaPois: PoiMarker[] = [
+    { name: 'CLOCK TOWER', x: -256.5, z: -173.4, radius: 75 },
+    { name: 'POCHINOK', x: -125.0, z: -162.9, radius: 75 },
+    { name: 'PEAK', x: -77.0, z: -264.4, radius: 85 },
+    { name: 'MILL', x: 0.0, z: -407.9, radius: 70 },
+    { name: 'FACTORY', x: 105.5, z: -131.4, radius: 80 },
+    { name: 'BIMASAKTI STRIP', x: 53.5, z: -257.4, radius: 80 },
+    { name: 'HANGAR', x: 259.0, z: -199.4, radius: 75 },
+    { name: 'AEROPORTO', x: 447.0, z: 23.1, radius: 90 },
+    { name: 'OBSERVATÓRIO', x: -345.5, z: -3.4, radius: 75 },
+    { name: 'RIM NAM VILLAGE', x: -372.0, z: -171.9, radius: 75 },
+    { name: 'KOTA TUA', x: 295.0, z: 165.0, radius: 75 },
+    { name: 'MARS ELECTRIC', x: -35.0, z: 185.0, radius: 80 },
+  ];
+  const bermudaVendingMachines: VendingMachineProp[] = [];
+  const bermudaExplosiveBarrels: ExplosiveBarrel[] = [];
+  const bermudaBarrelColliders: WorldObbCollider[] = [];
+  let bermudaBarrelInst: THREE.InstancedMesh | null = null;
+  const bermudaLaunchPads: LaunchPadProp[] = [];
+  const bermudaVehicles: VehicleEntity[] = [];
+
+  const groundHeightAt = (x: number, z: number): number => {
+    if (activeBrMap === 'bermuda' && bermudaAttached) {
+      return bermudaCollisionGrid.sampleTerrainHeight(x, z, BERMUDA_GLB_WATER_Y);
+    }
+    return sampleGroundHeight(x, z);
+  };
 
   // Build 2D Spatial Hash Grid (32m x 32m cells covering -1024..+1024) for fast O(1) collision & platform queries
   const GRID_HALF_SPAN = 1024;
@@ -3317,13 +3387,13 @@ export function createIslandWorld(
   const GRID_DIM = 64;
   const colliderBuckets: number[][] = Array.from({ length: GRID_DIM * GRID_DIM }, () => []);
   const platformBuckets: number[][] = Array.from({ length: GRID_DIM * GRID_DIM }, () => []);
-  const colStamp = new Uint32Array(Math.max(1, staticColliderCount));
-  const platStamp = new Uint32Array(Math.max(1, platforms.length));
+  const colStamp = new Uint32Array(Math.max(1, jpStaticColliders.length));
+  const platStamp = new Uint32Array(Math.max(1, jpPlatforms.length));
   let colQuerySeq = 1;
   let platQuerySeq = 1;
 
-  for (let i = 0; i < staticColliderCount; i++) {
-    const c = colliders[i];
+  for (let i = 0; i < jpStaticColliders.length; i++) {
+    const c = jpStaticColliders[i];
     const cos = Math.abs(Math.cos(c.rotY));
     const sin = Math.abs(Math.sin(c.rotY));
     const ex = cos * c.halfW + sin * c.halfD;
@@ -3340,8 +3410,8 @@ export function createIslandWorld(
     }
   }
 
-  for (let i = 0; i < platforms.length; i++) {
-    const p = platforms[i];
+  for (let i = 0; i < jpPlatforms.length; i++) {
+    const p = jpPlatforms[i];
     const cos = Math.abs(Math.cos(p.rotY));
     const sin = Math.abs(Math.sin(p.rotY));
     const ex = cos * p.halfW + sin * p.halfD + 0.5;
@@ -3365,6 +3435,16 @@ export function createIslandWorld(
     out: WorldObbCollider[],
   ): void => {
     out.length = 0;
+    if (activeBrMap === 'bermuda') {
+      const pad = radius + 1.5;
+      for (let i = 0; i < bermudaStaticColliders.length; i++) {
+        const c = bermudaStaticColliders[i];
+        if (Math.abs(c.cx - x) <= pad && Math.abs(c.cz - z) <= pad) {
+          out.push(c);
+        }
+      }
+      return;
+    }
     if (colQuerySeq >= 0xfffffffe) {
       colStamp.fill(0);
       colQuerySeq = 1;
@@ -3382,7 +3462,7 @@ export function createIslandWorld(
           const idx = bucket[b];
           if (colStamp[idx] !== seq) {
             colStamp[idx] = seq;
-            out.push(colliders[idx]);
+            out.push(jpStaticColliders[idx]);
           }
         }
       }
@@ -3390,8 +3470,8 @@ export function createIslandWorld(
   };
 
   const navBuckets: number[][] = Array.from({ length: GRID_DIM * GRID_DIM }, () => []);
-  for (let i = 0; i < buildingNavZones.length; i++) {
-    const nz = buildingNavZones[i];
+  for (let i = 0; i < jpBuildingNavZones.length; i++) {
+    const nz = jpBuildingNavZones[i];
     const cos = Math.abs(Math.cos(nz.rotY));
     const sin = Math.abs(Math.sin(nz.rotY));
     const ex = cos * nz.halfW + sin * nz.halfD + 0.8;
@@ -3409,11 +3489,20 @@ export function createIslandWorld(
   }
 
   const findBuildingNavZoneAt = (x: number, z: number): BuildingNavZone | null => {
+    if (activeBrMap === 'bermuda') {
+      for (let i = 0; i < bermudaBuildingNavZones.length; i++) {
+        const nz = bermudaBuildingNavZones[i];
+        if (Math.abs(x - nz.cx) <= nz.halfW + 0.5 && Math.abs(z - nz.cz) <= nz.halfD + 0.5) {
+          return nz;
+        }
+      }
+      return null;
+    }
     const gx = THREE.MathUtils.clamp(Math.floor((x + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
     const gz = THREE.MathUtils.clamp(Math.floor((z + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
     const bucket = navBuckets[gz * GRID_DIM + gx];
     for (let b = 0; b < bucket.length; b++) {
-      const nz = buildingNavZones[bucket[b]];
+      const nz = jpBuildingNavZones[bucket[b]];
       const dx = x - nz.cx;
       const dz = z - nz.cz;
       const maxE = nz.halfW + nz.halfD + 0.5;
@@ -3442,6 +3531,7 @@ export function createIslandWorld(
     out: WalkablePlatform[],
   ): void => {
     out.length = 0;
+    if (activeBrMap === 'bermuda') return;
     if (platQuerySeq >= 0xfffffffe) {
       platStamp.fill(0);
       platQuerySeq = 1;
@@ -3454,7 +3544,7 @@ export function createIslandWorld(
       const idx = bucket[b];
       if (platStamp[idx] !== seq) {
         platStamp[idx] = seq;
-        out.push(platforms[idx]);
+        out.push(jpPlatforms[idx]);
       }
     }
   };
@@ -3470,7 +3560,7 @@ export function createIslandWorld(
     { id: 'veh_6', kind: 'jeep', x: -272, z: 162, rotY: 0.8 }, // Centro Histórico
     { id: 'veh_7', kind: 'sport', x: -14, z: -354, rotY: 0.2 }, // Aeroclube
   ];
-  const vehicles: VehicleEntity[] = vehicleSpecs.map((spec) => {
+  const jpVehicles: VehicleEntity[] = vehicleSpecs.map((spec) => {
     const v = createDrivableVehicle(
       spec.id,
       spec.kind,
@@ -3480,9 +3570,10 @@ export function createIslandWorld(
       colliders,
       obstacleMeshes,
     );
-    scene.add(v.group);
+    joaoPessoaGroup.add(v.group);
     return v;
   });
+  const vehicles: VehicleEntity[] = [];
 
   // 13. 30 Real Parachuting, Looting & Tactical Combat AI Bots
   const BOT_NICKS = [
@@ -4213,17 +4304,41 @@ export function createIslandWorld(
   };
 
   const loots: LootVisual[] = [];
-  const pendingLootDefs = lootDefs.map((ld, idx) => ({
+  const jpPendingLootDefs = lootDefs.map((ld, idx) => ({
     ...ld,
     id: `loot_${idx}`,
     spawned: false,
   }));
+  const bermudaPendingLootDefs: Array<{
+    x: number;
+    z: number;
+    yOverride?: number;
+    kind: LootItem['kind'];
+    weaponId?: WeaponId;
+    scopeType?: ScopeType;
+    attachmentKind?: LootItem['attachmentKind'];
+    level?: 1 | 2 | 3;
+    glooAmount?: number;
+    grenadeAmount?: number;
+    deathLoot?: LootItem['deathLoot'];
+    ammoAmount?: number;
+    coinAmount?: number;
+    label: string;
+    id: string;
+    spawned: boolean;
+  }> = [];
+
+  const getActiveLootDefs = () =>
+    activeBrMap === 'bermuda' && bermudaPendingLootDefs.length > 0
+      ? bermudaPendingLootDefs
+      : jpPendingLootDefs;
 
   const syncProximityLoot = (px: number, pz: number, radius = 56, maxPerTick = 24) => {
+    const activeDefs = getActiveLootDefs();
     const rSq = radius * radius;
     let spawnedThisTick = 0;
-    for (let i = 0; i < pendingLootDefs.length; i++) {
-      const entry = pendingLootDefs[i];
+    for (let i = 0; i < activeDefs.length; i++) {
+      const entry = activeDefs[i];
       if (entry.spawned) continue;
       const dx = entry.x - px;
       const dz = entry.z - pz;
@@ -4242,8 +4357,11 @@ export function createIslandWorld(
       scene.remove(loots[i].mesh);
     }
     loots.length = 0;
-    for (let i = 0; i < pendingLootDefs.length; i++) {
-      pendingLootDefs[i].spawned = false;
+    for (let i = 0; i < jpPendingLootDefs.length; i++) {
+      jpPendingLootDefs[i].spawned = false;
+    }
+    for (let i = 0; i < bermudaPendingLootDefs.length; i++) {
+      bermudaPendingLootDefs[i].spawned = false;
     }
   };
 
@@ -4269,6 +4387,47 @@ export function createIslandWorld(
     }
   };
 
+  const hideExplosiveBarrel = (idx: number) => {
+    const list = activeBrMap === 'bermuda' ? bermudaExplosiveBarrels : jpExplosiveBarrels;
+    const cols = activeBrMap === 'bermuda' ? bermudaBarrelColliders : barrelColliders;
+    const inst = activeBrMap === 'bermuda' ? bermudaBarrelInst : barrelInst;
+    const eb = list[idx];
+    if (!eb || eb.exploded || !inst) return;
+    eb.exploded = true;
+    dummy.position.set(eb.x, -50, eb.z);
+    dummy.scale.set(0.001, 0.001, 0.001);
+    dummy.updateMatrix();
+    inst.setMatrixAt(idx, dummy.matrix);
+    inst.instanceMatrix.needsUpdate = true;
+    const col = cols[idx];
+    if (col) {
+      col.minY = -99;
+      col.maxY = -98;
+    }
+  };
+
+  const resetExplosiveBarrels = () => {
+    const list = activeBrMap === 'bermuda' ? bermudaExplosiveBarrels : jpExplosiveBarrels;
+    const cols = activeBrMap === 'bermuda' ? bermudaBarrelColliders : barrelColliders;
+    const inst = activeBrMap === 'bermuda' ? bermudaBarrelInst : barrelInst;
+    if (!inst) return;
+    for (let i = 0; i < list.length; i++) {
+      const eb = list[i];
+      eb.exploded = false;
+      dummy.position.set(eb.x, eb.y, eb.z);
+      dummy.rotation.set(0, i * 0.5, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+      const col = cols[i];
+      if (col) {
+        col.minY = eb.y - 0.625;
+        col.maxY = eb.y + 0.655;
+      }
+    }
+    inst.instanceMatrix.needsUpdate = true;
+  };
+
   // 17. Electric Blue Shrinking Safe Zone Cylinder Wall
   const safeZoneGeo = new THREE.CylinderGeometry(1, 1, 240, 48, 1, true);
   const safeZoneMat = new THREE.MeshBasicMaterial({
@@ -4285,28 +4444,560 @@ export function createIslandWorld(
   scene.add(safeZoneMesh);
 
   // 18. Airplane
-  const { group: airplaneGroup, props: airplaneProps } = createAirplane();
+  const { group: airplaneGroup, props: proceduralAirplaneProps } = createAirplane();
+  const airplaneProps: THREE.Object3D[] = [...proceduralAirplaneProps];
   airplaneGroup.visible = false;
   scene.add(airplaneGroup);
 
-  // Freeze static terrain, buildings, props, roads & foliage matrices to prevent wasted CPU traversal
-  const dynamicRoots = new Set<THREE.Object3D>([
-    airplaneGroup,
-    cloudGroup,
-    safeZoneMesh,
-    sunLight,
-    sunLight.target,
-    camera,
-    ...targets.map((t) => t.group),
-    ...loots.map((l) => l.mesh),
-    ...vehicles.map((v) => v.group),
-  ]);
-  for (let i = 0; i < scene.children.length; i++) {
-    const ch = scene.children[i];
-    if (dynamicRoots.has(ch)) continue;
-    ch.traverse((node) => {
-      node.updateMatrix();
-      node.matrixAutoUpdate = false;
+  // 19. Distant Waiting Lobby Island (/3d/lobby.glb) & Gladiadores Arena (/3d/gladiadores.glb)
+  const waitLobbyGroup = new THREE.Group();
+  waitLobbyGroup.position.set(WAIT_LOBBY_ORIGIN.x, WAIT_LOBBY_ORIGIN.y, WAIT_LOBBY_ORIGIN.z);
+  waitLobbyGroup.visible = false;
+  const waitSnowBase = new THREE.Mesh(
+    new THREE.CircleGeometry(68, 32),
+    new THREE.MeshStandardMaterial({ color: 0xe6eff6, roughness: 0.9, metalness: 0.02 }),
+  );
+  waitSnowBase.rotation.x = -Math.PI / 2;
+  waitSnowBase.position.y = -0.04;
+  waitSnowBase.receiveShadow = true;
+  const waitSeaBase = new THREE.Mesh(
+    new THREE.CircleGeometry(900, 32),
+    new THREE.MeshStandardMaterial({ color: 0x1a749e, roughness: 0.35, metalness: 0.12 }),
+  );
+  waitSeaBase.rotation.x = -Math.PI / 2;
+  waitSeaBase.position.y = -1.6;
+  waitLobbyGroup.add(waitSnowBase, waitSeaBase);
+  scene.add(waitLobbyGroup);
+
+  const gladiadoresGroup = new THREE.Group();
+  gladiadoresGroup.position.set(GLADIADORES_ORIGIN.x, GLADIADORES_ORIGIN.y, GLADIADORES_ORIGIN.z);
+  gladiadoresGroup.visible = false;
+  const gladFloorPad = new THREE.Mesh(
+    new THREE.PlaneGeometry(86, 74),
+    new THREE.MeshStandardMaterial({ color: 0x3b3f45, roughness: 0.92, metalness: 0.08 }),
+  );
+  gladFloorPad.rotation.x = -Math.PI / 2;
+  gladFloorPad.position.set(-15.5, 0.50, 0);
+  gladFloorPad.receiveShadow = true;
+  const gladOuterGround = new THREE.Mesh(
+    new THREE.CircleGeometry(520, 32),
+    new THREE.MeshStandardMaterial({ color: 0x262b30, roughness: 0.95, metalness: 0.04 }),
+  );
+  gladOuterGround.rotation.x = -Math.PI / 2;
+  gladOuterGround.position.set(-15.5, -0.45, 0);
+  gladiadoresGroup.add(gladFloorPad, gladOuterGround);
+  scene.add(gladiadoresGroup);
+
+  const waitCollisionGrid = new MeshCollisionGrid(2.0);
+  const gladiadoresCollisionGrid = new MeshCollisionGrid(2.2);
+  let externalAttached = false;
+
+  const replaceInPlace = <T,>(target: T[], source: T[]): void => {
+    target.length = 0;
+    for (let i = 0; i < source.length; i++) {
+      target.push(source[i]);
+    }
+  };
+
+  const applyActiveMapLists = () => {
+    const isBermuda = activeBrMap === 'bermuda' && bermudaAttached;
+    joaoPessoaGroup.visible = !isBermuda;
+    bermudaGroup.visible = isBermuda;
+
+    if (isBermuda) {
+      replaceInPlace(pois, bermudaPois);
+      replaceInPlace(buildings, bermudaBuildings);
+      replaceInPlace(roads, bermudaRoads);
+      replaceInPlace(vendingMachines, bermudaVendingMachines);
+      replaceInPlace(explosiveBarrels, bermudaExplosiveBarrels);
+      replaceInPlace(launchPads, bermudaLaunchPads);
+      replaceInPlace(buildingNavZones, bermudaBuildingNavZones);
+      replaceInPlace(obstacleMeshes, bermudaObstacleMeshes);
+      replaceInPlace(platforms, bermudaPlatforms);
+      replaceInPlace(colliders, bermudaStaticColliders);
+      handleRef.staticColliderCount = colliders.length;
+      for (let i = 0; i < bermudaVehicles.length; i++) {
+        colliders.push(bermudaVehicles[i].collider);
+      }
+      replaceInPlace(vehicles, bermudaVehicles);
+    } else {
+      replaceInPlace(pois, jpPois);
+      replaceInPlace(buildings, jpBuildings);
+      replaceInPlace(roads, jpRoads);
+      replaceInPlace(vendingMachines, jpVendingMachines);
+      replaceInPlace(explosiveBarrels, jpExplosiveBarrels);
+      replaceInPlace(launchPads, jpLaunchPads);
+      replaceInPlace(buildingNavZones, jpBuildingNavZones);
+      replaceInPlace(obstacleMeshes, jpObstacleMeshes);
+      replaceInPlace(platforms, jpPlatforms);
+      replaceInPlace(colliders, jpStaticColliders);
+      handleRef.staticColliderCount = colliders.length;
+      for (let i = 0; i < jpVehicles.length; i++) {
+        colliders.push(jpVehicles[i].collider);
+      }
+      replaceInPlace(vehicles, jpVehicles);
+    }
+  };
+
+  const setActiveBrMap = (mapId: BrMapId) => {
+    if (activeBrMap === mapId && (mapId !== 'bermuda' || bermudaAttached)) {
+      joaoPessoaGroup.visible = mapId === 'joao_pessoa';
+      bermudaGroup.visible = mapId === 'bermuda';
+      return;
+    }
+    activeBrMap = mapId;
+    resetMatchLoots();
+    applyActiveMapLists();
+  };
+
+  const attachExternalWorldModels = (assets: ExternalWorldAssets) => {
+    if (externalAttached) return;
+    externalAttached = true;
+
+    if (assets.airplaneTemplate) {
+      const planeModel = assets.airplaneTemplate.clone(true);
+      airplaneGroup.clear();
+      airplaneGroup.add(planeModel);
+      airplaneProps.length = 0;
+      const screws = extractAirplanePropellers(planeModel);
+      for (let i = 0; i < screws.length; i++) {
+        airplaneProps.push(screws[i]);
+      }
+    }
+
+    if (assets.lobbyTemplate) {
+      const lobbyModel = assets.lobbyTemplate.clone(true);
+      waitLobbyGroup.add(lobbyModel);
+      waitLobbyGroup.updateMatrixWorld(true);
+      waitCollisionGrid.buildFromObject(lobbyModel);
+    }
+
+    if (assets.gladiadoresTemplate) {
+      const gladModel = assets.gladiadoresTemplate.clone(true);
+      gladiadoresGroup.add(gladModel);
+      gladiadoresGroup.updateMatrixWorld(true);
+      gladiadoresCollisionGrid.buildFromObject(gladModel);
+    }
+
+    if (assets.bermudaTemplate) {
+      const bermudaModel = assets.bermudaTemplate.clone(true);
+      bermudaGroup.add(bermudaModel);
+      bermudaGroup.updateMatrixWorld(true);
+      bermudaCollisionGrid.buildFromObject(bermudaModel);
+
+      // Extract real houses, hangars & 2nd floors from bermuda.glb (zero changes to map mesh!)
+      const spots = extractBermudaBuildingSpots(bermudaModel, bermudaCollisionGrid);
+      const bermudaGroundAt = (x: number, z: number) =>
+        bermudaCollisionGrid.sampleTerrainHeight(x, z, BERMUDA_GLB_WATER_Y);
+      const findNearestDrySpot = (tx: number, tz: number): { x: number; z: number; y: number } => {
+        const directY = bermudaGroundAt(tx, tz);
+        if (directY > -0.6) return { x: tx, z: tz, y: directY };
+        for (let r = 8; r <= 72; r += 8) {
+          for (let a = 0; a < 8; a++) {
+            const ang = (a / 8) * Math.PI * 2;
+            const cx = tx + Math.cos(ang) * r;
+            const cz = tz + Math.sin(ang) * r;
+            const cy = bermudaGroundAt(cx, cz);
+            if (cy > -0.6) return { x: cx, z: cz, y: cy };
+          }
+        }
+        let bestSpot = spots[0];
+        let bestDist = Infinity;
+        for (let i = 0; i < spots.length; i++) {
+          const d = Math.hypot(spots[i].x - tx, spots[i].z - tz);
+          if (d < bestDist) {
+            bestDist = d;
+            bestSpot = spots[i];
+          }
+        }
+        if (bestSpot) return { x: bestSpot.x, z: bestSpot.z, y: bestSpot.groundY };
+        return { x: tx, z: tz, y: 0.2 };
+      };
+
+      // Populate minimap buildings, bot nav zones & inside/2nd-floor loot across the entire island!
+      let bermudaLootId = 0;
+      const pushBermudaLoot = (
+        ld: Omit<(typeof bermudaPendingLootDefs)[number], 'id' | 'spawned'>,
+      ) => {
+        bermudaPendingLootDefs.push({
+          ...ld,
+          id: `b_loot_${bermudaLootId++}`,
+          spawned: false,
+        });
+      };
+
+      for (let i = 0; i < spots.length; i++) {
+        const s = spots[i];
+        const kind: MinimapBuilding['kind'] =
+          s.w > 22 || s.d > 22
+            ? 'shed'
+            : s.secondFloorY !== null
+              ? 'sobrado'
+              : 'house';
+        bermudaBuildings.push({
+          x: s.x,
+          z: s.z,
+          w: s.w,
+          d: s.d,
+          rotY: 0,
+          kind,
+        });
+        bermudaBuildingNavZones.push({
+          cx: s.x,
+          cz: s.z,
+          halfW: Math.max(3, s.w * 0.42),
+          halfD: Math.max(3, s.d * 0.42),
+          rotY: 0,
+          baseY: s.groundY,
+          secondFloorY: s.secondFloorY ?? undefined,
+          doors: [
+            { inX: s.x, inZ: s.z, outX: s.x + s.w * 0.55 + 2.2, outZ: s.z },
+            { inX: s.x, inZ: s.z, outX: s.x - s.w * 0.55 - 2.2, outZ: s.z },
+          ],
+        });
+
+        // 1st-floor weapon + gear + healing/utility/coins
+        const floorY = s.groundY + 0.12;
+        const wId = interiorWeapons[i % interiorWeapons.length];
+        pushBermudaLoot({
+          x: s.x + Math.min(2.2, s.w * 0.16),
+          z: s.z - Math.min(2.2, s.d * 0.16),
+          yOverride: floorY,
+          kind: 'weapon',
+          weaponId: wId,
+          label:
+            wId === 'm4a1'
+              ? 'Carabina M4-17'
+              : wId === 'xm8'
+                ? 'Fuzil XM8'
+                : wId === 'scar'
+                  ? 'Rifle SCAR'
+                  : wId === 'ak47'
+                    ? 'Fuzil AK-47'
+                    : wId === 'deagle'
+                      ? 'Desert Eagle'
+                      : wId === 'ump45'
+                        ? 'SMG UMP-17'
+                        : wId === 'm1014'
+                          ? 'Espingarda M10-17'
+                          : 'Sniper AWM-17',
+        });
+
+        const lvl = (((i % 3) + 1) as 1 | 2 | 3);
+        const gearMod = i % 3;
+        pushBermudaLoot({
+          x: s.x - Math.min(2.0, s.w * 0.15),
+          z: s.z + Math.min(2.0, s.d * 0.15),
+          yOverride: floorY,
+          kind: gearMod === 0 ? 'vest' : gearMod === 1 ? 'helmet' : 'backpack',
+          level: gearMod === 2 && lvl === 1 ? 2 : lvl,
+          label:
+            gearMod === 0
+              ? `Colete Nível ${lvl}`
+              : gearMod === 1
+                ? `Capacete Nível ${lvl}`
+                : `Mochila Nível ${lvl === 1 ? 2 : lvl}`,
+        });
+
+        if (i % 2 === 0) {
+          const isSmall = i % 4 === 2;
+          pushBermudaLoot({
+            x: s.x + Math.min(1.6, s.w * 0.12),
+            z: s.z + Math.min(1.8, s.d * 0.14),
+            yOverride: floorY,
+            kind: isSmall ? 'smallkit' : 'medkit',
+            label: isSmall ? 'Kit Pequeno (+35 HP)' : 'Kit Médico (+75 HP)',
+          });
+        } else {
+          const att = interiorAttachments[i % interiorAttachments.length];
+          pushBermudaLoot({
+            x: s.x + Math.min(1.6, s.w * 0.12),
+            z: s.z + Math.min(1.8, s.d * 0.14),
+            yOverride: floorY,
+            kind: 'attachment',
+            attachmentKind: att,
+            label:
+              att === 'silencer'
+                ? 'Silenciador'
+                : att === 'compensator'
+                  ? 'Boca / Compensador'
+                  : att === 'grip'
+                    ? 'Empunhadura Tática'
+                    : att === 'ext_mag'
+                      ? 'Carregador Estendido'
+                      : 'Coronha Tática',
+          });
+        }
+
+        const mod4 = i % 4;
+        if (mod4 === 0) {
+          const sc = interiorScopes[i % interiorScopes.length];
+          pushBermudaLoot({
+            x: s.x,
+            z: s.z,
+            yOverride: floorY,
+            kind: 'scope',
+            scopeType: sc,
+            label: `Mira ${sc.toUpperCase()}`,
+          });
+        } else if (mod4 === 1) {
+          pushBermudaLoot({
+            x: s.x,
+            z: s.z,
+            yOverride: floorY,
+            kind: 'gloo',
+            glooAmount: 2,
+            label: 'Parede de Gelo x2',
+          });
+        } else if (mod4 === 2) {
+          pushBermudaLoot({
+            x: s.x,
+            z: s.z,
+            yOverride: floorY,
+            kind: 'grenade',
+            grenadeAmount: 2,
+            label: 'Granada Explosiva x2',
+          });
+        } else {
+          pushBermudaLoot({
+            x: s.x,
+            z: s.z,
+            yOverride: floorY,
+            kind: 'ammo',
+            ammoAmount: 45,
+            label: 'Munição +45',
+          });
+        }
+
+        pushBermudaLoot({
+          x: s.x - Math.min(1.8, s.w * 0.14),
+          z: s.z - Math.min(1.8, s.d * 0.14),
+          yOverride: floorY,
+          kind: 'coin',
+          coinAmount: i % 3 === 0 ? 200 : 100,
+          label: i % 3 === 0 ? '200 Moedas FF' : '100 Moedas FF',
+        });
+
+        // 2nd floor tactical loot when building has upper story
+        if (s.secondFloorY !== null) {
+          const upperY = s.secondFloorY + 0.12;
+          const upWeapon = interiorWeapons[(i + 3) % interiorWeapons.length];
+          pushBermudaLoot({
+            x: s.x + 1.1,
+            z: s.z + 1.1,
+            yOverride: upperY,
+            kind: 'weapon',
+            weaponId: upWeapon,
+            label: WEAPONS[upWeapon].name,
+          });
+          pushBermudaLoot({
+            x: s.x - 1.1,
+            z: s.z - 1.1,
+            yOverride: upperY,
+            kind: i % 2 === 0 ? 'vest' : 'scope',
+            level: 3,
+            scopeType: '4x',
+            label: i % 2 === 0 ? 'Colete Nível 3' : 'Mira 4X',
+          });
+        }
+      }
+
+      // Snap Bermuda POIs to confirmed dry ground & sprinkle compound courtyard loot
+      for (let i = 0; i < bermudaPois.length; i++) {
+        const dry = findNearestDrySpot(bermudaPois[i].x, bermudaPois[i].z);
+        bermudaPois[i].x = dry.x;
+        bermudaPois[i].z = dry.z;
+
+        const poiW = interiorWeapons[i % interiorWeapons.length];
+        pushBermudaLoot({
+          x: dry.x + 3.2,
+          z: dry.z + 2.4,
+          yOverride: bermudaGroundAt(dry.x + 3.2, dry.z + 2.4) + 0.12,
+          kind: 'weapon',
+          weaponId: poiW,
+          label: WEAPONS[poiW].name,
+        });
+        pushBermudaLoot({
+          x: dry.x - 3.4,
+          z: dry.z + 3.0,
+          yOverride: bermudaGroundAt(dry.x - 3.4, dry.z + 3.0) + 0.12,
+          kind: 'ammo',
+          ammoAmount: 45,
+          label: 'Munição +45',
+        });
+        pushBermudaLoot({
+          x: dry.x + 2.0,
+          z: dry.z - 3.6,
+          yOverride: bermudaGroundAt(dry.x + 2.0, dry.z - 3.6) + 0.12,
+          kind: i % 2 === 0 ? 'medkit' : 'gloo',
+          glooAmount: 2,
+          label: i % 2 === 0 ? 'Kit Médico (+75 HP)' : 'Parede de Gelo x2',
+        });
+      }
+
+      // 8 Vending Machines ("Lojinhas") across Bermuda
+      const bermudaVendingSpecs = [
+        { id: 'bvm_clock', x: -242, z: -162, rotY: 0.4, label: 'Lojinha Clock Tower' },
+        { id: 'bvm_pochinok', x: -115, z: -152, rotY: -0.6, label: 'Lojinha Pochinok' },
+        { id: 'bvm_peak', x: -64, z: -252, rotY: 0.2, label: 'Lojinha Peak' },
+        { id: 'bvm_bimasakti', x: 64, z: -246, rotY: -1.2, label: 'Lojinha Bimasakti' },
+        { id: 'bvm_factory', x: 118, z: -120, rotY: 0.8, label: 'Lojinha Factory' },
+        { id: 'bvm_hangar', x: 248, z: -186, rotY: -0.3, label: 'Lojinha Hangar' },
+        { id: 'bvm_observatorio', x: -334, z: 6, rotY: 1.1, label: 'Lojinha Observatório' },
+        { id: 'bvm_mars', x: -25, z: 175, rotY: 0.0, label: 'Lojinha Mars Electric' },
+      ];
+      bermudaVendingSpecs.forEach((vs) => {
+        const dry = findNearestDrySpot(vs.x, vs.z);
+        const vm = createVendingMachineProp(
+          vs.id,
+          dry.x,
+          dry.z,
+          vs.rotY,
+          vs.label,
+          bermudaStaticColliders,
+          bermudaObstacleMeshes,
+          dry.y,
+        );
+        bermudaGroup.add(vm.group);
+        bermudaVendingMachines.push(vm.data);
+      });
+
+      // 16 Explosive Red Barrels across Bermuda POIs
+      const bermudaBarrelSpots = [
+        [-252, -165], [-268, -182], [-120, -158], [-72, -258],
+        [-84, -270], [4, -398], [100, -124], [114, -138],
+        [48, -248], [62, -264], [254, -192], [268, -206],
+        [436, 18], [-340, 4], [-364, -166], [-30, 178],
+      ];
+      bermudaBarrelInst = new THREE.InstancedMesh(
+        barrelGeo,
+        barrelMat,
+        bermudaBarrelSpots.length,
+      );
+      bermudaBarrelInst.castShadow = false;
+      bermudaBarrelInst.receiveShadow = true;
+      bermudaBarrelInst.userData.isExplosiveBarrelInst = true;
+      bermudaBarrelSpots.forEach(([bx, bz], idx) => {
+        const dry = findNearestDrySpot(bx, bz);
+        dummy.position.set(dry.x, dry.y + 0.625, dry.z);
+        dummy.rotation.set(0, idx * 0.5, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        bermudaBarrelInst!.setMatrixAt(idx, dummy.matrix);
+        bermudaExplosiveBarrels.push({
+          id: `b_barrel_${idx}`,
+          x: dry.x,
+          y: dry.y + 0.625,
+          z: dry.z,
+          exploded: false,
+          instanceIdx: idx,
+        });
+        const col: WorldObbCollider = {
+          cx: dry.x,
+          cz: dry.z,
+          halfW: 0.48,
+          halfD: 0.48,
+          rotY: 0,
+          minY: dry.y,
+          maxY: dry.y + 1.28,
+          tag: 'barrel',
+        };
+        bermudaStaticColliders.push(col);
+        bermudaBarrelColliders.push(col);
+      });
+      bermudaBarrelInst.computeBoundingSphere();
+      bermudaGroup.add(bermudaBarrelInst);
+      bermudaObstacleMeshes.push(bermudaBarrelInst);
+
+      // 8 Drivable Vehicles across Bermuda Highways & Airport
+      const bermudaVehSpecs: Array<{
+        id: string;
+        kind: VehicleKind;
+        x: number;
+        z: number;
+        rotY: number;
+      }> = [
+        { id: 'bveh_0', kind: 'sport', x: -248, z: -156, rotY: 0.3 },
+        { id: 'bveh_1', kind: 'jeep', x: -118, z: -146, rotY: -1.1 },
+        { id: 'bveh_2', kind: 'sport', x: 58, z: -240, rotY: 1.4 },
+        { id: 'bveh_3', kind: 'jeep', x: 112, z: -116, rotY: -0.4 },
+        { id: 'bveh_4', kind: 'sport', x: 252, z: -182, rotY: 0.8 },
+        { id: 'bveh_5', kind: 'jeep', x: 432, z: 20, rotY: 1.57 },
+        { id: 'bveh_6', kind: 'jeep', x: -330, z: -12, rotY: 0.2 },
+        { id: 'bveh_7', kind: 'sport', x: -42, z: 168, rotY: -0.5 },
+      ];
+      bermudaVehSpecs.forEach((vs) => {
+        const dry = findNearestDrySpot(vs.x, vs.z);
+        const v = createDrivableVehicle(
+          vs.id,
+          vs.kind,
+          dry.x,
+          dry.z,
+          vs.rotY,
+          bermudaStaticColliders,
+          bermudaObstacleMeshes,
+          dry.y,
+        );
+        // Remove the constructor-pushed collider from bermudaStaticColliders tail; it belongs in dynamic tail
+        bermudaStaticColliders.pop();
+        bermudaGroup.add(v.group);
+        bermudaVehicles.push(v);
+      });
+
+      // 6 Tactical Launch Pads across Bermuda
+      const bermudaPadSpecs: Array<[number, number, number, number, string]> = [
+        [-248, -182, -77, -264, 'LANÇADOR -> PEAK'],
+        [-68, -270, 53, -257, 'LANÇADOR -> BIMASAKTI'],
+        [62, -262, 105, -131, 'LANÇADOR -> FACTORY'],
+        [114, -142, 259, -199, 'LANÇADOR -> HANGAR'],
+        [272, -188, 447, 23, 'LANÇADOR -> AEROPORTO'],
+        [-334, -18, -256, -173, 'LANÇADOR -> CLOCK TOWER'],
+      ];
+      bermudaPadSpecs.forEach(([lx, lz, tx, tz, label]) => {
+        const dry = findNearestDrySpot(lx, lz);
+        const dx = tx - dry.x;
+        const dz = tz - dry.z;
+        const horiz = Math.hypot(dx, dz) || 1;
+        const yaw = Math.atan2(dx, dz);
+        const padG = new THREE.Group();
+        padG.position.set(dry.x, dry.y + 0.12, dry.z);
+        padG.rotation.y = yaw;
+        const base = new THREE.Mesh(padBaseGeo, padBaseMat);
+        const plate = new THREE.Mesh(padPlateGeo, padGlowMat);
+        plate.position.set(0, 0.26, 0.15);
+        plate.rotation.x = -0.48;
+        padG.add(base, plate);
+        bermudaGroup.add(padG);
+        bermudaLaunchPads.push({
+          x: dry.x,
+          y: dry.y,
+          z: dry.z,
+          dirX: dx / horiz,
+          dirY: 0.72,
+          dirZ: dz / horiz,
+          label,
+        });
+      });
+
+      bermudaMinimapCanvas = generateBermudaMinimapCanvas(
+        bermudaCollisionGrid,
+        bermudaBuildings,
+        BERMUDA_GLB_MAP_RANGE,
+      );
+      handleRef.bermudaMinimapCanvas = bermudaMinimapCanvas;
+      bermudaAttached = true;
+      applyActiveMapLists();
+    }
+  };
+
+  // Freeze static terrain, buildings, props, roads & foliage matrices of Joao Pessoa
+  joaoPessoaGroup.traverse((node) => {
+    node.updateMatrix();
+    node.matrixAutoUpdate = false;
+  });
+  for (let i = 0; i < jpVehicles.length; i++) {
+    jpVehicles[i].group.traverse((node) => {
+      node.matrixAutoUpdate = true;
     });
   }
 
@@ -4324,7 +5015,6 @@ export function createIslandWorld(
       ? 'off'
       : (shadowQuality ?? (quality === 'low' ? 'off' : quality === 'high' ? 'high' : 'low'));
 
-    // 1. Texture Level (anisotropy + mipmap sharpness + shader detail distance)
     textures.applyQuality(resolvedTex);
     texDistUniform.value =
       resolvedTex === 'low'
@@ -4337,7 +5027,6 @@ export function createIslandWorld(
     terrainMat.roughness = resolvedTex === 'low' ? 0.94 : resolvedTex === 'ultra' ? 0.86 : 0.9;
     asphaltRoadMat.roughness = resolvedTex === 'low' ? 0.88 : resolvedTex === 'ultra' ? 0.76 : 0.82;
 
-    // 2. Shadow Level (real-time directional shadow map resolution, radius & foliage casters)
     if (resolvedShadow === 'off') {
       sunLight.castShadow = false;
       foliageCtrl.setFoliageShadows(false, false);
@@ -4390,9 +5079,7 @@ export function createIslandWorld(
       sunLight.shadow.map = null;
     }
 
-    // 3. Overall Preset (Draw Distance, Fog, Sky/Ocean Reflections, IBL)
     if (quality === 'low' || isSoftwareGl) {
-      // SUAVE: máximo FPS no celular (sem IBL shader overhead, névoa próxima, distância enxuta)
       fog.near = 145;
       fog.far = 385;
       structureCullDist = 185;
@@ -4405,7 +5092,6 @@ export function createIslandWorld(
       scene.environment = null;
       scene.environmentIntensity = 0;
     } else if (quality === 'medium') {
-      // PADRÃO: equilibrado, boa visão à distância
       fog.near = 250;
       fog.far = 610;
       structureCullDist = 290;
@@ -4418,7 +5104,6 @@ export function createIslandWorld(
       scene.environment = envMap;
       scene.environmentIntensity = 0.58;
     } else {
-      // ULTRA: horizonte amplo, reflexo no oceano/vidros do Altiplano, IBL completo e luz vibrante
       fog.near = 420;
       fog.far = 1040;
       structureCullDist = 520;
@@ -4448,23 +5133,31 @@ export function createIslandWorld(
     const renderMaxSq = lootRenderDist * lootRenderDist;
     const animMaxSq = 16 * 16;
 
-    // Distance-cull distant structures & vehicles when on the ground (keep visible in airplane/skydive)
     if (camPos) {
+      waitLobbyGroup.visible =
+        Math.abs(cx - WAIT_LOBBY_ORIGIN.x) < 180 &&
+        Math.abs(cz - WAIT_LOBBY_ORIGIN.z) < 180;
+      gladiadoresGroup.visible =
+        Math.abs(cx - GLADIADORES_ORIGIN.x) < 180 &&
+        Math.abs(cz - GLADIADORES_ORIGIN.z) < 180;
+
       const keepAllStructures = cy > 45;
-      for (let i = 0; i < cullableStructures.length; i++) {
-        const s = cullableStructures[i];
-        if (keepAllStructures) {
-          if (!s.obj.visible) s.obj.visible = true;
-        } else {
-          const maxR = structureCullDist * s.radiusScale;
-          const dx = s.x - cx;
-          const dz = s.z - cz;
-          const vis =
-            Math.abs(dx) <= maxR &&
-            Math.abs(dz) <= maxR &&
-            dx * dx + dz * dz <= maxR * maxR;
-          if (s.obj.visible !== vis) {
-            s.obj.visible = vis;
+      if (activeBrMap === 'joao_pessoa') {
+        for (let i = 0; i < cullableStructures.length; i++) {
+          const s = cullableStructures[i];
+          if (keepAllStructures) {
+            if (!s.obj.visible) s.obj.visible = true;
+          } else {
+            const maxR = structureCullDist * s.radiusScale;
+            const dx = s.x - cx;
+            const dz = s.z - cz;
+            const vis =
+              Math.abs(dx) <= maxR &&
+              Math.abs(dz) <= maxR &&
+              dx * dx + dz * dz <= maxR * maxR;
+            if (s.obj.visible !== vis) {
+              s.obj.visible = vis;
+            }
           }
         }
       }
@@ -4546,7 +5239,7 @@ export function createIslandWorld(
 
   const resetVehicles = () => {
     vehicles.forEach((v) => {
-      const sy = sampleGroundHeight(v.spawnX, v.spawnZ);
+      const sy = groundHeightAt(v.spawnX, v.spawnZ);
       v.x = v.spawnX;
       v.y = sy;
       v.z = v.spawnZ;
@@ -4574,21 +5267,36 @@ export function createIslandWorld(
     });
   };
 
-  return {
+  const pois: PoiMarker[] = [];
+  const explosiveBarrels: ExplosiveBarrel[] = [];
+  const launchPads: LaunchPadProp[] = [];
+  const vendingMachines: VendingMachineProp[] = [];
+
+  const handleRef: WorldHandle = {
     scene,
     camera,
     sunLight,
     airplaneGroup,
     airplaneProps,
+    waitLobbyGroup,
+    gladiadoresGroup,
+    waitCollisionGrid,
+    gladiadoresCollisionGrid,
+    bermudaCollisionGrid,
+    bermudaMinimapCanvas,
+    bermudaMapRange: BERMUDA_GLB_MAP_RANGE,
+    getActiveBrMap: () => activeBrMap,
+    setActiveBrMap,
+    attachExternalWorldModels,
     safeZoneMesh,
     colliders,
-    staticColliderCount,
+    staticColliderCount: jpStaticColliders.length,
     platforms,
     buildingNavZones,
     obstacleMeshes,
     buildings,
     roads,
-    pois: POIS,
+    pois,
     targets,
     loots,
     explosiveBarrels,
@@ -4601,7 +5309,7 @@ export function createIslandWorld(
     hideExplosiveBarrel,
     resetExplosiveBarrels,
     resetVehicles,
-    groundHeightAt: sampleGroundHeight,
+    groundHeightAt,
     syncProximityLoot,
     resetMatchLoots,
     spawnDroppedLoot,
@@ -4610,4 +5318,20 @@ export function createIslandWorld(
     updateDynamicProps,
     dispose,
   };
+
+  // Populate initial João Pessoa lists until bermuda.glb attaches (then defaults cleanly to Bermuda)
+  replaceInPlace(pois, jpPois);
+  replaceInPlace(vendingMachines, jpVendingMachines);
+  replaceInPlace(explosiveBarrels, jpExplosiveBarrels);
+  replaceInPlace(launchPads, jpLaunchPads);
+  for (let i = 0; i < jpVehicles.length; i++) {
+    colliders.push(jpVehicles[i].collider);
+  }
+  replaceInPlace(vehicles, jpVehicles);
+  if (!bermudaAttached) {
+    joaoPessoaGroup.visible = true;
+    bermudaGroup.visible = false;
+  }
+
+  return handleRef;
 }

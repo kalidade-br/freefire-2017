@@ -18,6 +18,7 @@ import { getCharacterAvatar } from '../game/avatars';
 import { InputManager } from '../game/inputManager';
 import {
   ATTACHMENT_LABELS,
+  BrMapId,
   ControlMode,
   DEFAULT_KEY_BINDINGS,
   formatKeyCodeLabel,
@@ -38,11 +39,14 @@ import {
 } from '../game/types';
 import {
   BERMUDA_MAP_RANGE,
+  GLADIADORES_BOUNDS,
+  GLADIADORES_ORIGIN,
   HAS_SENTOSA,
   riverCenterZ,
   sampleMainIslandEdgeRadius,
   sampleSentosaEdgeRadius,
   SENTOSA_CENTER,
+  WAIT_LOBBY_ORIGIN,
 } from '../game/worldBuilder';
 import {
   IconAmmoSvg,
@@ -76,6 +80,9 @@ interface GameHudProps {
   buildings: MinimapBuilding[];
   roads: MinimapRoad[];
   pois: PoiMarker[];
+  mapId?: BrMapId;
+  mapRange?: number;
+  bermudaMinimapCanvas?: HTMLCanvasElement | null;
   input: InputManager;
   controlMode: ControlMode;
   keyBindings?: KeyBindingsConfig;
@@ -143,6 +150,9 @@ export const GameHud: React.FC<GameHudProps> = ({
   buildings,
   roads,
   pois,
+  mapId,
+  mapRange,
+  bermudaMinimapCanvas = null,
   input,
   controlMode,
   keyBindings,
@@ -311,8 +321,10 @@ export const GameHud: React.FC<GameHudProps> = ({
   // Pre-render static 2D Minimap terrain, coastal reefs, Sentosa, river, roads, buildings & POIs at 512x512
   useEffect(() => {
     const size = 512;
-    const mapRange = BERMUDA_MAP_RANGE;
-    const worldToBg = size / (mapRange * 2);
+    const activeMapId = mapId ?? hud.mapId ?? 'bermuda';
+    const isBermudaMap = activeMapId === 'bermuda';
+    const activeMapRange = isBermudaMap ? (mapRange ?? BERMUDA_MAP_RANGE) : BERMUDA_MAP_RANGE;
+    const worldToBg = size / (activeMapRange * 2);
     const off = document.createElement('canvas');
     off.width = size;
     off.height = size;
@@ -320,9 +332,29 @@ export const GameHud: React.FC<GameHudProps> = ({
     if (!ctx) return;
 
     const toPx = (wx: number, wz: number) => ({
-      x: (wx + mapRange) * worldToBg,
-      y: (wz + mapRange) * worldToBg,
+      x: (wx + activeMapRange) * worldToBg,
+      y: (wz + activeMapRange) * worldToBg,
     });
+
+    if (isBermudaMap && bermudaMinimapCanvas) {
+      ctx.fillStyle = '#0d3650';
+      ctx.fillRect(0, 0, size, size);
+      ctx.drawImage(bermudaMinimapCanvas, 0, 0, size, size);
+
+      ctx.font = 'bold 11px monospace';
+      ctx.textAlign = 'center';
+      pois.forEach((poi) => {
+        const p = toPx(poi.x, poi.z);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0,0,0,0.84)';
+        ctx.strokeText(poi.name, p.x, p.y - 6);
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.fillText(poi.name, p.x, p.y - 6);
+      });
+
+      minimapBgRef.current = off;
+      return;
+    }
 
     ctx.fillStyle = '#14496e';
     ctx.fillRect(0, 0, size, size);
@@ -619,7 +651,7 @@ export const GameHud: React.FC<GameHudProps> = ({
     });
 
     minimapBgRef.current = off;
-  }, [buildings, roads, pois]);
+  }, [buildings, roads, pois, mapId, hud.mapId, mapRange, bermudaMinimapCanvas]);
 
   // Fast Minimap dynamic Safe Zone circles + player arrow + zoomed radar crop blit
   useEffect(() => {
@@ -631,14 +663,92 @@ export const GameHud: React.FC<GameHudProps> = ({
 
     const canvasSize = 256;
     const bgSize = bg.width; // 512
-    const mapRange = BERMUDA_MAP_RANGE;
-    const isGround = gameState === GameState.WAITING || gameState === GameState.PLAYING;
-    const isZoomed = minimapZoomed && isGround;
-    const radarHalfRange = 185; // 370m x 370m crisp tactical view on ground
 
-    const minWorldX = isZoomed ? hud.playerX - radarHalfRange : -mapRange;
-    const minWorldZ = isZoomed ? hud.playerZ - radarHalfRange : -mapRange;
-    const worldSpan = isZoomed ? radarHalfRange * 2 : mapRange * 2;
+    // Dedicated tactical radar for Gladiadores Arena or distant Waiting Lobby
+    if (hud.gameVariant === 'gladiadores' || gameState === GameState.WAITING) {
+      const isGlad = hud.gameVariant === 'gladiadores';
+      const centerX = isGlad
+        ? (GLADIADORES_BOUNDS.minX + GLADIADORES_BOUNDS.maxX) * 0.5
+        : WAIT_LOBBY_ORIGIN.x;
+      const centerZ = isGlad
+        ? (GLADIADORES_BOUNDS.minZ + GLADIADORES_BOUNDS.maxZ) * 0.5
+        : WAIT_LOBBY_ORIGIN.z;
+      const halfSpan = isGlad ? 24 : 36;
+      const minX = centerX - halfSpan;
+      const minZ = centerZ - halfSpan;
+      const scale = canvasSize / (halfSpan * 2);
+      const toArenaPx = (wx: number, wz: number) => ({
+        x: (wx - minX) * scale,
+        y: (wz - minZ) * scale,
+      });
+
+      ctx.fillStyle = isGlad ? '#181c24' : '#16354d';
+      ctx.fillRect(0, 0, canvasSize, canvasSize);
+
+      if (isGlad) {
+        const tl = toArenaPx(GLADIADORES_BOUNDS.minX, GLADIADORES_BOUNDS.minZ);
+        const br = toArenaPx(GLADIADORES_BOUNDS.maxX, GLADIADORES_BOUNDS.maxZ);
+        ctx.fillStyle = '#262b36';
+        ctx.fillRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+
+        // Center cover blocks visual guide
+        const c1 = toArenaPx(GLADIADORES_ORIGIN.x - 19, GLADIADORES_ORIGIN.z - 8);
+        const c2 = toArenaPx(GLADIADORES_ORIGIN.x - 12, GLADIADORES_ORIGIN.z + 8);
+        ctx.fillStyle = '#475569';
+        ctx.fillRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
+      } else {
+        ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(24, 24, canvasSize - 48, canvasSize - 48);
+      }
+
+      const plPx = toArenaPx(hud.playerX, hud.playerZ);
+      const rad = (hud.yawDeg * Math.PI) / 180;
+      ctx.save();
+      ctx.translate(plPx.x, plPx.y);
+      ctx.rotate(rad);
+      ctx.fillStyle = '#5eead4';
+      ctx.strokeStyle = '#042f2e';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, -9);
+      ctx.lineTo(7, 7);
+      ctx.lineTo(0, 3.6);
+      ctx.lineTo(-7, 7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      for (let i = 0; i < hud.teamMembers.length; i++) {
+        const m = hud.teamMembers[i];
+        if (m.id === 'player' || m.eliminated || m.worldX === undefined || m.worldZ === undefined) {
+          continue;
+        }
+        const mp = toArenaPx(m.worldX, m.worldZ);
+        ctx.fillStyle = getSlotColor(m.slotNumber, m.isDowned);
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(mp.x, mp.y, 5.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+      return;
+    }
+
+    const isBermudaMap = (mapId ?? hud.mapId ?? 'bermuda') === 'bermuda';
+    const mapRangeVal = isBermudaMap ? (mapRange ?? BERMUDA_MAP_RANGE) : BERMUDA_MAP_RANGE;
+    const isGround = gameState === GameState.PLAYING;
+    const isZoomed = minimapZoomed && isGround;
+    const radarHalfRange = isBermudaMap ? 235 : 185; // tactical zoomed view on ground
+
+    const minWorldX = isZoomed ? hud.playerX - radarHalfRange : -mapRangeVal;
+    const minWorldZ = isZoomed ? hud.playerZ - radarHalfRange : -mapRangeVal;
+    const worldSpan = isZoomed ? radarHalfRange * 2 : mapRangeVal * 2;
     const scalePx = canvasSize / worldSpan;
 
     const toPx = (wx: number, wz: number) => ({
@@ -647,12 +757,12 @@ export const GameHud: React.FC<GameHudProps> = ({
     });
 
     if (isZoomed) {
-      ctx.fillStyle = '#14496e';
+      ctx.fillStyle = isBermudaMap ? '#0d3650' : '#14496e';
       ctx.fillRect(0, 0, canvasSize, canvasSize);
 
-      const bgPerWorld = bgSize / (mapRange * 2);
-      const srcX = (minWorldX + mapRange) * bgPerWorld;
-      const srcY = (minWorldZ + mapRange) * bgPerWorld;
+      const bgPerWorld = bgSize / (mapRangeVal * 2);
+      const srcX = (minWorldX + mapRangeVal) * bgPerWorld;
+      const srcY = (minWorldZ + mapRangeVal) * bgPerWorld;
       const srcW = worldSpan * bgPerWorld;
       const srcH = worldSpan * bgPerWorld;
 
@@ -811,6 +921,11 @@ export const GameHud: React.FC<GameHudProps> = ({
     hud.airDrops,
     hud.vendingLocations,
     hud.vehicleLocations,
+    hud.gameVariant,
+    hud.mapId,
+    mapId,
+    mapRange,
+    bermudaMinimapCanvas,
     gameState,
     minimapZoomed,
     buildings,
@@ -1436,47 +1551,82 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
         )}
 
-        {gameState === GameState.PLAYING && (
-          <div className="flex flex-col items-center w-full">
-            {/* Tapered Dark Smoke Warning Strip matching screenshot */}
-            <div
-              className="w-full py-0.5 px-4 flex items-center justify-center gap-1.5 text-[11px] sm:text-xs font-medium tracking-wide"
-              style={{
-                background:
-                  'linear-gradient(90deg, transparent 0%, rgba(8,10,12,0.72) 24%, rgba(8,10,12,0.72) 76%, transparent 100%)',
-                textShadow: '0 1px 2px rgba(0,0,0,0.95)',
-              }}
-            >
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 fill-amber-400/25 shrink-0" />
-              <span className="text-white/95">
-                {hud.safeZone.isShrinking
-                  ? `Zona segura ${hud.safeZone.phase}/${hud.safeZone.totalPhases} fechando`
-                  : 'Zona segura aparecerá em'}
-              </span>
-            </div>
-
-            {/* Large Centered White Timer */}
-            <div
-              className="text-2xl sm:text-[28px] font-bold font-mono tabular-nums text-white leading-tight mt-0.5"
-              style={{ textShadow: '0 2px 5px rgba(0,0,0,0.9)' }}
-            >
-              {zoneMin}:{zoneSec}
-            </div>
-
-            {hud.safeZone.playerOutside && (
-              <div className="mt-0.5 flex items-center gap-1 bg-red-950/88 border border-red-500 px-2 py-0.5 text-[10px] font-mono font-bold text-red-200 animate-pulse">
-                <AlertTriangle className="w-3 h-3 text-red-400" />
-                <span>FORA DA ZONA (-{hud.safeZone.damagePerSec} HP/s)</span>
+        {gameState === GameState.PLAYING && hud.gameVariant === 'gladiadores' && hud.gladiadores ? (
+          <div className="flex flex-col items-center gap-1.5 mt-0.5">
+            <div className="flex items-center gap-2 bg-black/80 border border-white/25 px-3 py-1 shadow-xl">
+              <div className="text-right">
+                <div className="text-[9px] font-mono uppercase text-emerald-300 font-bold">VOCÊ</div>
+                <div className="text-lg font-black font-mono text-emerald-400 tabular-nums leading-none">
+                  {hud.gladiadores.playerScore}
+                </div>
               </div>
-            )}
 
-            {hud.airDropNotice && (
-              <div className="mt-0.5 flex items-center gap-1.5 bg-amber-950/90 border border-amber-400 px-2.5 py-0.5 text-[10px] font-mono font-black text-amber-200 tracking-wider uppercase shadow">
-                <span className="w-2 h-2 bg-amber-400 rounded-xs animate-pulse" />
-                <span>{hud.airDropNotice}</span>
+              <div className="px-2.5 border-x border-white/20 text-center">
+                <div className="text-[9px] font-black uppercase tracking-wider text-amber-300">
+                  GLADIADORES {hud.gladiadores.format.toUpperCase()}
+                </div>
+                <div className="text-[10px] font-mono text-neutral-200">
+                  RODADA {hud.gladiadores.round} · META {hud.gladiadores.targetRounds}
+                </div>
+              </div>
+
+              <div className="text-left">
+                <div className="text-[9px] font-mono uppercase text-red-300 font-bold">BOT</div>
+                <div className="text-lg font-black font-mono text-red-400 tabular-nums leading-none">
+                  {hud.gladiadores.enemyScore}
+                </div>
+              </div>
+            </div>
+
+            {hud.gladiadores.banner && (
+              <div className="mt-2 px-5 py-1.5 bg-gradient-to-r from-red-950/92 via-black/95 to-red-950/92 border-y-2 border-amber-400 text-sm sm:text-base font-black uppercase tracking-widest text-amber-300 shadow-2xl">
+                {hud.gladiadores.banner}
               </div>
             )}
           </div>
+        ) : (
+          gameState === GameState.PLAYING && (
+            <div className="flex flex-col items-center w-full">
+              {/* Tapered Dark Smoke Warning Strip matching screenshot */}
+              <div
+                className="w-full py-0.5 px-4 flex items-center justify-center gap-1.5 text-[11px] sm:text-xs font-medium tracking-wide"
+                style={{
+                  background:
+                    'linear-gradient(90deg, transparent 0%, rgba(8,10,12,0.72) 24%, rgba(8,10,12,0.72) 76%, transparent 100%)',
+                  textShadow: '0 1px 2px rgba(0,0,0,0.95)',
+                }}
+              >
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-400 fill-amber-400/25 shrink-0" />
+                <span className="text-white/95">
+                  {hud.safeZone.isShrinking
+                    ? `Zona segura ${hud.safeZone.phase}/${hud.safeZone.totalPhases} fechando`
+                    : 'Zona segura aparecerá em'}
+                </span>
+              </div>
+
+              {/* Large Centered White Timer */}
+              <div
+                className="text-2xl sm:text-[28px] font-bold font-mono tabular-nums text-white leading-tight mt-0.5"
+                style={{ textShadow: '0 2px 5px rgba(0,0,0,0.9)' }}
+              >
+                {zoneMin}:{zoneSec}
+              </div>
+
+              {hud.safeZone.playerOutside && (
+                <div className="mt-0.5 flex items-center gap-1 bg-red-950/88 border border-red-500 px-2 py-0.5 text-[10px] font-mono font-bold text-red-200 animate-pulse">
+                  <AlertTriangle className="w-3 h-3 text-red-400" />
+                  <span>FORA DA ZONA (-{hud.safeZone.damagePerSec} HP/s)</span>
+                </div>
+              )}
+
+              {hud.airDropNotice && (
+                <div className="mt-0.5 flex items-center gap-1.5 bg-amber-950/90 border border-amber-400 px-2.5 py-0.5 text-[10px] font-mono font-black text-amber-200 tracking-wider uppercase shadow">
+                  <span className="w-2 h-2 bg-amber-400 rounded-xs animate-pulse" />
+                  <span>{hud.airDropNotice}</span>
+                </div>
+              )}
+            </div>
+          )
         )}
 
         {(gameState === GameState.AIRPLANE ||
@@ -1583,15 +1733,27 @@ export const GameHud: React.FC<GameHudProps> = ({
         style={layoutStyle(hudLayout.aliveBox)}
         className="pointer-events-none absolute z-20 flex items-center gap-1.5 w-max"
       >
-        {hud.isRanked && (
+        {hud.isRanked && hud.gameVariant !== 'gladiadores' && (
           <div className="bg-red-700/90 border border-amber-300/80 px-1.5 py-1 text-[9px] font-black tracking-wider uppercase text-amber-200 whitespace-nowrap">
             RANK
           </div>
         )}
         <div className="flex items-center text-[11px] sm:text-xs font-bold shadow-md overflow-hidden rounded-[2px]">
           <div className="bg-gradient-to-r from-cyan-500/85 to-teal-400/85 px-2.5 py-1 flex items-center gap-1 text-white">
-            <span>Vivo</span>
-            <span className="font-mono font-black tabular-nums">{hud.aliveCount}</span>
+            <span>
+              {hud.gameVariant === 'gladiadores'
+                ? 'Arena'
+                : gameState === GameState.WAITING
+                  ? 'Lobby'
+                  : 'Vivo'}
+            </span>
+            <span className="font-mono font-black tabular-nums">
+              {hud.gameVariant === 'gladiadores' && hud.gladiadores
+                ? `${hud.gladiadores.playerTeamAlive}v${hud.gladiadores.enemyTeamAlive}`
+                : gameState === GameState.WAITING
+                  ? `${hud.aliveCount}/20`
+                  : hud.aliveCount}
+            </span>
           </div>
           <div className="bg-gradient-to-r from-orange-500/85 to-red-600/85 px-2.5 py-1 flex items-center gap-1 text-white">
             <span>Matou</span>

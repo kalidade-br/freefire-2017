@@ -1,5 +1,6 @@
 import { auth } from '../lib/firebase';
 import type {
+  BrMapId,
   CharacterConfig,
   MatchMode,
   WeaponId,
@@ -656,6 +657,7 @@ class MultiplayerClient {
 
   public async setPartyConfig(cfg: Partial<{
     mode: MatchMode;
+    mapId: BrMapId;
     isRanked: boolean;
     autoFillBots: boolean;
   }>): Promise<{ party: PartyState }> {

@@ -16,6 +16,7 @@ import {
   Settings,
   Shield,
   ShieldCheck,
+  Swords,
   UserPlus,
   Users,
   Volume2,
@@ -25,7 +26,10 @@ import { getCharacterAvatar } from '../game/avatars';
 import { soundEngine } from '../game/audio';
 import { multiplayerClient, PingStatus } from '../game/multiplayerClient';
 import {
+  BrMapId,
   CharacterConfig,
+  GameVariant,
+  GladiadoresFormat,
   MatchMode,
   PlayerProfile,
   getRankInfo,
@@ -43,12 +47,17 @@ import { VoiceChatHudWidget } from './VoiceChatHudWidget';
 interface LobbyScreenProps {
   profile: PlayerProfile;
   character: CharacterConfig;
+  brMapId: BrMapId;
+  gameVariant: GameVariant;
+  gladiadoresFormat: GladiadoresFormat;
+  gladiadoresTargetRounds: number;
   matchMode: MatchMode;
   isRanked: boolean;
   autoFillBots: boolean;
   account: PublicPlayerAccount | null;
   party: PartyState | null;
   invites: PartyInvitePayload[];
+  onChangeGladiadoresFormat: (format: GladiadoresFormat) => void;
   onChangeMatchMode: (mode: MatchMode) => void;
   onChangeRanked: (ranked: boolean) => void;
   onChangeAutoFillBots: (fill: boolean) => void;
@@ -76,12 +85,17 @@ interface LobbyScreenProps {
 export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   profile,
   character,
+  brMapId,
+  gameVariant,
+  gladiadoresFormat,
+  gladiadoresTargetRounds,
   matchMode,
   isRanked,
   autoFillBots,
   account,
   party,
   invites,
+  onChangeGladiadoresFormat,
   onChangeMatchMode,
   onChangeRanked: _onChangeRanked,
   onChangeAutoFillBots,
@@ -152,7 +166,16 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   const rank = getRankInfo(profile.rankPoints);
   const isPartyLeader = !party || !account || party.leaderId === account.id;
   const partyMembers = party?.members ?? [];
-  const maxTeamSlots = matchMode === 'duo' ? 2 : matchMode === 'squad' ? 4 : 1;
+  const maxTeamSlots =
+    gameVariant === 'gladiadores'
+      ? gladiadoresFormat === '2v2'
+        ? 2
+        : 1
+      : matchMode === 'duo'
+        ? 2
+        : matchMode === 'squad'
+          ? 4
+          : 1;
   const effectiveMembers =
     partyMembers.length > 0
       ? partyMembers
@@ -553,7 +576,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         </div>
 
         {/* CENTER-BOTTOM PODIUM SLOTS FOR DUO / SQUAD FORMATION (Matching Free Fire 4-man lobby screenshot) */}
-        {matchMode !== 'solo' && (
+        {((gameVariant === 'gladiadores' && gladiadoresFormat === '2v2') ||
+          (gameVariant === 'br' && matchMode !== 'solo')) && (
           <div className="pointer-events-auto absolute bottom-1 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 z-30 w-full max-w-[94vw] sm:max-w-[660px] px-2">
             <div
               className={`grid gap-2 w-full ${
@@ -693,7 +717,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               onClick={() => {
                 soundEngine.playUiClick(520);
                 setSelectedSlotAccountId(null);
-                if (partyMembers.length > 1) {
+                if (gameVariant === 'gladiadores') {
+                  onChangeGladiadoresFormat('1v1');
+                } else if (partyMembers.length > 1) {
                   onLeaveParty();
                 } else {
                   onChangeMatchMode('solo');
@@ -783,32 +809,54 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           {/* Team Mode Popover when open */}
           {teamPickerOpen && (
             <div className="absolute bottom-full right-0 mb-1.5 w-48 bg-[#121822]/98 border-2 border-amber-400 p-1.5 shadow-2xl space-y-1 z-40">
-              {(['solo', 'duo', 'squad'] as MatchMode[]).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  disabled={!isPartyLeader}
-                  onClick={() => {
-                    soundEngine.playUiClick(700);
-                    onChangeMatchMode(m);
-                    setTeamPickerOpen(false);
-                  }}
-                  className={`w-full px-2.5 py-1.5 text-left text-[11px] font-black uppercase flex items-center justify-between cursor-pointer disabled:opacity-50 ${
-                    matchMode === m
-                      ? 'bg-amber-400 text-black'
-                      : 'bg-black/40 hover:bg-white/10 text-white'
-                  }`}
-                >
-                  <span>{m}</span>
-                  <span className="text-[9px] font-mono">
-                    {m === 'solo' ? '1 Jogador' : m === 'duo' ? 'Equipe 2' : 'Equipe 4'}
-                  </span>
-                </button>
-              ))}
+              {gameVariant === 'gladiadores'
+                ? (['1v1', '2v2'] as GladiadoresFormat[]).map((fmt) => (
+                    <button
+                      key={fmt}
+                      type="button"
+                      onClick={() => {
+                        soundEngine.playUiClick(700);
+                        onChangeGladiadoresFormat(fmt);
+                        setTeamPickerOpen(false);
+                      }}
+                      className={`w-full px-2.5 py-1.5 text-left text-[11px] font-black uppercase flex items-center justify-between cursor-pointer ${
+                        gladiadoresFormat === fmt
+                          ? 'bg-red-500 text-white'
+                          : 'bg-black/40 hover:bg-white/10 text-white'
+                      }`}
+                    >
+                      <span>{fmt}</span>
+                      <span className="text-[9px] font-mono">
+                        {fmt === '1v1' ? 'Duelo 1x1' : 'Dupla 2x2'}
+                      </span>
+                    </button>
+                  ))
+                : (['solo', 'duo', 'squad'] as MatchMode[]).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      disabled={!isPartyLeader}
+                      onClick={() => {
+                        soundEngine.playUiClick(700);
+                        onChangeMatchMode(m);
+                        setTeamPickerOpen(false);
+                      }}
+                      className={`w-full px-2.5 py-1.5 text-left text-[11px] font-black uppercase flex items-center justify-between cursor-pointer disabled:opacity-50 ${
+                        matchMode === m
+                          ? 'bg-amber-400 text-black'
+                          : 'bg-black/40 hover:bg-white/10 text-white'
+                      }`}
+                    >
+                      <span>{m}</span>
+                      <span className="text-[9px] font-mono">
+                        {m === 'solo' ? '1 Jogador' : m === 'duo' ? 'Equipe 2' : 'Equipe 4'}
+                      </span>
+                    </button>
+                  ))}
             </div>
           )}
 
-          {/* Row 1: BR-RANKED / Mapa + SOLO/DUO/SQUAD Silhouette Pill */}
+          {/* Row 1: BR-RANKED / GLADIADORES + Team Pill */}
           <div className="w-full flex items-stretch gap-1">
             <button
               type="button"
@@ -818,17 +866,29 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               }}
               className="flex-1 bg-[#141923]/92 hover:bg-[#1b2230] border border-white/25 px-2.5 py-1.5 flex items-center gap-2 text-left cursor-pointer transition-colors min-w-0"
             >
-              <RankEmblemSvg
-                color={rank.color}
-                accent={rank.accent}
-                className="w-7 h-7 shrink-0"
-              />
+              {gameVariant === 'gladiadores' ? (
+                <div className="w-7 h-7 bg-red-950/90 border border-red-400/80 flex items-center justify-center shrink-0">
+                  <Swords className="w-4 h-4 text-amber-300" />
+                </div>
+              ) : (
+                <RankEmblemSvg
+                  color={rank.color}
+                  accent={rank.accent}
+                  className="w-7 h-7 shrink-0"
+                />
+              )}
               <div className="min-w-0 leading-tight">
                 <div className="text-[11px] sm:text-xs font-black uppercase text-white truncate">
-                  {isRanked ? 'BR-RANQUEADO' : 'CLÁSSICO · BR'}
+                  {gameVariant === 'gladiadores'
+                    ? `GLADIADORES · ${gladiadoresFormat.toUpperCase()}`
+                    : isRanked
+                      ? 'BR-RANQUEADO'
+                      : 'CLÁSSICO · BR'}
                 </div>
                 <div className="text-[9px] font-mono text-amber-300 truncate">
-                  João Pessoa · {isRanked ? 'Pontos Rank' : 'Sem Pontos'}
+                  {gameVariant === 'gladiadores'
+                    ? `Arena 3D · ${gladiadoresTargetRounds} Rodadas`
+                    : `${brMapId === 'bermuda' ? 'Bermuda' : 'João Pessoa'} · ${isRanked ? 'Pontos Rank' : 'Sem Pontos'}`}
                 </div>
               </div>
             </button>
@@ -840,17 +900,17 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 setTeamPickerOpen((v) => !v);
               }}
               className="bg-[#141923]/92 hover:bg-[#1e2636] border border-amber-400/60 px-2.5 py-1.5 flex flex-col items-center justify-center cursor-pointer transition-colors shrink-0 min-w-[66px]"
-              title="Mudar Solo / Duo / Squad"
+              title={gameVariant === 'gladiadores' ? 'Mudar 1v1 / 2v2' : 'Mudar Solo / Duo / Squad'}
             >
               <Users className="w-4 h-4 text-amber-300" />
               <span className="text-[9px] font-black uppercase tracking-wider text-white mt-0.5">
-                {matchMode}
+                {gameVariant === 'gladiadores' ? gladiadoresFormat : matchMode}
               </span>
             </button>
           </div>
 
-          {/* Row 2: Auto Formação Toggle (when Duo/Squad) + Big Glossy Golden INICIAR */}
-          {matchMode !== 'solo' && (
+          {/* Row 2: Auto Formação Toggle (when BR Duo/Squad) + Big Glossy Golden INICIAR */}
+          {gameVariant === 'br' && matchMode !== 'solo' && (
             <button
               type="button"
               disabled={!isPartyLeader}

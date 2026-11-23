@@ -1,14 +1,22 @@
 import React, { useState } from 'react';
-import { Award, Check, Shield, Users, X } from 'lucide-react';
-import { MatchMode, getRankInfo } from '../game/types';
+import { Award, Check, Shield, Swords, Users, X } from 'lucide-react';
+import { BrMapId, GameVariant, GladiadoresFormat, MatchMode, getRankInfo } from '../game/types';
 import { RankEmblemSvg } from './HudIcons';
 
 interface ModeSelectModalProps {
+  brMapId: BrMapId;
+  gameVariant: GameVariant;
+  gladiadoresFormat: GladiadoresFormat;
+  gladiadoresTargetRounds: number;
   matchMode: MatchMode;
   isRanked: boolean;
   autoFillBots: boolean;
   rankPoints: number;
   isPartyLeader: boolean;
+  onChangeBrMap: (mapId: BrMapId) => void;
+  onChangeGameVariant: (variant: GameVariant) => void;
+  onChangeGladiadoresFormat: (format: GladiadoresFormat) => void;
+  onChangeGladiadoresTargetRounds: (rounds: number) => void;
   onChangeMatchMode: (mode: MatchMode) => void;
   onChangeRanked: (ranked: boolean) => void;
   onChangeAutoFillBots: (fill: boolean) => void;
@@ -17,11 +25,19 @@ interface ModeSelectModalProps {
 }
 
 export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
+  brMapId,
+  gameVariant,
+  gladiadoresFormat,
+  gladiadoresTargetRounds,
   matchMode,
   isRanked,
   autoFillBots,
   rankPoints,
   isPartyLeader,
+  onChangeBrMap,
+  onChangeGameVariant,
+  onChangeGladiadoresFormat,
+  onChangeGladiadoresTargetRounds,
   onChangeMatchMode,
   onChangeRanked,
   onChangeAutoFillBots,
@@ -90,9 +106,12 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                 <button
                   type="button"
                   disabled={!isPartyLeader}
-                  onClick={() => onChangeRanked(true)}
-                  className={`md:col-span-5 relative min-h-[210px] sm:min-h-[240px] border-2 p-4 flex flex-col justify-between text-left overflow-hidden cursor-pointer transition-all disabled:cursor-not-allowed ${
-                    isRanked
+                  onClick={() => {
+                    onChangeGameVariant('br');
+                    onChangeRanked(true);
+                  }}
+                  className={`md:col-span-4 relative min-h-[210px] sm:min-h-[240px] border-2 p-4 flex flex-col justify-between text-left overflow-hidden cursor-pointer transition-all disabled:cursor-not-allowed ${
+                    gameVariant === 'br' && isRanked
                       ? 'border-purple-300 ring-2 ring-amber-400 shadow-[0_0_25px_rgba(168,85,247,0.45)]'
                       : 'border-white/25 hover:border-purple-400/80 opacity-85'
                   }`}
@@ -106,7 +125,7 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                     <span className="px-2 py-0.5 bg-black/55 border border-purple-300/60 text-[10px] font-black uppercase tracking-wider text-purple-200">
                       ARENA DO TROVÃO
                     </span>
-                    {isRanked && (
+                    {gameVariant === 'br' && isRanked && (
                       <span className="px-2 py-0.5 bg-amber-400 text-black font-black text-[10px] uppercase flex items-center gap-1">
                         <Check className="w-3 h-3" /> SELECIONADO
                       </span>
@@ -140,7 +159,7 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                         BR RANQUEADO
                       </div>
                       <div className="text-[10px] font-mono text-white/85">
-                        João Pessoa ⇄ · Pontos de Patente
+                        {brMapId === 'bermuda' ? 'Bermuda (Principal)' : 'João Pessoa (2ª Opção)'} ⇄ · Pontos de Patente
                       </div>
                     </div>
                     <span className="px-2 py-0.5 bg-black/55 border border-amber-400/60 text-[10px] font-mono text-amber-200">
@@ -153,9 +172,12 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                 <button
                   type="button"
                   disabled={!isPartyLeader}
-                  onClick={() => onChangeRanked(false)}
-                  className={`md:col-span-4 relative min-h-[210px] sm:min-h-[240px] border-2 p-4 flex flex-col justify-between text-left overflow-hidden cursor-pointer transition-all disabled:cursor-not-allowed ${
-                    !isRanked
+                  onClick={() => {
+                    onChangeGameVariant('br');
+                    onChangeRanked(false);
+                  }}
+                  className={`md:col-span-3 relative min-h-[210px] sm:min-h-[240px] border-2 p-4 flex flex-col justify-between text-left overflow-hidden cursor-pointer transition-all disabled:cursor-not-allowed ${
+                    gameVariant === 'br' && !isRanked
                       ? 'border-amber-300 ring-2 ring-amber-400 shadow-[0_0_25px_rgba(245,158,11,0.4)]'
                       : 'border-white/25 hover:border-amber-400/80 opacity-85'
                   }`}
@@ -164,36 +186,82 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                       'linear-gradient(155deg, #0c4a6e 0%, #1e3a8a 52%, #111827 100%)',
                   }}
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-1">
                     <span className="px-2 py-0.5 bg-black/55 border border-sky-300/60 text-[10px] font-black uppercase text-sky-200">
-                      MODO CLÁSSICO
+                      CLÁSSICO
                     </span>
-                    {!isRanked && (
+                    {gameVariant === 'br' && !isRanked && (
                       <span className="px-2 py-0.5 bg-amber-400 text-black font-black text-[10px] uppercase flex items-center gap-1">
-                        <Check className="w-3 h-3" /> SELECIONADO
+                        <Check className="w-3 h-3" /> ATIVO
                       </span>
                     )}
                   </div>
 
                   <div className="my-auto text-center py-4 space-y-1">
-                    <Award className="w-11 h-11 text-amber-300 mx-auto drop-shadow" />
-                    <div className="text-xs font-mono text-sky-100">
-                      51 Sobreviventes · João Pessoa Completa
+                    <Award className="w-10 h-10 text-amber-300 mx-auto drop-shadow" />
+                    <div className="text-[11px] font-mono text-sky-100">
+                      51 Sobreviventes · Ilha Completa
                     </div>
                   </div>
 
                   <div className="border-t border-white/20 pt-2">
-                    <div className="text-lg font-black tracking-wide uppercase">
+                    <div className="text-base font-black tracking-wide uppercase">
                       BATTLE ROYALE
                     </div>
                     <div className="text-[10px] font-mono text-white/85">
-                      João Pessoa ⇄ · Sem perda de patente
+                      {brMapId === 'bermuda' ? 'Bermuda (Principal)' : 'João Pessoa (2ª Opção)'} ⇄ · Sem perda de patente
+                    </div>
+                  </div>
+                </button>
+
+                {/* Card 3: GLADIADORES 1v1 / 2v2 */}
+                <button
+                  type="button"
+                  disabled={!isPartyLeader}
+                  onClick={() => onChangeGameVariant('gladiadores')}
+                  className={`md:col-span-3 relative min-h-[210px] sm:min-h-[240px] border-2 p-4 flex flex-col justify-between text-left overflow-hidden cursor-pointer transition-all disabled:cursor-not-allowed ${
+                    gameVariant === 'gladiadores'
+                      ? 'border-red-400 ring-2 ring-amber-400 shadow-[0_0_26px_rgba(239,68,68,0.45)]'
+                      : 'border-white/25 hover:border-red-400/80 opacity-85'
+                  }`}
+                  style={{
+                    background:
+                      'linear-gradient(155deg, #7f1d1d 0%, #991b1b 45%, #18181b 100%)',
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="px-2 py-0.5 bg-black/55 border border-red-300/60 text-[10px] font-black uppercase text-red-200">
+                      ARENA 1v1 / 2v2
+                    </span>
+                    {gameVariant === 'gladiadores' && (
+                      <span className="px-2 py-0.5 bg-amber-400 text-black font-black text-[10px] uppercase flex items-center gap-1">
+                        <Check className="w-3 h-3" /> ATIVO
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="my-auto text-center py-3 space-y-1.5">
+                    <Swords className="w-11 h-11 text-amber-300 mx-auto drop-shadow" />
+                    <div className="text-xs font-black uppercase text-amber-200">
+                      {gladiadoresFormat.toUpperCase()} · {gladiadoresTargetRounds} RODADAS
+                    </div>
+                    <div className="text-[10px] font-mono text-red-100/90">
+                      Vence quem chegar primeiro em {gladiadoresTargetRounds} rodadas
+                    </div>
+                  </div>
+
+                  <div className="border-t border-white/20 pt-2">
+                    <div className="text-base font-black tracking-wide uppercase">
+                      GLADIADORES
+                    </div>
+                    <div className="text-[10px] font-mono text-white/85">
+                      Arena 3D · Duelo por Rodadas
                     </div>
                   </div>
                 </button>
 
                 {/* Right Side Compact Cards: Treinamento + Squad Rules */}
-                <div className="md:col-span-3 flex flex-col gap-3">
+                <div className="md:col-span-2 flex flex-col gap-3">
                   <button
                     type="button"
                     onClick={() => {
@@ -209,62 +277,161 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                       </span>
                     </div>
                     <div>
-                      <div className="font-black text-sm uppercase">TREINAMENTO</div>
+                      <div className="font-black text-sm uppercase">TREINO</div>
                       <div className="text-[10px] font-mono text-sky-200/80">
-                        Armas & Mira Livre
+                        Mira Livre
                       </div>
                     </div>
                   </button>
 
                   <div className="flex-1 bg-black/50 border border-white/20 p-3 flex flex-col justify-between">
                     <div className="text-[10px] font-mono uppercase text-amber-300 font-bold">
-                      SALA MULTIPLAYER
+                      {gameVariant === 'gladiadores' ? 'ARENA 3D' : 'SALA ONLINE'}
                     </div>
                     <p className="text-[10px] text-neutral-300 leading-relaxed">
-                      Até 4 jogadores online por sala distribuídos entre as 12 equipes + bots táticos e reviver na Lojinha.
+                      {gameVariant === 'gladiadores'
+                        ? 'Duelo direto 1v1 ou 2v2 contra bots na Arena Gladiadores.'
+                        : 'Até 4 jogadores online + bots táticos e Lojinha.'}
                     </p>
                   </div>
                 </div>
               </div>
 
-              {/* Squad Formation Bar (Solo / Duo / Squad + Auto Formação) */}
-              <div className="bg-black/65 border border-white/20 p-3 sm:p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  {(['solo', 'duo', 'squad'] as MatchMode[]).map((m) => (
+              {/* Formation Bar: Solo/Duo/Squad for BR OR 1v1/2v2 + Rounds for Gladiadores */}
+              {gameVariant === 'gladiadores' ? (
+                <div className="bg-black/65 border border-red-500/35 p-3 sm:p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono uppercase text-neutral-400 mr-1">
+                      FORMATO:
+                    </span>
+                    {(['1v1', '2v2'] as GladiadoresFormat[]).map((fmt) => (
+                      <button
+                        key={fmt}
+                        type="button"
+                        onClick={() => onChangeGladiadoresFormat(fmt)}
+                        className={`px-4 py-2 border text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                          gladiadoresFormat === fmt
+                            ? 'bg-red-500 text-white border-amber-300'
+                            : 'bg-[#171d26] text-neutral-300 border-neutral-600 hover:border-white'
+                        }`}
+                      >
+                        <Users className="w-3.5 h-3.5 shrink-0" />
+                        <span>{fmt}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[10px] font-mono uppercase text-neutral-400">
+                      META DE RODADAS:
+                    </span>
+                    {[3, 5, 7].map((rounds) => (
+                      <button
+                        key={rounds}
+                        type="button"
+                        onClick={() => onChangeGladiadoresTargetRounds(rounds)}
+                        className={`px-3 py-2 border text-xs font-black uppercase cursor-pointer whitespace-nowrap ${
+                          gladiadoresTargetRounds === rounds
+                            ? 'bg-amber-500 text-black border-amber-200'
+                            : 'bg-[#171d26] text-neutral-300 border-neutral-600 hover:border-white'
+                        }`}
+                      >
+                        {rounds} RODADAS
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {/* BR Map Selector: Bermuda (Principal) vs João Pessoa (2ª Opção) */}
+                  <div className="bg-black/65 border border-amber-500/30 p-3 sm:p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+                    <div className="text-[10px] font-mono uppercase text-amber-300 font-bold tracking-wider">
+                      MAPA DO BATTLE ROYALE:
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 flex-1 sm:max-w-lg">
+                      <button
+                        type="button"
+                        disabled={!isPartyLeader}
+                        onClick={() => onChangeBrMap('bermuda')}
+                        className={`px-3 py-2 border text-left cursor-pointer disabled:cursor-not-allowed transition-colors ${
+                          brMapId === 'bermuda'
+                            ? 'bg-amber-500/20 border-amber-400 text-white'
+                            : 'bg-[#171d26] border-neutral-600 text-neutral-300 hover:border-white'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1.5">
+                          <span className="text-xs font-black uppercase">Bermuda</span>
+                          <span className="px-1.5 py-0.5 text-[9px] font-mono bg-amber-400 text-black font-black">
+                            PRINCIPAL
+                          </span>
+                        </div>
+                        <div className="text-[10px] font-mono text-neutral-300 mt-0.5">
+                          Ilha Clássica Completa
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={!isPartyLeader}
+                        onClick={() => onChangeBrMap('joao_pessoa')}
+                        className={`px-3 py-2 border text-left cursor-pointer disabled:cursor-not-allowed transition-colors ${
+                          brMapId === 'joao_pessoa'
+                            ? 'bg-sky-500/20 border-sky-400 text-white'
+                            : 'bg-[#171d26] border-neutral-600 text-neutral-300 hover:border-white'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1.5">
+                          <span className="text-xs font-black uppercase">João Pessoa</span>
+                          <span className="px-1.5 py-0.5 text-[9px] font-mono bg-white/10 border border-white/25 text-sky-200">
+                            2ª OPÇÃO
+                          </span>
+                        </div>
+                        <div className="text-[10px] font-mono text-neutral-300 mt-0.5">
+                          Orla, Lagoa e Farol
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="bg-black/65 border border-white/20 p-3 sm:p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      {(['solo', 'duo', 'squad'] as MatchMode[]).map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          disabled={!isPartyLeader}
+                          onClick={() => onChangeMatchMode(m)}
+                          className={`px-4 py-2 border text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed whitespace-nowrap ${
+                            matchMode === m
+                              ? 'bg-amber-500 text-black border-amber-200'
+                              : 'bg-[#171d26] text-neutral-300 border-neutral-600 hover:border-white'
+                          }`}
+                        >
+                          {m !== 'solo' && <Users className="w-3.5 h-3.5 shrink-0" />}
+                          <span>{m}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Auto Formação toggle (for Duo / Squad) */}
                     <button
-                      key={m}
                       type="button"
-                      disabled={!isPartyLeader}
-                      onClick={() => onChangeMatchMode(m)}
-                      className={`px-4 py-2 border text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed whitespace-nowrap ${
-                        matchMode === m
-                          ? 'bg-amber-500 text-black border-amber-200'
-                          : 'bg-[#171d26] text-neutral-300 border-neutral-600 hover:border-white'
+                      disabled={!isPartyLeader || matchMode === 'solo'}
+                      onClick={() => onChangeAutoFillBots(!autoFillBots)}
+                      className={`px-4 py-2 border text-xs font-black uppercase flex items-center justify-between gap-3 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap ${
+                        autoFillBots && matchMode !== 'solo'
+                          ? 'bg-emerald-950/70 border-emerald-400 text-emerald-200'
+                          : 'bg-[#171d26] border-neutral-600 text-neutral-300'
                       }`}
                     >
-                      {m !== 'solo' && <Users className="w-3.5 h-3.5 shrink-0" />}
-                      <span>{m}</span>
+                      <span>AUTO FORMAÇÃO (BOTS NO TIME)</span>
+                      <span className="px-2 py-0.5 bg-black/60 border border-white/20 font-mono text-[10px]">
+                        {matchMode === 'solo' ? 'SOLO' : autoFillBots ? 'LIGADA' : 'DESLIGADA'}
+                      </span>
                     </button>
-                  ))}
+                  </div>
                 </div>
-
-                {/* Auto Formação toggle (for Duo / Squad) */}
-                <button
-                  type="button"
-                  disabled={!isPartyLeader || matchMode === 'solo'}
-                  onClick={() => onChangeAutoFillBots(!autoFillBots)}
-                  className={`px-4 py-2 border text-xs font-black uppercase flex items-center justify-between gap-3 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap ${
-                    autoFillBots && matchMode !== 'solo'
-                      ? 'bg-emerald-950/70 border-emerald-400 text-emerald-200'
-                      : 'bg-[#171d26] border-neutral-600 text-neutral-300'
-                  }`}
-                >
-                  <span>AUTO FORMAÇÃO (BOTS NO TIME)</span>
-                  <span className="px-2 py-0.5 bg-black/60 border border-white/20 font-mono text-[10px]">
-                    {matchMode === 'solo' ? 'SOLO' : autoFillBots ? 'LIGADA' : 'DESLIGADA'}
-                  </span>
-                </button>
-              </div>
+              )}
             </>
           ) : (
             <div className="py-10 text-center space-y-3">
@@ -293,7 +460,9 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
           <span>
             {!isPartyLeader
               ? 'Apenas o líder do grupo pode alterar o modo.'
-              : `${isRanked ? 'BR RANQUEADO' : 'BATTLE ROYALE'} · ${matchMode.toUpperCase()}${matchMode !== 'solo' ? (autoFillBots ? ' · Auto Formação ON' : ' · Sem Bots Aliados') : ''}`}
+              : gameVariant === 'gladiadores'
+                ? `GLADIADORES · ${gladiadoresFormat.toUpperCase()} · Meta ${gladiadoresTargetRounds} Rodadas`
+                : `${isRanked ? 'BR RANQUEADO' : 'BATTLE ROYALE'} · ${brMapId === 'bermuda' ? 'Bermuda' : 'João Pessoa'} · ${matchMode.toUpperCase()}${matchMode !== 'solo' ? (autoFillBots ? ' · Auto Formação ON' : ' · Sem Bots Aliados') : ''}`}
           </span>
           <button
             type="button"

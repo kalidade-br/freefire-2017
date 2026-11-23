@@ -105,6 +105,9 @@ export type ShadowQuality = 'off' | 'low' | 'medium' | 'high' | 'ultra';
 export type ControlMode = 'auto' | 'desktop' | 'mobile';
 export type AimAssistMode = 'default' | 'precise';
 export type MatchMode = 'solo' | 'duo' | 'squad';
+export type GameVariant = 'br' | 'gladiadores';
+export type BrMapId = 'bermuda' | 'joao_pessoa';
+export type GladiadoresFormat = '1v1' | '2v2';
 
 export type HudElementId =
   | 'minimap'
@@ -705,6 +708,19 @@ export interface HudSnapshot {
   mouseResetNotice: boolean;
   currentPoi: string | null;
   matchMode: MatchMode;
+  gameVariant: GameVariant;
+  mapId: BrMapId;
+  gladiadores?: {
+    format: GladiadoresFormat;
+    round: number;
+    targetRounds: number;
+    playerScore: number;
+    enemyScore: number;
+    playerTeamAlive: number;
+    enemyTeamAlive: number;
+    phase: 'intro' | 'fight' | 'round_end';
+    banner: string | null;
+  };
   reviveTarget: {
     id: string;
     slotNumber: number;
