@@ -29,6 +29,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const handleGoogleSignIn = async () => {
     setError(null);
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      setError(
+        'Sem conexão com a internet no momento. Verifique sua rede ou entre com a Conta Clássica abaixo.',
+      );
+      return;
+    }
     setBusy(true);
     try {
       const cred = await signInWithPopup(auth, googleAuthProvider);
@@ -101,6 +107,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setError(
           `Domínio "${host}" ainda não autorizado no Firebase Auth. Adicione "${host}" em Firebase Console → Authentication → Settings → Authorized domains.`,
         );
+      } else if (code === 'auth/network-request-failed') {
+        setError(
+          'Falha de rede ao conectar com o Google/Firebase Auth. Verifique sua internet ou bloqueadores de conteúdo (AdBlock/VPN), ou use a Conta Clássica abaixo.',
+        );
+      } else if (code === 'auth/popup-blocked') {
+        setError(
+          'O navegador bloqueou o pop-up do Google. Permita pop-ups para este site e tente novamente.',
+        );
+      } else if (
+        code === 'auth/popup-closed-by-user' ||
+        code === 'auth/cancelled-popup-request'
+      ) {
+        setError('Login com Google cancelado antes da conclusão.');
       } else {
         setError(
           err instanceof Error

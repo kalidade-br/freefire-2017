@@ -73,6 +73,7 @@ export async function loadOrCreateFirestoreProfile(
   suggestedPublicId?: string,
 ): Promise<FirestoreUserProfileDoc | null> {
   if (!user.emailVerified) return null;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return null;
   const existingPromise = inFlightProfileLoads.get(user.uid);
   if (existingPromise) {
     return existingPromise;
@@ -167,6 +168,7 @@ export async function saveFirestoreProfile(
   >,
 ): Promise<void> {
   if (!user.emailVerified) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
   const docPath = `users/${user.uid}`;
   const ref = doc(db, 'users', user.uid);
   const updateData: Record<string, unknown> = {

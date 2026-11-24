@@ -1,6 +1,12 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
+import {
+  doc,
+  getDocFromServer,
+  getFirestore,
+  initializeFirestore,
+  type Firestore,
+} from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const resolvedFirebaseConfig = {
@@ -18,7 +24,27 @@ const resolvedFirebaseConfig = {
 
 const app = initializeApp(resolvedFirebaseConfig);
 
-export const db = getFirestore(app, resolvedFirebaseConfig.firestoreDatabaseId);
+const databaseId =
+  resolvedFirebaseConfig.firestoreDatabaseId &&
+  resolvedFirebaseConfig.firestoreDatabaseId !== '(default)'
+    ? resolvedFirebaseConfig.firestoreDatabaseId
+    : undefined;
+
+function createFirestoreClient(): Firestore {
+  try {
+    return initializeFirestore(
+      app,
+      {
+        experimentalForceLongPolling: true,
+      },
+      databaseId,
+    );
+  } catch {
+    return databaseId ? getFirestore(app, databaseId) : getFirestore(app);
+  }
+}
+
+export const db: Firestore = createFirestoreClient();
 export const auth = getAuth(app);
 export const googleAuthProvider = new GoogleAuthProvider();
 googleAuthProvider.setCustomParameters({ prompt: 'select_account' });
@@ -77,12 +103,23 @@ export function handleFirestoreError(
 
 async function testConnection(): Promise<void> {
   if (typeof window === 'undefined') return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    window.addEventListener(
+      'online',
+      () => {
+        void testConnection();
+      },
+      { once: true },
+    );
+    return;
+  }
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     if (
       error instanceof Error &&
-      error.message.includes('the client is offline')
+      error.message.includes('the client is offline') &&
+      (typeof navigator === 'undefined' || navigator.onLine !== false)
     ) {
       console.error('Please check your Firebase configuration.');
     }

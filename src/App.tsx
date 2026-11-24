@@ -198,6 +198,11 @@ const INITIAL_HUD: HudSnapshot = {
   aliveCount: 51,
   kills: 0,
   damageDealt: 0,
+  healingDone: 0,
+  headshotKills: 0,
+  matchSurvivalSec: 0,
+  totalMatchPlayers: 51,
+  weaponDamageStats: [],
   zoneTimerSec: 90,
   safeZone: {
     phase: 1,
@@ -328,6 +333,10 @@ export default function App() {
   const [matchMode, setMatchMode] = useState<MatchMode>('solo');
   const [isRanked, setIsRanked] = useState(false);
   const [lastRankDelta, setLastRankDelta] = useState<number | null>(null);
+  const [rankTransition, setRankTransition] = useState<{
+    prevPoints: number;
+    newPoints: number;
+  } | null>(null);
   const [webglError, setWebglError] = useState<string | null>(null);
   const [onlineStarting, setOnlineStarting] = useState(false);
   const [needsRotateLandscape, setNeedsRotateLandscape] = useState(() => {
@@ -703,6 +712,7 @@ export default function App() {
 
       if (next === GameState.LOBBY || next === GameState.MATCHMAKING) {
         setLastRankDelta(null);
+        setRankTransition(null);
       }
 
       if (next === GameState.LOBBY) {
@@ -735,12 +745,19 @@ export default function App() {
         setLastRankDelta(delta);
 
         const appliedDelta = delta ?? 0;
+        const nextRankPts = rankedActive
+          ? Math.max(0, curProfile.rankPoints + appliedDelta)
+          : curProfile.rankPoints;
+        setRankTransition({
+          prevPoints: curProfile.rankPoints,
+          newPoints: nextRankPts,
+        });
         const updated: PlayerProfile = {
           ...curProfile,
           matchesPlayed: curProfile.matchesPlayed + 1,
           wins: isWin ? curProfile.wins + 1 : curProfile.wins,
           gold: curProfile.gold + (isWin ? 250 : 60),
-          rankPoints: rankedActive ? Math.max(0, curProfile.rankPoints + appliedDelta) : curProfile.rankPoints,
+          rankPoints: nextRankPts,
           rankedMatches: rankedActive ? curProfile.rankedMatches + 1 : curProfile.rankedMatches,
           rankedWins: rankedActive && isWin ? curProfile.rankedWins + 1 : curProfile.rankedWins,
           totalKills: curProfile.totalKills + snap.kills,
@@ -1294,10 +1311,15 @@ export default function App() {
           state={gameState}
           hud={hud}
           isRanked={isRanked || hud.isRanked}
-          rankPoints={profile.rankPoints}
+          prevRankPoints={rankTransition?.prevPoints ?? profile.rankPoints}
+          rankPoints={rankTransition?.newPoints ?? profile.rankPoints}
           rankDelta={lastRankDelta}
-          onPlayAgain={() => void handleStartMatch()}
-          onReturnLobby={() => engineRef.current?.returnToLobby()}
+          playerNickname={profile.nickname}
+          playerModelId={character.modelId}
+          onReturnLobby={() => {
+            voiceChatManager.disconnect();
+            engineRef.current?.returnToLobby();
+          }}
         />
       )}
 

@@ -698,6 +698,11 @@ export interface HudSnapshot {
   aliveCount: number;
   kills: number;
   damageDealt: number;
+  healingDone: number;
+  headshotKills: number;
+  matchSurvivalSec: number;
+  totalMatchPlayers: number;
+  weaponDamageStats: Array<{ weaponId: WeaponId; name: string; damage: number }>;
   zoneTimerSec: number;
   safeZone: SafeZoneHudState;
   waitingTimerSec: number;
@@ -760,6 +765,11 @@ export interface HudSnapshot {
     maxHp: number;
     isDowned: boolean;
     eliminated: boolean;
+    kills?: number;
+    damageDealt?: number;
+    healingDone?: number;
+    survivalSec?: number;
+    modelId?: CharacterModelId;
     distance?: number;
     onScreen?: boolean;
     screenXPct?: number;

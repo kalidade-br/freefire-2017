@@ -119,6 +119,9 @@ export interface TargetDummy {
   eliminated: boolean;
   waitingActive?: boolean;
   kills: number;
+  damageDealt: number;
+  healingDone: number;
+  survivalSec: number;
   hitFlash: number;
   chestOffsetY: number;
   headOffsetY: number;
@@ -1426,6 +1429,9 @@ function createBotEntity(
     downTimer: 0,
     eliminated: false,
     kills: 0,
+    damageDealt: 0,
+    healingDone: 0,
+    survivalSec: 0,
     hitFlash: 0,
     chestOffsetY: 1.18,
     headOffsetY: 1.69,
@@ -1554,8 +1560,8 @@ const BOT_HIT_PROXY_MAT = new THREE.MeshBasicMaterial({
   depthWrite: false,
   colorWrite: false,
 });
-const BOT_CHEST_PROXY_GEO = new THREE.BoxGeometry(0.54, 0.72, 0.38);
-const BOT_HEAD_PROXY_GEO = new THREE.BoxGeometry(0.3, 0.32, 0.3);
+const BOT_CHEST_PROXY_GEO = new THREE.BoxGeometry(0.52, 0.56, 0.36);
+const BOT_HEAD_PROXY_GEO = new THREE.BoxGeometry(0.36, 0.36, 0.36);
 const BOT_VEST_GEO = new THREE.CylinderGeometry(0.175, 0.155, 0.31, 10);
 const BOT_HELMET_GEO = new THREE.SphereGeometry(0.122, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.58);
 const BOT_PACK_GEO = new THREE.BoxGeometry(0.24, 0.32, 0.14);
@@ -1665,12 +1671,12 @@ export function upgradeBotsToAdam(
 
     // Invisible fast bone-attached hit proxies (zero SkinnedMesh raycasting overhead)
     const chestHit = new THREE.Mesh(BOT_CHEST_PROXY_GEO, BOT_HIT_PROXY_MAT);
-    chestHit.position.set(0, -0.02, 0);
+    chestHit.position.set(0, -0.08, 0);
     chestHit.userData.targetId = bot.id;
     spineMount.add(chestHit);
 
     const headHit = new THREE.Mesh(BOT_HEAD_PROXY_GEO, BOT_HIT_PROXY_MAT);
-    headHit.position.set(0, pack.helmetOffsetY - 0.01, 0.01);
+    headHit.position.set(0, pack.helmetOffsetY + 0.005, 0.01);
     headHit.userData.targetId = bot.id;
     headHit.userData.isHeadshot = true;
     headMount.add(headHit);

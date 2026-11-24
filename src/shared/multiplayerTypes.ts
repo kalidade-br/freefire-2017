@@ -156,6 +156,8 @@ export interface RemotePlayerSync {
   bleedHp: number;
   eliminated: boolean;
   kills: number;
+  damageDealt?: number;
+  healingDone?: number;
   activeVehicleId: string | null;
   updatedAtMs: number;
 }
@@ -255,6 +257,8 @@ export interface ClientMatchStatePush {
   bleedHp: number;
   eliminated: boolean;
   kills: number;
+  damageDealt?: number;
+  healingDone?: number;
   activeVehicleId: string | null;
   vehicleState?: {
     id: string;

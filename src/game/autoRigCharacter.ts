@@ -329,6 +329,7 @@ function computeVertexSkin(
   z: number,
   isRigidHead: boolean,
   isCollarMesh: boolean,
+  isTorsoOnlyMesh: boolean,
   profile: AutoRigProfile,
 ): { indices: [number, number, number, number]; weights: [number, number, number, number] } {
   const acc: WeightAccumulator = { entries: [] };
@@ -347,7 +348,7 @@ function computeVertexSkin(
 
   // Compute smooth arm weight using the character-specific torso/arm separator curve
   let armWeight = 0;
-  if (y >= profile.armMinY) {
+  if (!isTorsoOnlyMesh && y >= profile.armMinY) {
     const boundX = profile.armBoundaryX(y);
     if (boundX < 50) {
       armWeight = smoothstep(boundX - 0.035, boundX + 0.035, absX);
@@ -534,8 +535,10 @@ export function autoRigStaticCharacter(
     // Classify submesh anatomically by world-meter bounding box (independent of GLTF node naming)
     const meshMinY = (entry.box.min.y - minY) * worldScale;
     const meshMaxY = (entry.box.max.y - minY) * worldScale;
+    const meshWidthX = (entry.box.max.x - entry.box.min.x) * worldScale;
     const isRigidHead = meshMinY >= 1.46;
     const isCollarMesh = !isRigidHead && meshMinY >= 0.88 && meshMaxY <= 1.56;
+    const isTorsoOnlyMesh = !isRigidHead && meshMinY >= 0.85 && meshMaxY <= 1.58 && meshWidthX < 0.48;
 
     const skinIndices = new Uint16Array(count * 4);
     const skinWeights = new Float32Array(count * 4);
@@ -558,7 +561,7 @@ export function autoRigStaticCharacter(
         (rz - centerZ) * localScale,
       );
 
-      const skin = computeVertexSkin(wx, wy, wz, isRigidHead, isCollarMesh, profile);
+      const skin = computeVertexSkin(wx, wy, wz, isRigidHead, isCollarMesh, isTorsoOnlyMesh, profile);
       const o = i * 4;
       skinIndices[o] = skin.indices[0];
       skinIndices[o + 1] = skin.indices[1];

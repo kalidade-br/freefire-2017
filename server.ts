@@ -380,6 +380,12 @@ function applyClientStatePush(
   existing.bleedHp = push.bleedHp;
   existing.eliminated = push.eliminated;
   existing.kills = Math.max(existing.kills, push.kills);
+  if (typeof push.damageDealt === 'number') {
+    existing.damageDealt = Math.max(existing.damageDealt ?? 0, push.damageDealt);
+  }
+  if (typeof push.healingDone === 'number') {
+    existing.healingDone = Math.max(existing.healingDone ?? 0, push.healingDone);
+  }
   existing.activeVehicleId = push.activeVehicleId;
   existing.updatedAtMs = nowMs;
 

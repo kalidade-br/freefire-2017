@@ -285,6 +285,8 @@ class SoundEngine {
   private lobbyAudio: HTMLAudioElement | null = null;
   private lobbyMusicMode: LobbyMusicMode = 'off';
   private lobbyFadeTimer: number | null = null;
+  private booyahAudio: HTMLAudioElement | null = null;
+  private booyahFallbackTimer: number | null = null;
   private recentRemoteShots: number[] = [];
   private lastSafeDmgAudioMs = 0;
 
@@ -302,6 +304,9 @@ class SoundEngine {
       this.stopRunAudio();
       this.stopMedkitAudio();
       this.stopVehicleAudio();
+    }
+    if (this.booyahAudio) {
+      this.booyahAudio.volume = this.muted ? 0 : Math.max(0.05, Math.min(1, this.volume * 0.9));
     }
     this.syncLobbyMusicPlayback();
   }
@@ -448,6 +453,92 @@ class SoundEngine {
         audio.volume = Math.max(0, Math.min(1, audio.volume + diff * 0.24));
       }
     }, 55);
+  }
+
+  public stopBooyahMusic(): void {
+    if (this.booyahFallbackTimer !== null) {
+      clearTimeout(this.booyahFallbackTimer);
+      this.booyahFallbackTimer = null;
+    }
+    if (this.booyahAudio) {
+      try {
+        this.booyahAudio.onended = null;
+        this.booyahAudio.onerror = null;
+        this.booyahAudio.onloadedmetadata = null;
+        this.booyahAudio.pause();
+        this.booyahAudio.currentTime = 0;
+      } catch {
+        // ignore
+      }
+      this.booyahAudio = null;
+    }
+  }
+
+  public playBooyahMusic(onEnded?: () => void, onDuration?: (sec: number) => void): void {
+    this.stopBooyahMusic();
+    this.setLobbyMusicMode('off');
+    this.stopRunAudio();
+    this.stopMedkitAudio();
+    this.stopVehicleAudio();
+
+    if (typeof Audio === 'undefined') {
+      if (onEnded) {
+        this.booyahFallbackTimer = window.setTimeout(onEnded, 5500);
+      }
+      return;
+    }
+
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      this.stopBooyahMusic();
+      onEnded?.();
+    };
+
+    const el = new Audio('/audio/booyah.mp3');
+    el.preload = 'auto';
+    el.loop = false;
+    el.volume = this.muted ? 0 : Math.max(0.05, Math.min(1, this.volume * 0.9));
+    this.booyahAudio = el;
+
+    const scheduleFallback = (ms: number) => {
+      if (this.booyahFallbackTimer !== null) {
+        clearTimeout(this.booyahFallbackTimer);
+      }
+      this.booyahFallbackTimer = window.setTimeout(finish, ms);
+    };
+
+    let triedRemoteFallback = false;
+    el.onloadedmetadata = () => {
+      if (Number.isFinite(el.duration) && el.duration > 0.5) {
+        onDuration?.(el.duration);
+        scheduleFallback(Math.ceil(el.duration * 1000) + 450);
+      }
+    };
+    el.onended = () => {
+      finish();
+    };
+    el.onerror = () => {
+      if (!triedRemoteFallback) {
+        triedRemoteFallback = true;
+        el.src = 'https://kalidade-br.github.io/freefire-2017/som/booyah.mp3';
+        el.play().catch(() => {
+          scheduleFallback(5500);
+        });
+      } else {
+        scheduleFallback(5500);
+      }
+    };
+
+    // Default fallback ~6s until metadata reports actual MP3 duration
+    scheduleFallback(6500);
+
+    el.play().catch(() => {
+      if (!triedRemoteFallback) {
+        scheduleFallback(5500);
+      }
+    });
   }
 
   private ready(): boolean {
