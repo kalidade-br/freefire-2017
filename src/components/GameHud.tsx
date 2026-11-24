@@ -1626,6 +1626,13 @@ export const GameHud: React.FC<GameHudProps> = ({
                   <span>{hud.airDropNotice}</span>
                 </div>
               )}
+
+              {hud.stanceNotice && (
+                <div className="mt-1 flex items-center gap-1.5 bg-red-950/92 border border-red-400 px-3 py-1 text-[11px] font-mono font-black text-red-100 tracking-wide shadow-lg">
+                  <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                  <span>{hud.stanceNotice}</span>
+                </div>
+              )}
             </div>
           )
         )}

@@ -80,7 +80,7 @@ const MAXIM_PROFILE: AutoRigProfile = {
   targetHeight: 1.74,
   crotchY: 0.72,
   armMinY: 1.24,
-  armBoundaryX: (y: number) => (y >= 1.24 ? 0.175 : 99),
+  armBoundaryX: (y: number) => (y >= 1.24 ? 0.184 : 99),
   joints: {
     mixamorigHips: [0, 0.88, 0],
     mixamorigSpine: [0, 0.995, 0],
@@ -89,16 +89,16 @@ const MAXIM_PROFILE: AutoRigProfile = {
     mixamorigNeck: [0, 1.43, -0.012],
     mixamorigHead: [0, 1.515, -0.008],
     mixamorigHeadTop_End: [0, 1.74, -0.008],
-    mixamorigLeftShoulder: [0.085, 1.375, -0.025],
-    mixamorigLeftArm: [0.195, 1.375, -0.032],
-    mixamorigLeftForeArm: [0.43, 1.365, -0.032],
+    mixamorigLeftShoulder: [0.092, 1.375, -0.025],
+    mixamorigLeftArm: [0.208, 1.375, -0.032],
+    mixamorigLeftForeArm: [0.435, 1.365, -0.032],
     mixamorigLeftHand: [0.715, 1.355, -0.012],
     mixamorigLeftHandMiddle1: [0.805, 1.355, -0.015],
-    mixamorigRightShoulder: [-0.085, 1.375, -0.025],
-    mixamorigRightArm: [-0.195, 1.375, -0.032],
-    mixamorigRightForeArm: [-0.43, 1.365, -0.032],
-    mixamorigRightHand: [-0.715, 1.355, -0.012],
-    mixamorigRightHandMiddle1: [-0.805, 1.355, -0.015],
+    mixamorigRightShoulder: [-0.092, 1.380, -0.015],
+    mixamorigRightArm: [-0.220, 1.382, -0.010],
+    mixamorigRightForeArm: [-0.438, 1.372, -0.012],
+    mixamorigRightHand: [-0.715, 1.360, -0.012],
+    mixamorigRightHandMiddle1: [-0.805, 1.360, -0.015],
     mixamorigLeftUpLeg: [0.105, 0.855, 0.01],
     mixamorigLeftLeg: [0.132, 0.47, -0.018],
     mixamorigLeftFoot: [0.173, 0.105, -0.032],
@@ -346,9 +346,15 @@ function computeVertexSkin(
   const absX = Math.abs(x);
   const isLeft = x >= 0;
 
-  // Compute smooth arm weight using the character-specific torso/arm separator curve
+  // Compute smooth arm weight using the character-specific torso/arm separator curve.
+  // Torso/hoodie submeshes keep ribcage/waist strictly torso-bound, while allowing upper shoulder sleeves
+  // (y >= 1.30, |x| >= 0.168) to follow the shoulder/upper-arm gently so arms never poke through frozen cuffs.
   let armWeight = 0;
-  if (!isTorsoOnlyMesh && y >= profile.armMinY) {
+  if (isTorsoOnlyMesh) {
+    if (y >= 1.30 && absX >= 0.168) {
+      armWeight = smoothstep(1.29, 1.34, y) * smoothstep(0.165, 0.212, absX) * 0.62;
+    }
+  } else if (y >= profile.armMinY) {
     const boundX = profile.armBoundaryX(y);
     if (boundX < 50) {
       armWeight = smoothstep(boundX - 0.035, boundX + 0.035, absX);

@@ -340,6 +340,7 @@ const _camTarget = new THREE.Vector3();
 const _camDesired = new THREE.Vector3();
 const _centerNdc = new THREE.Vector2(0, 0);
 const _spreadNdc = new THREE.Vector2(0, 0);
+const _probePos = { x: 0, y: 0, z: 0 };
 
 const ALLY_NAME_POOL = [
   'Gabriel_BR',
@@ -538,6 +539,8 @@ export class BattleRoyaleEngine {
   private airDropCountSpawned = 0;
   private airDropNotice: string | null = null;
   private airDropNoticeTimer = 0;
+  private stanceNotice: string | null = null;
+  private stanceNoticeTimer = 0;
 
   private healRingGeo = new THREE.RingGeometry(0.55, 0.82, 26);
   private healRingMat = new THREE.MeshBasicMaterial({
@@ -627,9 +630,17 @@ export class BattleRoyaleEngine {
   private backpackItems: BackpackItem[] = [];
   private nextBackpackItemId = 1;
   private vaultTimer = 0;
+  private readonly vaultDuration = 0.46;
   private canVaultWindow = false;
   private vaultDirX = 0;
   private vaultDirZ = -1;
+  private vaultStartX = 0;
+  private vaultStartY = 0;
+  private vaultStartZ = 0;
+  private vaultPeakY = 0;
+  private vaultEndX = 0;
+  private vaultEndY = 0;
+  private vaultEndZ = 0;
   private revivingBotId: string | null = null;
   private reviveTimer = 0;
   private readonly reviveDuration = 3.0;
@@ -3381,15 +3392,16 @@ export class BattleRoyaleEngine {
     origin: THREE.Vector3,
     dir: THREE.Vector3,
     maxDist: number,
+    minHitDist = 0.05,
   ): number | null {
     if (this.isInWaitLobbyArea(origin.x, origin.z)) {
-      return this.world.waitCollisionGrid.raycast(origin, dir, maxDist);
+      return this.world.waitCollisionGrid.raycast(origin, dir, maxDist, minHitDist);
     }
     if (this.isInGladiadoresArea(origin.x, origin.z)) {
-      return this.world.gladiadoresCollisionGrid.raycast(origin, dir, maxDist);
+      return this.world.gladiadoresCollisionGrid.raycast(origin, dir, maxDist, minHitDist);
     }
     if (this.isBermudaMapActive()) {
-      return this.world.bermudaCollisionGrid.raycast(origin, dir, maxDist);
+      return this.world.bermudaCollisionGrid.raycast(origin, dir, maxDist, minHitDist);
     }
     return null;
   }
@@ -3926,6 +3938,8 @@ export class BattleRoyaleEngine {
     this.airDropCountSpawned = 0;
     this.airDropNotice = null;
     this.airDropNoticeTimer = 0;
+    this.stanceNotice = null;
+    this.stanceNoticeTimer = 0;
     this.initSafeZone();
 
     // Shuffle fresh Brazilian nicknames for allies each match
@@ -4002,6 +4016,9 @@ export class BattleRoyaleEngine {
       b.escapeTimer = 0;
       b.badLootId = null;
       b.badLootTimer = 0;
+      b.shopTimer = 0;
+      b.shopCooldown = 0;
+      b.targetVendingId = null;
       b.vy = 0;
       b.targetId = null;
       b.aiTimer = 0.2 + ((i * 19) % 15) * 0.05;
@@ -5447,10 +5464,12 @@ export class BattleRoyaleEngine {
     maxDist: number,
     ignoreSillTag = false,
     ignoreGloo = true,
+    ignoreVehicles = true,
+    minHitDist = 0.05,
   ): number | null {
     _rayOrigin.set(originX, originY, originZ);
     _rayDir.set(dirX, 0, dirZ);
-    let best: number | null = this.raycastActiveGlbWall(_rayOrigin, _rayDir, maxDist);
+    let best: number | null = this.raycastActiveGlbWall(_rayOrigin, _rayDir, maxDist, minHitDist);
 
     this.world.queryStaticCollidersNear(originX, originZ, maxDist + 2.2, this._colScratch);
     const cols = this._colScratch;
@@ -5464,7 +5483,7 @@ export class BattleRoyaleEngine {
         const c = list[i];
         if (originY < c.minY || originY > c.maxY) continue;
         if (ignoreSillTag && c.tag === 'house-window-sill') continue;
-        if (c.tag?.startsWith('vehicle-')) continue;
+        if (ignoreVehicles && c.tag?.startsWith('vehicle-')) continue;
         if (ignoreGloo && c.tag?.startsWith('gloo')) continue;
         const dx = originX - c.cx;
         const dz = originZ - c.cz;
@@ -5475,7 +5494,7 @@ export class BattleRoyaleEngine {
         const rdx = dirX * cos - dirZ * sin;
         const rdz = dirX * sin + dirZ * cos;
 
-        let tMin = 0.05;
+        let tMin = minHitDist;
         let tMax = maxDist;
         if (Math.abs(rdx) < 1e-6) {
           if (Math.abs(ox) > c.halfW) continue;
@@ -5515,6 +5534,108 @@ export class BattleRoyaleEngine {
     return best;
   }
 
+  private isPointBlockedHorizontal(
+    x: number,
+    y: number,
+    z: number,
+    radius: number,
+    minOffset: number,
+    maxOffset: number,
+    stepUp: number,
+    ignoreVehicleId: string | null = this.activeVehicleId,
+    ignoreWindowSill = false,
+  ): boolean {
+    _probePos.x = x;
+    _probePos.y = y;
+    _probePos.z = z;
+    this.resolveEntityHorizontalCollisions(
+      _probePos,
+      radius,
+      ignoreVehicleId,
+      ignoreWindowSill,
+      minOffset,
+      maxOffset,
+      stepUp,
+    );
+    return Math.hypot(_probePos.x - x, _probePos.z - z) > 0.025;
+  }
+
+  private canGoProneHere(): boolean {
+    const py = this.pos.y;
+    const activeYaw = this.combatFacingTimer > 0 ? this.yaw : this.characterYaw;
+    const fwdX = -Math.sin(activeYaw);
+    const fwdZ = -Math.cos(activeYaw);
+    const rightX = Math.cos(activeYaw);
+    const rightZ = -Math.sin(activeYaw);
+    const bounds = this.getActiveBounds();
+
+    // Check full longitudinal body footprint (feet -0.74m .. chest/head +0.82m) + lateral width
+    const longOffsets = [-0.74, -0.38, 0, 0.42, 0.82];
+    for (let i = 0; i < longOffsets.length; i++) {
+      const off = longOffsets[i];
+      const sx = this.pos.x + fwdX * off;
+      const sz = this.pos.z + fwdZ * off;
+      if (sx < bounds.minX + 0.3 || sx > bounds.maxX - 0.3 || sz < bounds.minZ + 0.3 || sz > bounds.maxZ - 0.3) {
+        return false;
+      }
+      if (this.isPointBlockedHorizontal(sx, py, sz, 0.25, 0.16, 0.68, 0.22)) {
+        return false;
+      }
+      const fl = this.resolveFloorHeight(sx, sz, py + 0.36, 0.24);
+      if (fl <= -50 || Math.abs(fl - py) > 0.44) {
+        return false;
+      }
+    }
+
+    // Check lateral shoulders/hips around center so corner walls cannot clip body
+    const latOffsets = [-0.24, 0.24];
+    for (let i = 0; i < latOffsets.length; i++) {
+      const sx = this.pos.x + rightX * latOffsets[i];
+      const sz = this.pos.z + rightZ * latOffsets[i];
+      if (this.isPointBlockedHorizontal(sx, py, sz, 0.22, 0.16, 0.68, 0.22)) {
+        return false;
+      }
+    }
+
+    // Check no thin wall or divider cuts horizontally between feet and head
+    const backX = this.pos.x - fwdX * 0.72;
+    const backZ = this.pos.z - fwdZ * 0.72;
+    const hitLow = this.raycastSillOrWallFrom(backX, py + 0.26, backZ, fwdX, fwdZ, 1.54, false, false, false, 0.02);
+    if (hitLow !== null && hitLow <= 1.54) return false;
+    const hitMid = this.raycastSillOrWallFrom(backX, py + 0.46, backZ, fwdX, fwdZ, 1.54, false, false, false, 0.02);
+    if (hitMid !== null && hitMid <= 1.54) return false;
+
+    return true;
+  }
+
+  private resolveProneFootHeadContainment(stepUp: number): void {
+    const fwdX = -Math.sin(this.characterYaw);
+    const fwdZ = -Math.cos(this.characterYaw);
+    const probes = [0.56, -0.68];
+    for (let i = 0; i < probes.length; i++) {
+      const px = this.pos.x + fwdX * probes[i];
+      const pz = this.pos.z + fwdZ * probes[i];
+      _probePos.x = px;
+      _probePos.y = this.pos.y;
+      _probePos.z = pz;
+      this.resolveEntityHorizontalCollisions(
+        _probePos,
+        0.24,
+        this.activeVehicleId,
+        false,
+        0.16,
+        0.62,
+        stepUp,
+      );
+      const dx = _probePos.x - px;
+      const dz = _probePos.z - pz;
+      if (dx * dx + dz * dz > 1e-6) {
+        this.pos.x += dx;
+        this.pos.z += dz;
+      }
+    }
+  }
+
   private findNearbyWindowSill(): boolean {
     const py = this.pos.y;
     const fwdX = -Math.sin(this.yaw);
@@ -5526,19 +5647,20 @@ export class BattleRoyaleEngine {
     for (let i = 0; i < cols.length; i++) {
       const c = cols[i];
       if (c.tag !== 'house-window-sill') continue;
-      if (py < c.minY - 0.55 || py > c.maxY - 0.12) continue;
+      if (py < c.minY - 0.55 || py > c.maxY - 0.14) continue;
+      if (c.maxY < py + 0.55 || c.maxY > py + 1.25) continue;
       const dx = this.pos.x - c.cx;
       const dz = this.pos.z - c.cz;
-      const maxExtent = c.halfW + c.halfD + 1.5;
+      const maxExtent = c.halfW + c.halfD + 1.4;
       if (Math.abs(dx) > maxExtent || Math.abs(dz) > maxExtent) continue;
       const cos = Math.cos(c.rotY);
       const sin = Math.sin(c.rotY);
       const lx = dx * cos - dz * sin;
       const lz = dx * sin + dz * cos;
-      if (Math.abs(lx) <= c.halfW + 1.15 && Math.abs(lz) <= c.halfD + 1.15) {
+      if (Math.abs(lx) <= c.halfW + 1.1 && Math.abs(lz) <= c.halfD + 1.1) {
         const toDist = Math.hypot(dx, dz);
-        const facingDot = toDist > 0.2 ? ((-dx * fwdX - dz * fwdZ) / toDist) : 1;
-        if (facingDot < 0.35 && toDist > 0.65) continue;
+        const facingDot = toDist > 0.2 ? (-dx * fwdX - dz * fwdZ) / toDist : 1;
+        if (facingDot < 0.45 && toDist > 0.55) continue;
 
         let localDirX = 0;
         let localDirZ = 0;
@@ -5551,25 +5673,55 @@ export class BattleRoyaleEngine {
         const dirZ = -localDirX * sin + localDirZ * cos;
         const tanX = -dirZ;
         const tanZ = dirX;
-        const clearDist = Math.max(1.25, Math.min(1.85, toDist + 0.72));
+        const clearDist = Math.max(1.38, Math.min(1.92, toDist + 0.85));
 
-        // Verify window opening is genuinely clear (not boarded, shuttered, or gloo-blocked)
+        // Verify approach before sill & full 5x4 rectangular opening are completely unobstructed
         let blocked = false;
-        const latOffsets = [-0.24, 0, 0.24];
-        const hOffsets = [1.18, 1.45, 1.72];
+        const approachClear = Math.max(0.25, toDist - 0.25);
+        for (const ah of [0.34, 0.56]) {
+          const hitA = this.raycastSillOrWallFrom(
+            this.pos.x,
+            py + ah,
+            this.pos.z,
+            dirX,
+            dirZ,
+            approachClear,
+            true,
+            false,
+            false,
+            0.04,
+          );
+          if (hitA !== null) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) continue;
+
+        const latOffsets = [-0.28, -0.14, 0, 0.14, 0.28];
+        const minOpenY = Math.max(py + 1.14, c.maxY + 0.14);
+        const maxOpenY = Math.max(minOpenY + 0.55, py + 1.84);
+        const hSteps = [
+          minOpenY,
+          minOpenY + (maxOpenY - minOpenY) * 0.33,
+          minOpenY + (maxOpenY - minOpenY) * 0.66,
+          maxOpenY,
+        ];
         for (let l = 0; l < latOffsets.length && !blocked; l++) {
           const ox = this.pos.x + tanX * latOffsets[l];
           const oz = this.pos.z + tanZ * latOffsets[l];
-          for (let h = 0; h < hOffsets.length; h++) {
+          for (let h = 0; h < hSteps.length; h++) {
             const hit = this.raycastSillOrWallFrom(
               ox,
-              py + hOffsets[h],
+              hSteps[h],
               oz,
               dirX,
               dirZ,
               clearDist,
               true,
               false,
+              false,
+              0.04,
             );
             if (hit !== null && hit <= clearDist - 0.04) {
               blocked = true;
@@ -5590,19 +5742,26 @@ export class BattleRoyaleEngine {
           continue;
         }
         const landFloor = this.resolveFloorHeight(landX, landZ, py + 1.15);
-        if (landFloor <= -50 || landFloor > py + 0.45) continue;
+        if (landFloor <= -50 || landFloor > py + 0.42 || landFloor < py - 3.6) continue;
+        if (this.isPointBlockedHorizontal(landX, landFloor, landZ, 0.32, 0.34, 1.48, 0.38)) continue;
+        if (!this.hasVerticalClearance(landX, landFloor, landZ, 1.48, 0.22)) continue;
 
         this.vaultDirX = dirX;
         this.vaultDirZ = dirZ;
+        this.vaultStartX = this.pos.x;
+        this.vaultStartY = py;
+        this.vaultStartZ = this.pos.z;
+        this.vaultPeakY = Math.max(py + 0.52, c.maxY + 0.22);
+        this.vaultEndX = landX;
+        this.vaultEndY = landFloor;
+        this.vaultEndZ = landZ;
         return true;
       }
     }
 
-    // 2. Strict architectural window detector for bermuda.glb & static meshes
+    // 2. Strict square/rectangular architectural window detector for bermuda.glb & static meshes
     const yawOffsets = [0, -0.14, 0.14];
-    const openLats = [-0.26, 0, 0.26];
-    const openHeights = [1.18, 1.33, 1.48, 1.63, 1.78];
-    const headerHeights = [1.94, 2.16, 2.38, 2.6];
+    const openLats = [-0.28, -0.14, 0, 0.14, 0.28];
 
     for (let a = 0; a < yawOffsets.length; a++) {
       const ang = this.yaw + yawOffsets[a];
@@ -5611,73 +5770,202 @@ export class BattleRoyaleEngine {
       const tanX = -rz;
       const tanZ = rx;
 
-      // Step A: Find sill hit at waist height
-      const h64 = this.raycastSillOrWallXZ(py + 0.64, rx, rz, 1.32);
-      const h86 = this.raycastSillOrWallXZ(py + 0.86, rx, rz, 1.32);
-      const h104 = this.raycastSillOrWallXZ(py + 1.04, rx, rz, 1.32);
+      // Step A: Find flat waist-height sill wall across player shoulders
+      const h64 = this.raycastSillOrWallXZ(py + 0.64, rx, rz, 1.25);
+      const h84 = this.raycastSillOrWallXZ(py + 0.84, rx, rz, 1.25);
+      const h100 = this.raycastSillOrWallXZ(py + 1.0, rx, rz, 1.25);
       let dSill: number | null = null;
-      if (h64 !== null && h64 >= 0.2) dSill = h64;
-      if (h86 !== null && h86 >= 0.2 && (dSill === null || h86 < dSill)) dSill = h86;
-      if (h104 !== null && h104 >= 0.2 && (dSill === null || h104 < dSill)) dSill = h104;
+      if (h64 !== null && h64 >= 0.22) dSill = h64;
+      if (h84 !== null && h84 >= 0.22 && (dSill === null || h84 < dSill)) dSill = h84;
+      if (h100 !== null && h100 >= 0.22 && (dSill === null || h100 < dSill)) dSill = h100;
       if (dSill === null) continue;
 
-      // Step B: Anti-ramp / anti-subida verification — vertical wall must also exist at ankle/shin level
-      const dLow = this.raycastSillOrWallXZ(py + 0.26, rx, rz, 1.55);
-      if (dLow === null || Math.abs(dLow - dSill) > 0.28) continue;
-      const slopeProbeDist = Math.max(0.28, dSill * 0.72);
+      // Confirm sill wall spans across player width laterally (not just a thin post or corner)
+      const dSillL = this.raycastSillOrWallFrom(
+        this.pos.x - tanX * 0.22,
+        py + 0.72,
+        this.pos.z - tanZ * 0.22,
+        rx,
+        rz,
+        dSill + 0.35,
+        false,
+        true,
+      );
+      const dSillR = this.raycastSillOrWallFrom(
+        this.pos.x + tanX * 0.22,
+        py + 0.72,
+        this.pos.z + tanZ * 0.22,
+        rx,
+        rz,
+        dSill + 0.35,
+        false,
+        true,
+      );
+      if (
+        dSillL === null ||
+        dSillR === null ||
+        Math.abs(dSillL - dSill) > 0.26 ||
+        Math.abs(dSillR - dSill) > 0.26
+      ) {
+        continue;
+      }
+
+      // Measure exact sill top Y where wall stops and window opening begins
+      let sillTopY: number | null = null;
+      for (let probeH = 0.56; probeH <= 1.28; probeH += 0.09) {
+        const hitAtH = this.raycastSillOrWallFrom(
+          this.pos.x,
+          py + probeH,
+          this.pos.z,
+          rx,
+          rz,
+          dSill + 0.4,
+          false,
+          true,
+        );
+        if (hitAtH === null || hitAtH > dSill + 0.25) {
+          sillTopY = py + probeH - 0.045;
+          break;
+        }
+      }
+      if (sillTopY === null || sillTopY < py + 0.56 || sillTopY > py + 1.24) continue;
+
+      // Step B: Anti-ramp / anti-container-base — solid vertical wall at ankle/shin level, flat floor ahead
+      const dLow24 = this.raycastSillOrWallXZ(py + 0.24, rx, rz, 1.5);
+      const dLow44 = this.raycastSillOrWallXZ(py + 0.44, rx, rz, 1.5);
+      if (
+        dLow24 === null ||
+        dLow44 === null ||
+        Math.abs(dLow24 - dSill) > 0.26 ||
+        Math.abs(dLow44 - dSill) > 0.26
+      ) {
+        continue;
+      }
+      const slopeProbeDist = Math.max(0.26, dSill * 0.72);
       const aheadFloor = this.resolveFloorHeight(
         this.pos.x + rx * slopeProbeDist,
         this.pos.z + rz * slopeProbeDist,
         py + 0.45,
         0.45,
       );
-      if (aheadFloor > py + 0.26) continue;
+      if (aheadFloor > py + 0.24) continue;
 
-      // Step C: Mandatory window header / lintel above the opening (rejects containers, crates, fences, low walls, hills!)
-      let headerHit: number | null = null;
+      // Step C: Mandatory window header / lintel directly above the opening (rejects containers, fences, hills!)
+      let headerBottomY: number | null = null;
       let headerTooClose = false;
-      for (let hh = 0; hh < headerHeights.length; hh++) {
+      for (let probeY = sillTopY + 0.68; probeY <= py + 2.58; probeY += 0.14) {
         const dHead = this.raycastSillOrWallFrom(
           this.pos.x,
-          py + headerHeights[hh],
+          probeY,
           this.pos.z,
           rx,
           rz,
-          dSill + 0.55,
+          dSill + 0.52,
           true,
           true,
         );
         if (dHead !== null) {
-          if (dHead < dSill - 0.3) {
+          if (dHead < dSill - 0.25) {
             headerTooClose = true;
             break;
           }
-          if (Math.abs(dHead - dSill) <= 0.38) {
-            headerHit = dHead;
+          if (Math.abs(dHead - dSill) <= 0.34) {
+            headerBottomY = probeY;
             break;
           }
         }
       }
-      if (headerTooClose || headerHit === null) continue;
+      if (headerTooClose || headerBottomY === null) continue;
+      if (headerBottomY - sillTopY < 0.66) continue;
 
-      // Step D: Dense 3x5 opening clearance check (rejects boarded-up / closed / barred windows and gloo walls!)
-      const checkOpenDist = dSill + 1.15;
+      // Step D: Mandatory LEFT & RIGHT vertical window jambs (proves a real bounded square/rectangular window!)
+      const midOpenY = (sillTopY + Math.min(headerBottomY - 0.1, sillTopY + 0.88)) * 0.5;
+      let leftJambOffset: number | null = null;
+      let rightJambOffset: number | null = null;
+      for (let lat = 0.34; lat <= 1.38; lat += 0.17) {
+        if (leftJambOffset === null) {
+          const hitL = this.raycastSillOrWallFrom(
+            this.pos.x - tanX * lat,
+            midOpenY,
+            this.pos.z - tanZ * lat,
+            rx,
+            rz,
+            dSill + 0.38,
+            true,
+            true,
+          );
+          if (hitL !== null && Math.abs(hitL - dSill) <= 0.36) {
+            leftJambOffset = lat;
+          }
+        }
+        if (rightJambOffset === null) {
+          const hitR = this.raycastSillOrWallFrom(
+            this.pos.x + tanX * lat,
+            midOpenY,
+            this.pos.z + tanZ * lat,
+            rx,
+            rz,
+            dSill + 0.38,
+            true,
+            true,
+          );
+          if (hitR !== null && Math.abs(hitR - dSill) <= 0.36) {
+            rightJambOffset = lat;
+          }
+        }
+        if (leftJambOffset !== null && rightJambOffset !== null) break;
+      }
+      if (leftJambOffset === null || rightJambOffset === null) continue;
+      const windowInnerWidth = leftJambOffset + rightJambOffset;
+      if (windowInnerWidth < 0.64 || windowInnerWidth > 2.55) continue;
+
+      // Step E: Dense 5x4 clearance inside & beyond opening + clear pre-sill approach (rejects boarded windows, glass, crates, gloo, cars!)
+      let approachBlocked = false;
+      const preCheckDist = Math.max(0.18, dSill - 0.14);
+      for (const ah of [0.3, 0.5]) {
+        const hitPre = this.raycastSillOrWallFrom(
+          this.pos.x,
+          py + ah,
+          this.pos.z,
+          rx,
+          rz,
+          preCheckDist,
+          true,
+          false,
+          false,
+          0.04,
+        );
+        if (hitPre !== null) {
+          approachBlocked = true;
+          break;
+        }
+      }
+      if (approachBlocked) continue;
+
+      const checkOpenDist = dSill + 1.35;
+      const openMinY = sillTopY + 0.14;
+      const openMaxY = Math.min(headerBottomY - 0.12, sillTopY + 0.88);
+      if (openMaxY - openMinY < 0.44) continue;
+
       let openingBlocked = false;
       for (let l = 0; l < openLats.length && !openingBlocked; l++) {
         const ox = this.pos.x + tanX * openLats[l];
         const oz = this.pos.z + tanZ * openLats[l];
-        for (let h = 0; h < openHeights.length; h++) {
+        for (let hi = 0; hi < 4; hi++) {
+          const hy = openMinY + ((openMaxY - openMinY) * hi) / 3;
           const hit = this.raycastSillOrWallFrom(
             ox,
-            py + openHeights[h],
+            hy,
             oz,
             rx,
             rz,
             checkOpenDist,
             true,
             false,
+            false,
+            0.04,
           );
-          if (hit !== null && hit <= checkOpenDist - 0.05) {
+          if (hit !== null && hit <= checkOpenDist - 0.04) {
             openingBlocked = true;
             break;
           }
@@ -5685,15 +5973,25 @@ export class BattleRoyaleEngine {
       }
       if (openingBlocked) continue;
 
-      // Step E: Verify thin architectural wall (open interior room beyond sill, not solid rock/container block)
+      // Step F: Thin architectural wall + unobstructed landing zone on the far side
       const roomProbeX = this.pos.x + rx * (dSill + 0.55);
       const roomProbeZ = this.pos.z + rz * (dSill + 0.55);
-      const insideMid = this.raycastSillOrWallFrom(roomProbeX, py + 0.86, roomProbeZ, rx, rz, 0.58, true, false);
+      const insideMid = this.raycastSillOrWallFrom(
+        roomProbeX,
+        py + 0.86,
+        roomProbeZ,
+        rx,
+        rz,
+        0.58,
+        true,
+        false,
+        false,
+      );
       if (insideMid !== null) continue;
 
-      // Step F: Valid landing floor on the far side of the window
-      const landX = this.pos.x + rx * (dSill + 0.95);
-      const landZ = this.pos.z + rz * (dSill + 0.95);
+      const landDist = dSill + 1.04;
+      const landX = this.pos.x + rx * landDist;
+      const landZ = this.pos.z + rz * landDist;
       if (
         landX < bounds.minX + 1 ||
         landX > bounds.maxX - 1 ||
@@ -5703,10 +6001,19 @@ export class BattleRoyaleEngine {
         continue;
       }
       const landFloor = this.resolveFloorHeight(landX, landZ, py + 1.25);
-      if (landFloor <= -50 || landFloor > py + 0.42) continue;
+      if (landFloor <= -50 || landFloor > py + 0.42 || landFloor < py - 3.6) continue;
+      if (this.isPointBlockedHorizontal(landX, landFloor, landZ, 0.32, 0.34, 1.48, 0.38)) continue;
+      if (!this.hasVerticalClearance(landX, landFloor, landZ, 1.48, 0.22)) continue;
 
       this.vaultDirX = rx;
       this.vaultDirZ = rz;
+      this.vaultStartX = this.pos.x;
+      this.vaultStartY = py;
+      this.vaultStartZ = this.pos.z;
+      this.vaultPeakY = Math.max(py + 0.52, sillTopY + 0.20);
+      this.vaultEndX = landX;
+      this.vaultEndY = landFloor;
+      this.vaultEndZ = landZ;
       return true;
     }
 
@@ -5770,10 +6077,14 @@ export class BattleRoyaleEngine {
       this.vel.z = THREE.MathUtils.damp(this.vel.z, targetVz, 14, dt);
       this.vel.y -= 20.5 * dt;
 
-      this.pos.x += this.vel.x * dt;
-      this.pos.z += this.vel.z * dt;
-      this.resolveHorizontalCollisions(0.24, 0.2, 0.52);
-      this.resolveHorizontalCollisions(0.24, 0.2, 0.52);
+      const crawlSteps = Math.max(1, Math.min(4, Math.ceil((Math.hypot(this.vel.x, this.vel.z) * dt) / 0.14)));
+      const crawlSubDt = dt / crawlSteps;
+      for (let s = 0; s < crawlSteps; s++) {
+        this.pos.x += this.vel.x * crawlSubDt;
+        this.pos.z += this.vel.z * crawlSubDt;
+        this.resolveHorizontalCollisions(0.26, 0.2, 0.54, 0.24);
+        this.resolveHorizontalCollisions(0.26, 0.2, 0.54, 0.24);
+      }
       this.pos.y += this.vel.y * dt;
       const abDowned = this.getActiveBounds();
       this.pos.x = THREE.MathUtils.clamp(this.pos.x, abDowned.minX, abDowned.maxX);
@@ -5825,11 +6136,19 @@ export class BattleRoyaleEngine {
       return;
     }
 
+    if (this.stanceNoticeTimer > 0) {
+      this.stanceNoticeTimer -= dt;
+      if (this.stanceNoticeTimer <= 0) {
+        this.stanceNotice = null;
+        this.hudDirty = true;
+      }
+    }
+
     this.pullingUpTimer = Math.max(0, this.pullingUpTimer - dt);
     this.bugDoCapaTimer = Math.max(0, this.bugDoCapaTimer - dt);
     this.combatPoseTimer = Math.max(0, this.combatPoseTimer - dt);
     this.vaultTimer = Math.max(0, this.vaultTimer - dt);
-    this.canVaultWindow = this.findNearbyWindowSill();
+    this.canVaultWindow = this.vaultTimer <= 0 && this.findNearbyWindowSill();
 
     if (this.input.consumeResetCameraFlag()) {
       this.camShake = 0;
@@ -5975,8 +6294,15 @@ export class BattleRoyaleEngine {
           } else if (this.hasVerticalClearance(this.pos.x, this.pos.y, this.pos.z, 0.94, 0.22)) {
             this.stance = 'crouch';
           }
-        } else {
+        } else if (this.canGoProneHere()) {
           this.stance = 'prone';
+          this.stanceNotice = null;
+          this.stanceNoticeTimer = 0;
+        } else {
+          this.stanceNotice = 'NÃO É POSSÍVEL DEITAR AQUI — AFASTE-SE DE OBJETOS OU PAREDES!';
+          this.stanceNoticeTimer = 2.6;
+          this.hudDirty = true;
+          soundEngine.playUiClick(210);
         }
       }
     }
@@ -5995,10 +6321,11 @@ export class BattleRoyaleEngine {
         canVaultPosture = true;
       }
       if (canVaultPosture) {
-        this.vaultTimer = 0.44;
-        this.vel.y = 3.85;
-        this.vel.x = this.vaultDirX * 7.4;
-        this.vel.z = this.vaultDirZ * 7.4;
+        this.vaultTimer = this.vaultDuration;
+        this.characterYaw = Math.atan2(-this.vaultDirX, -this.vaultDirZ);
+        this.vel.y = 0;
+        this.vel.x = (this.vaultEndX - this.vaultStartX) / this.vaultDuration;
+        this.vel.z = (this.vaultEndZ - this.vaultStartZ) / this.vaultDuration;
         this.isGrounded = false;
         soundEngine.playJump();
       }
@@ -6602,92 +6929,188 @@ export class BattleRoyaleEngine {
     const rightX = Math.cos(this.yaw);
     const rightZ = -Math.sin(this.yaw);
 
-    if (this.vaultTimer > 0.14) {
-      this.vel.x = this.vaultDirX * 7.2;
-      this.vel.z = this.vaultDirZ * 7.2;
-    } else if (this.vaultTimer <= 0.14) {
+    const colProfile = this.getPlayerCollisionProfile();
+    const prevGroundY = this.pos.y;
+    const abGround = this.getActiveBounds();
+
+    if (this.vaultTimer > 0) {
+      const vaultProgressNow = THREE.MathUtils.clamp(1 - this.vaultTimer / this.vaultDuration, 0, 1);
+      const ease = vaultProgressNow * vaultProgressNow * (3 - 2 * vaultProgressNow);
+      const nextX = THREE.MathUtils.lerp(this.vaultStartX, this.vaultEndX, ease);
+      const nextZ = THREE.MathUtils.lerp(this.vaultStartZ, this.vaultEndZ, ease);
+      const baseArcY = THREE.MathUtils.lerp(this.vaultStartY, this.vaultEndY, ease);
+      const liftAmt = Math.max(0.28, this.vaultPeakY - Math.max(this.vaultStartY, this.vaultEndY));
+      const nextY = baseArcY + 4 * vaultProgressNow * (1 - vaultProgressNow) * liftAmt;
+
+      this.pos.set(nextX, nextY, nextZ);
+      // Verify no dynamic gloo/vehicle or neighboring frame blocks the mid-vault path
+      const vaultPush = this.resolveEntityHorizontalCollisions(
+        this.pos,
+        0.23,
+        this.activeVehicleId,
+        true,
+        Math.max(0.38, this.vaultPeakY - nextY + 0.14),
+        1.48,
+        0.85,
+      );
+      if (vaultPush > 0.16) {
+        this.vaultTimer = 0;
+        this.vel.set(0, -1.5, 0);
+      } else {
+        this.vel.x = (this.vaultEndX - this.vaultStartX) / this.vaultDuration;
+        this.vel.z = (this.vaultEndZ - this.vaultStartZ) / this.vaultDuration;
+        this.vel.y = 0;
+        this.isGrounded = false;
+      }
+      this.pos.x = THREE.MathUtils.clamp(this.pos.x, abGround.minX, abGround.maxX);
+      this.pos.z = THREE.MathUtils.clamp(this.pos.z, abGround.minZ, abGround.maxZ);
+    } else {
       const targetVx = (forwardX * this.input.moveZ + rightX * this.input.moveX) * maxSpeed;
       const targetVz = (forwardZ * this.input.moveZ + rightZ * this.input.moveX) * maxSpeed;
       const accel = this.isOnSurfboard ? 10 : this.isSwimming ? 8 : this.isGrounded ? 18 : 6.5;
       this.vel.x = THREE.MathUtils.damp(this.vel.x, targetVx, accel, dt);
       this.vel.z = THREE.MathUtils.damp(this.vel.z, targetVz, accel, dt);
-    }
 
-    // Gravity (snappy on jump, preserve smooth compact arc over window sills)
-    this.vel.y -= (this.vaultTimer > 0 ? 19.5 : 27.5) * dt;
+      // Gravity
+      this.vel.y -= 27.5 * dt;
 
-    // Integrate XZ together + 2-pass stance-aware OBB/Mesh collision so crouch, prone & window vault fit real gaps
-    const colProfile = this.getPlayerCollisionProfile();
-    const prevGroundY = this.pos.y;
-    this.pos.x += this.vel.x * dt;
-    this.pos.z += this.vel.z * dt;
-    const push1 = this.resolveHorizontalCollisions(
-      colProfile.radius,
-      colProfile.minOffset,
-      colProfile.maxOffset,
-      colProfile.stepUp,
-    );
-    const push2 = this.resolveHorizontalCollisions(
-      colProfile.radius,
-      colProfile.minOffset,
-      colProfile.maxOffset,
-      colProfile.stepUp,
-    );
-    if (this.vaultTimer > 0 && push1 + push2 > 0.08) {
-      this.vaultTimer = 0;
-      this.vel.x *= 0.2;
-      this.vel.z *= 0.2;
-    }
-    this.pos.y += this.vel.y * dt;
+      // Sub-stepped XZ integration + anti-tunneling wall sweep + 2-pass collision so sprinting never clips through walls or closed windows!
+      const frameDx = this.vel.x * dt;
+      const frameDz = this.vel.z * dt;
+      const frameDisp = Math.hypot(frameDx, frameDz);
+      const subSteps = Math.max(1, Math.min(8, Math.ceil(frameDisp / 0.14)));
+      const subDx = frameDx / subSteps;
+      const subDz = frameDz / subSteps;
+      const subLen = frameDisp / subSteps;
+      const sweepMinY = Math.max(colProfile.minOffset + 0.14, colProfile.stepUp + 0.08);
+      const sweepMaxY = Math.min(colProfile.maxOffset - 0.10, 1.28);
 
-    // Mode-aware boundary clamp (Waiting Lobby / Gladiadores Arena / Bermuda Island)
-    const abGround = this.getActiveBounds();
-    this.pos.x = THREE.MathUtils.clamp(this.pos.x, abGround.minX, abGround.maxX);
-    this.pos.z = THREE.MathUtils.clamp(this.pos.z, abGround.minZ, abGround.maxZ);
+      for (let s = 0; s < subSteps; s++) {
+        const subPrevX = this.pos.x;
+        const subPrevZ = this.pos.z;
+        let moveX = subDx;
+        let moveZ = subDz;
 
-    // Terrain + Water Buoyancy + Walkable Platforms (or Distant GLB / Bermuda Floors)
-    const wasGrounded = this.isGrounded;
-    const floorQueryY = this.vel.y < -4 ? Math.max(this.pos.y, prevGroundY) : this.pos.y;
-    const floorStepUp = this.vaultTimer > 0.08 ? 0.45 : colProfile.stepUp;
-    const resolvedFloor = this.resolveFloorHeight(
-      this.pos.x,
-      this.pos.z,
-      floorQueryY,
-      floorStepUp,
-    );
-    const deepWaterFloor = this.getDeepWaterMinY();
-    const dryFloorMin = this.getDryMinFloorY();
-    const floorY = inIsolatedGlbMap
-      ? resolvedFloor
-      : this.isOnSurfboard
-        ? Math.max(resolvedFloor, waterSurfaceY + 0.04)
-        : resolvedFloor <= deepWaterThresh
-          ? Math.max(resolvedFloor, deepWaterFloor)
-          : Math.max(dryFloorMin, resolvedFloor);
+        if (subLen > 0.004) {
+          const dirX = subDx / subLen;
+          const dirZ = subDz / subLen;
+          const sweepReach = subLen + colProfile.radius * 0.45;
+          let earliestHit: number | null = null;
+          for (let hPass = 0; hPass < 2; hPass++) {
+            const probeY = this.pos.y + (hPass === 0 ? sweepMinY : sweepMaxY);
+            const hitD = this.raycastSillOrWallFrom(
+              subPrevX,
+              probeY,
+              subPrevZ,
+              dirX,
+              dirZ,
+              sweepReach,
+              false,
+              false,
+              false,
+              0.005,
+            );
+            if (hitD !== null && (earliestHit === null || hitD < earliestHit)) {
+              earliestHit = hitD;
+            }
+          }
+          if (earliestHit !== null && earliestHit <= subLen + colProfile.radius * 0.35) {
+            const safeDist = Math.max(0, earliestHit - colProfile.radius * 0.35);
+            moveX = dirX * Math.min(subLen, safeDist);
+            moveZ = dirZ * Math.min(subLen, safeDist);
+          }
+        }
 
-    if (this.pos.y <= floorY) {
-      this.pos.y = floorY;
-      this.vel.y = 0;
-      this.isGrounded = true;
-      if (!wasGrounded && !this.isSwimming && !this.isOnSurfboard) {
-        this.animator.triggerLanding();
-        soundEngine.playLanding();
+        const intendedX = subPrevX + moveX;
+        const intendedZ = subPrevZ + moveZ;
+        this.pos.x = intendedX;
+        this.pos.z = intendedZ;
+
+        this.resolveHorizontalCollisions(
+          colProfile.radius,
+          colProfile.minOffset,
+          colProfile.maxOffset,
+          colProfile.stepUp,
+        );
+        this.resolveHorizontalCollisions(
+          colProfile.radius,
+          colProfile.minOffset,
+          colProfile.maxOffset,
+          colProfile.stepUp,
+        );
+        if (this.stance === 'prone') {
+          this.resolveProneFootHeadContainment(colProfile.stepUp);
+          this.resolveHorizontalCollisions(
+            colProfile.radius,
+            colProfile.minOffset,
+            colProfile.maxOffset,
+            colProfile.stepUp,
+          );
+        }
+
+        const pushX = this.pos.x - intendedX;
+        const pushZ = this.pos.z - intendedZ;
+        const pushLen = Math.hypot(pushX, pushZ);
+        if (pushLen > 0.002) {
+          const pnx = pushX / pushLen;
+          const pnz = pushZ / pushLen;
+          const inward = this.vel.x * pnx + this.vel.z * pnz;
+          if (inward < 0) {
+            this.vel.x -= pnx * inward;
+            this.vel.z -= pnz * inward;
+          }
+        }
       }
-    } else if (
-      wasGrounded &&
-      this.vel.y <= 0 &&
-      !edges.jump &&
-      !edges.vault &&
-      this.vaultTimer <= 0 &&
-      !this.isSwimming &&
-      !this.isOnSurfboard &&
-      this.pos.y - floorY <= 0.24
-    ) {
-      this.pos.y = floorY;
-      this.vel.y = 0;
-      this.isGrounded = true;
-    } else if (this.pos.y > floorY + 0.15) {
-      this.isGrounded = false;
+
+      this.pos.y += this.vel.y * dt;
+
+      // Mode-aware boundary clamp (Waiting Lobby / Gladiadores Arena / Bermuda Island)
+      this.pos.x = THREE.MathUtils.clamp(this.pos.x, abGround.minX, abGround.maxX);
+      this.pos.z = THREE.MathUtils.clamp(this.pos.z, abGround.minZ, abGround.maxZ);
+
+      // Terrain + Water Buoyancy + Walkable Platforms (or Distant GLB / Bermuda Floors)
+      const wasGrounded = this.isGrounded;
+      const floorQueryY = this.vel.y < -4 ? Math.max(this.pos.y, prevGroundY) : this.pos.y;
+      const floorStepUp = colProfile.stepUp;
+      const resolvedFloor = this.resolveFloorHeight(
+        this.pos.x,
+        this.pos.z,
+        floorQueryY,
+        floorStepUp,
+      );
+      const deepWaterFloor = this.getDeepWaterMinY();
+      const dryFloorMin = this.getDryMinFloorY();
+      const floorY = inIsolatedGlbMap
+        ? resolvedFloor
+        : this.isOnSurfboard
+          ? Math.max(resolvedFloor, waterSurfaceY + 0.04)
+          : resolvedFloor <= deepWaterThresh
+            ? Math.max(resolvedFloor, deepWaterFloor)
+            : Math.max(dryFloorMin, resolvedFloor);
+
+      if (this.pos.y <= floorY) {
+        this.pos.y = floorY;
+        this.vel.y = 0;
+        this.isGrounded = true;
+        if (!wasGrounded && !this.isSwimming && !this.isOnSurfboard) {
+          this.animator.triggerLanding();
+          soundEngine.playLanding();
+        }
+      } else if (
+        wasGrounded &&
+        this.vel.y <= 0 &&
+        !edges.jump &&
+        !edges.vault &&
+        !this.isSwimming &&
+        !this.isOnSurfboard &&
+        this.pos.y - floorY <= 0.24
+      ) {
+        this.pos.y = floorY;
+        this.vel.y = 0;
+        this.isGrounded = true;
+      } else if (this.pos.y > floorY + 0.15) {
+        this.isGrounded = false;
+      }
     }
 
     const horizSpeed = Math.hypot(this.vel.x, this.vel.z);
@@ -6733,7 +7156,9 @@ export class BattleRoyaleEngine {
     }
 
     let desiredCharYaw = this.characterYaw;
-    if (this.combatFacingTimer > 0) {
+    if (this.vaultTimer > 0) {
+      desiredCharYaw = Math.atan2(-this.vaultDirX, -this.vaultDirZ);
+    } else if (this.combatFacingTimer > 0) {
       desiredCharYaw = this.yaw;
     } else if (horizSpeed > 0.35 && hasMove) {
       const moveVx = forwardX * this.input.moveZ + rightX * this.input.moveX;
@@ -6744,7 +7169,7 @@ export class BattleRoyaleEngine {
     let diffCharYaw = desiredCharYaw - this.characterYaw;
     while (diffCharYaw > Math.PI) diffCharYaw -= Math.PI * 2;
     while (diffCharYaw < -Math.PI) diffCharYaw += Math.PI * 2;
-    const charTurnRate = this.combatFacingTimer > 0 ? 60 : this.isSprinting ? 36 : 26;
+    const charTurnRate = this.vaultTimer > 0 ? 70 : this.combatFacingTimer > 0 ? 60 : this.isSprinting ? 36 : 26;
     this.prevCharYawForTurn = this.characterYaw;
     this.characterYaw += diffCharYaw * (1 - Math.exp(-charTurnRate * dt));
     let turnDeltaRad = this.characterYaw - this.prevCharYawForTurn;
@@ -6762,6 +7187,10 @@ export class BattleRoyaleEngine {
     // Character orientation & animation
     this.playerRig.root.position.copy(this.pos);
     this.playerRig.root.rotation.y = this.characterYaw + Math.PI;
+    const isVaultingNow = this.vaultTimer > 0;
+    const vaultProg = isVaultingNow
+      ? THREE.MathUtils.clamp(1 - this.vaultTimer / this.vaultDuration, 0, 1)
+      : 0;
     this.animator.update(this.playerRig, {
       dt,
       speed: horizSpeed,
@@ -6776,6 +7205,8 @@ export class BattleRoyaleEngine {
       isDriving: false,
       isSwimming: this.isSwimming,
       isOnSurfboard: this.isOnSurfboard,
+      isVaulting: isVaultingNow,
+      vaultProgress: vaultProg,
       isLobby: false,
       isSkydiving: false,
       isParachuting: false,
@@ -6889,7 +7320,7 @@ export class BattleRoyaleEngine {
       };
     }
     if (this.stance === 'prone') {
-      return { radius: 0.19, minOffset: 0.22, maxOffset: 0.44, stepUp: 0.26 };
+      return { radius: 0.27, minOffset: 0.20, maxOffset: 0.56, stepUp: 0.24 };
     }
     if (this.stance === 'crouch') {
       return {
@@ -8848,6 +9279,491 @@ export class BattleRoyaleEngine {
     return { x: bestX, z: bestZ };
   }
 
+  private evaluateBotEntryValue(
+    bot: TargetDummy,
+    entry: {
+      kind: string;
+      weaponId?: WeaponId;
+      level?: 1 | 2 | 3;
+      scopeType?: ScopeType;
+      attachmentKind?: AttachmentKind;
+      ammoAmount?: number;
+      coinAmount?: number;
+      medkitAmount?: number;
+      smallkitAmount?: number;
+      glooAmount?: number;
+      grenadeAmount?: number;
+    },
+  ): number {
+    switch (entry.kind) {
+      case 'weapon': {
+        const wid = entry.weaponId;
+        if (!wid) return 0;
+        if (isBotPistol(wid)) {
+          if (
+            isBotPistol(bot.weaponId) &&
+            BOT_GENERAL_SCORE[wid] > BOT_GENERAL_SCORE[bot.weaponId]
+          ) {
+            return 28;
+          }
+          return 0;
+        }
+        if (isBotPistol(bot.weaponId)) return 96;
+        if (wid === bot.weaponId || wid === bot.secondaryWeaponId) return 0;
+        if (!bot.secondaryWeaponId) {
+          const complementary =
+            (isCloseRangePrimary(wid) && isLongRangePrimary(bot.weaponId)) ||
+            (isLongRangePrimary(wid) && isCloseRangePrimary(bot.weaponId));
+          return complementary ? 78 : 62;
+        }
+        const p1 = bot.weaponId;
+        const p2 = bot.secondaryWeaponId;
+        const scorePair = (a: WeaponId, b: WeaponId): number => {
+          const hasClose = isCloseRangePrimary(a) || isCloseRangePrimary(b);
+          const hasLong = isLongRangePrimary(a) || isLongRangePrimary(b);
+          return BOT_GENERAL_SCORE[a] + BOT_GENERAL_SCORE[b] + (hasClose && hasLong ? 16 : 0);
+        };
+        const curScore = scorePair(p1, p2);
+        const bestOpt = Math.max(scorePair(wid, p2), scorePair(p1, wid));
+        return bestOpt > curScore ? 24 + (bestOpt - curScore) : 0;
+      }
+      case 'vest': {
+        const lvl = entry.level ?? 1;
+        if (lvl > bot.vestLevel) return 38 + lvl * 12;
+        if (lvl === bot.vestLevel && bot.vestHp < bot.vestMaxHp * 0.65) return 22;
+        return 0;
+      }
+      case 'helmet': {
+        const lvl = entry.level ?? 1;
+        if (lvl > bot.helmetLevel) return 36 + lvl * 12;
+        if (lvl === bot.helmetLevel && bot.helmetHp < bot.helmetMaxHp * 0.65) return 20;
+        return 0;
+      }
+      case 'medkit':
+        if (bot.medkits >= 4) return 0;
+        return (bot.medkits === 0 ? 48 : bot.medkits < 2 ? 32 : 16) + (bot.hp < 85 ? 20 : 0);
+      case 'smallkit':
+        if (bot.medkits >= 4) return 0;
+        return (bot.medkits === 0 ? 28 : 12) + (bot.hp < 85 ? 12 : 0);
+      case 'gloo':
+        if (bot.gloos >= 4) return 0;
+        return bot.gloos === 0 ? 34 : bot.gloos < 2 ? 22 : 12;
+      case 'grenade':
+        return bot.grenades < 3 ? 14 : 0;
+      case 'ammo':
+        if (bot.ammoCount >= 180) return 0;
+        return bot.ammoCount < 45 ? 42 : bot.ammoCount < 95 ? 24 : 11;
+      case 'coin':
+        if (bot.coins >= 1200) return 0;
+        return bot.coins < 450 ? 26 : 14;
+      case 'scope':
+        if (!entry.scopeType || bot.scopes.includes(entry.scopeType)) return 0;
+        return entry.scopeType === '4x' ? 22 : 14;
+      case 'attachment':
+        if (
+          !entry.attachmentKind ||
+          bot.attachments.includes(entry.attachmentKind) ||
+          bot.attachments.length >= 4
+        ) {
+          return 0;
+        }
+        return 16;
+      case 'backpack': {
+        const lvl = entry.level ?? 1;
+        return lvl > bot.backpackLevel ? 18 + lvl * 4 : 0;
+      }
+      default:
+        return 0;
+    }
+  }
+
+  private applySingleLootEntryToBot(
+    bot: TargetDummy,
+    entry: {
+      kind: string;
+      weaponId?: WeaponId;
+      level?: 1 | 2 | 3;
+      scopeType?: ScopeType;
+      attachmentKind?: AttachmentKind;
+      ammoAmount?: number;
+      coinAmount?: number;
+      medkitAmount?: number;
+      smallkitAmount?: number;
+      glooAmount?: number;
+      grenadeAmount?: number;
+    },
+  ): boolean {
+    switch (entry.kind) {
+      case 'weapon':
+        return entry.weaponId ? giveBotLootedWeapon(bot, entry.weaponId) : false;
+      case 'vest': {
+        const lvl = entry.level ?? 1;
+        if (lvl > bot.vestLevel || (lvl === bot.vestLevel && bot.vestHp < bot.vestMaxHp * 0.85)) {
+          bot.vestLevel = lvl;
+          bot.vestMaxHp = lvl === 1 ? 100 : lvl === 2 ? 160 : 220;
+          bot.vestHp = bot.vestMaxHp;
+          if (bot.vestMesh) bot.vestMesh.visible = false;
+          return true;
+        }
+        return false;
+      }
+      case 'helmet': {
+        const lvl = entry.level ?? 1;
+        if (
+          lvl > bot.helmetLevel ||
+          (lvl === bot.helmetLevel && bot.helmetHp < bot.helmetMaxHp * 0.85)
+        ) {
+          bot.helmetLevel = lvl;
+          bot.helmetMaxHp = lvl === 1 ? 75 : lvl === 2 ? 120 : 180;
+          bot.helmetHp = bot.helmetMaxHp;
+          if (bot.helmetMesh) bot.helmetMesh.visible = false;
+          return true;
+        }
+        return false;
+      }
+      case 'medkit':
+        if (bot.medkits >= 4) return false;
+        bot.medkits = Math.min(4, bot.medkits + (entry.medkitAmount ?? 1));
+        return true;
+      case 'smallkit':
+        if (bot.medkits >= 4) return false;
+        bot.medkits = Math.min(4, bot.medkits + (entry.smallkitAmount ?? 1));
+        return true;
+      case 'gloo':
+        if (bot.gloos >= 4) return false;
+        bot.gloos = Math.min(4, bot.gloos + (entry.glooAmount ?? 1));
+        return true;
+      case 'grenade':
+        if (bot.grenades >= 3) return false;
+        bot.grenades = Math.min(3, bot.grenades + (entry.grenadeAmount ?? 1));
+        return true;
+      case 'ammo':
+        if (bot.ammoCount >= 220) return false;
+        bot.ammoCount += entry.ammoAmount ?? 30;
+        return true;
+      case 'coin':
+        bot.coins += entry.coinAmount ?? 100;
+        return true;
+      case 'scope':
+        if (!entry.scopeType || bot.scopes.includes(entry.scopeType)) return false;
+        bot.scopes.push(entry.scopeType);
+        return true;
+      case 'attachment':
+        if (
+          !entry.attachmentKind ||
+          bot.attachments.includes(entry.attachmentKind) ||
+          bot.attachments.length >= 4
+        ) {
+          return false;
+        }
+        bot.attachments.push(entry.attachmentKind);
+        return true;
+      case 'backpack': {
+        const lvl = entry.level ?? 1;
+        if (lvl > bot.backpackLevel) {
+          bot.backpackLevel = lvl;
+          return true;
+        }
+        return false;
+      }
+      default:
+        return false;
+    }
+  }
+
+  private findBestLootForBot(
+    bot: TargetDummy,
+    bx: number,
+    by: number,
+    bz: number,
+    curBotBldg: BuildingNavZone | null,
+    maxDist: number,
+  ): LootVisual | null {
+    let bestScore = -1;
+    let chosen: LootVisual | null = null;
+    for (let l = 0; l < this.world.loots.length; l++) {
+      const loot = this.world.loots[l];
+      const ld = loot.data;
+      if (ld.collected || ld.id === bot.badLootId) continue;
+
+      const ldx = ld.x - bx;
+      const ldz = ld.z - bz;
+      if (Math.abs(ldx) > maxDist || Math.abs(ldz) > maxDist) continue;
+
+      if (Math.abs(ld.y - by) > 2.2) {
+        const lootBldg = this.world.findBuildingNavZoneAt(ld.x, ld.z);
+        if (!curBotBldg || curBotBldg !== lootBldg) continue;
+      }
+
+      if (
+        Math.hypot(ld.x - this.zoneCurrentX, ld.z - this.zoneCurrentZ) >
+        this.zoneCurrentRadius * 0.96
+      ) {
+        continue;
+      }
+
+      const db = Math.hypot(ldx, ldz);
+      if (db >= maxDist) continue;
+
+      const dp = Math.hypot(ld.x - this.pos.x, ld.z - this.pos.z);
+      if (bot.isAlly && dp < 3.6) continue;
+      if (!bot.isAlly && !this.isDead && dp < 9.5 && isBotPistol(bot.weaponId)) continue;
+
+      let itemVal = 0;
+      if (ld.kind === 'deathbox') {
+        const entries = ld.deathEntries;
+        if (!entries || entries.length === 0) continue;
+        let maxEntryVal = 0;
+        let bonusSum = 0;
+        for (let e = 0; e < entries.length; e++) {
+          const val = this.evaluateBotEntryValue(bot, entries[e]);
+          if (val > 0) {
+            if (val > maxEntryVal) maxEntryVal = val;
+            bonusSum += val * 0.2;
+          }
+        }
+        if (maxEntryVal <= 0) continue;
+        itemVal = maxEntryVal + Math.min(35, bonusSum);
+      } else {
+        itemVal = this.evaluateBotEntryValue(bot, ld);
+        if (itemVal <= 0) continue;
+      }
+
+      const score = itemVal + (maxDist - db) * 0.95 - (!bot.isAlly && !this.isDead && dp < 14 ? 14 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        chosen = loot;
+      }
+    }
+    return chosen;
+  }
+
+  private collectBotLootItem(bot: TargetDummy, loot: LootVisual): boolean {
+    const ld = loot.data;
+    if (ld.collected) return false;
+    if (ld.kind === 'deathbox') {
+      const entries = ld.deathEntries;
+      if (!entries || entries.length === 0) {
+        ld.collected = true;
+        loot.mesh.visible = false;
+        return false;
+      }
+      let tookAny = false;
+      for (let e = entries.length - 1; e >= 0; e--) {
+        const entry = entries[e];
+        if (this.evaluateBotEntryValue(bot, entry) > 0 && this.applySingleLootEntryToBot(bot, entry)) {
+          entries.splice(e, 1);
+          tookAny = true;
+        }
+      }
+      if (entries.length === 0) {
+        ld.collected = true;
+        loot.mesh.visible = false;
+      }
+      return tookAny;
+    }
+
+    if (this.evaluateBotEntryValue(bot, ld) <= 0) return false;
+    if (this.applySingleLootEntryToBot(bot, ld)) {
+      ld.collected = true;
+      loot.mesh.visible = false;
+      return true;
+    }
+    return false;
+  }
+
+  private findBestVendingOfferForBot(
+    bot: TargetDummy,
+  ): { offerId: string; cost: number; reviveAlly: TargetDummy | null } | null {
+    if (bot.isAlly && this.matchMode !== 'solo' && bot.coins >= 400) {
+      const bots = this.world.targets;
+      for (let k = 0; k < bots.length; k++) {
+        const other = bots[k];
+        if (
+          other.teamId === bot.teamId &&
+          other.id !== bot.id &&
+          (other.eliminated || other.downTimer > 0)
+        ) {
+          return { offerId: 'revive_ally', cost: 400, reviveAlly: other };
+        }
+      }
+    }
+
+    if (bot.coins < 100) return null;
+
+    if (isBotPistol(bot.weaponId) && bot.coins >= 300) {
+      const pref: WeaponId[] = ['xm8', 'scar', 'ak47', 'm4a1', 'ump45'];
+      for (let k = 0; k < pref.length; k++) {
+        const offer = VENDING_SHOP_OFFERS.find((o) => o.weaponId === pref[k]);
+        if (offer && bot.coins >= offer.cost) {
+          return { offerId: offer.id, cost: offer.cost, reviveAlly: null };
+        }
+      }
+    }
+
+    if (!bot.secondaryWeaponId && bot.coins >= 300) {
+      const needClose = isLongRangePrimary(bot.weaponId);
+      const pref: WeaponId[] = needClose ? ['ump45', 'm4a1'] : ['xm8', 'scar', 'm4a1'];
+      for (let k = 0; k < pref.length; k++) {
+        const wid = pref[k];
+        if (wid === bot.weaponId) continue;
+        const offer = VENDING_SHOP_OFFERS.find((o) => o.weaponId === wid);
+        if (offer && bot.coins >= offer.cost) {
+          return { offerId: offer.id, cost: offer.cost, reviveAlly: null };
+        }
+      }
+    }
+
+    if (bot.vestLevel < 3 && bot.coins >= 450) {
+      return { offerId: 'vest3', cost: 450, reviveAlly: null };
+    }
+    if (bot.helmetLevel < 3 && bot.coins >= 400) {
+      return { offerId: 'helmet3', cost: 400, reviveAlly: null };
+    }
+    if (bot.vestLevel < 2 && bot.coins >= 250) {
+      return { offerId: 'vest2', cost: 250, reviveAlly: null };
+    }
+    if (bot.medkits < 2 && bot.coins >= 100) {
+      return { offerId: 'medkit', cost: 100, reviveAlly: null };
+    }
+    if (bot.gloos < 2 && bot.coins >= 150) {
+      return { offerId: 'gloo2', cost: 150, reviveAlly: null };
+    }
+    if (bot.ammoCount < 75 && bot.coins >= 100) {
+      return { offerId: 'ammo60', cost: 100, reviveAlly: null };
+    }
+    if (bot.grenades < 1 && bot.coins >= 150) {
+      return { offerId: 'grenade2', cost: 150, reviveAlly: null };
+    }
+    if (!bot.scopes.includes('4x') && bot.coins >= 250) {
+      return { offerId: 'scope4x', cost: 250, reviveAlly: null };
+    }
+    if (
+      bot.coins >= 700 &&
+      bot.weaponId !== 'awm' &&
+      bot.secondaryWeaponId !== 'awm'
+    ) {
+      return { offerId: 'awm', cost: 700, reviveAlly: null };
+    }
+    return null;
+  }
+
+  private findNearbyVendingForBot(
+    bx: number,
+    by: number,
+    bz: number,
+    maxDist: number,
+  ): VendingMachineProp | null {
+    let bestVm: VendingMachineProp | null = null;
+    let bestDistSq = maxDist * maxDist;
+    const machines = this.world.vendingMachines;
+    for (let i = 0; i < machines.length; i++) {
+      const vm = machines[i];
+      if (Math.abs(vm.y - by) > 4.5) continue;
+      if (
+        Math.hypot(vm.x - this.zoneCurrentX, vm.z - this.zoneCurrentZ) >
+        this.zoneCurrentRadius * 0.94
+      ) {
+        continue;
+      }
+      if (this.sampleEntitySurface(vm.x, vm.z).inWater) continue;
+      const dSq = (vm.x - bx) * (vm.x - bx) + (vm.z - bz) * (vm.z - bz);
+      if (dSq < bestDistSq) {
+        bestDistSq = dSq;
+        bestVm = vm;
+      }
+    }
+    return bestVm;
+  }
+
+  private executeBotVendingPurchase(bot: TargetDummy, vm: VendingMachineProp): boolean {
+    let boughtAny = false;
+    for (let pass = 0; pass < 2; pass++) {
+      const pick = this.findBestVendingOfferForBot(bot);
+      if (!pick || bot.coins < pick.cost) break;
+
+      if (pick.offerId === 'revive_ally' && pick.reviveAlly) {
+        const ally = pick.reviveAlly;
+        if (!ally.eliminated && ally.downTimer <= 0) break;
+        bot.coins -= 400;
+        ally.eliminated = false;
+        ally.isDowned = false;
+        ally.downTimer = 0;
+        ally.hp = 165;
+        ally.bleedHp = 100;
+        ally.medkits = 1;
+        ally.gloos = 2;
+        ally.weaponId = 'm4a1';
+        ally.secondaryWeaponId = undefined;
+        ally.pistolWeaponId = 'g18';
+        ally.drawTimer = 0;
+        setBotWeaponVisual(ally, ally.weaponId, getBotBackWeapon(ally));
+        ally.airState = 'parachuting';
+        ally.vy = -8;
+        ally.animator?.reset();
+        if (ally.rig) {
+          ally.rig.weaponMount.visible = false;
+          ally.rig.setParachuteVisible(true);
+          ally.rig.setBandageVisible?.(false);
+        }
+        ally.group.rotation.x = 0;
+        ally.group.position.set(vm.x + 2.5, vm.y + 18, vm.z + 2.5);
+        ally.group.visible = true;
+        if (this.stateMachine.getState() === GameState.PLAYING) {
+          this.aliveCount = Math.min(51, this.aliveCount + 1);
+        }
+        this.pushKillFeed('LOJINHA', `${ally.nick} REDESDOBRADO (${bot.nick})`, 'LOJA', false, true);
+        if (Math.hypot(vm.x - this.pos.x, vm.z - this.pos.z) < 42) {
+          soundEngine.playShopBuy();
+        }
+        boughtAny = true;
+        continue;
+      }
+
+      const offer = VENDING_SHOP_OFFERS.find((o) => o.id === pick.offerId);
+      if (!offer || bot.coins < offer.cost) break;
+      bot.coins -= offer.cost;
+
+      if (offer.id === 'medkit') {
+        bot.medkits = Math.min(4, bot.medkits + 1);
+      } else if (offer.id === 'gloo2') {
+        bot.gloos = Math.min(4, bot.gloos + 2);
+      } else if (offer.id === 'grenade2') {
+        bot.grenades = Math.min(3, bot.grenades + 2);
+      } else if (offer.id === 'ammo60') {
+        bot.ammoCount += 60;
+      } else if (offer.id === 'vest2') {
+        if (bot.vestLevel < 2 || bot.vestHp < 160) {
+          bot.vestLevel = 2;
+          bot.vestMaxHp = 160;
+          bot.vestHp = 160;
+          if (bot.vestMesh) bot.vestMesh.visible = false;
+        }
+      } else if (offer.id === 'vest3') {
+        bot.vestLevel = 3;
+        bot.vestMaxHp = 220;
+        bot.vestHp = 220;
+        if (bot.vestMesh) bot.vestMesh.visible = false;
+      } else if (offer.id === 'helmet3') {
+        bot.helmetLevel = 3;
+        bot.helmetMaxHp = 180;
+        bot.helmetHp = 180;
+        if (bot.helmetMesh) bot.helmetMesh.visible = false;
+      } else if (offer.id === 'scope4x') {
+        if (!bot.scopes.includes('4x')) bot.scopes.push('4x');
+      } else if (offer.weaponId) {
+        giveBotLootedWeapon(bot, offer.weaponId);
+        bot.ammoCount = Math.max(bot.ammoCount, 90);
+      }
+
+      if (Math.hypot(vm.x - this.pos.x, vm.z - this.pos.z) < 34) {
+        soundEngine.playShopBuy();
+      }
+      boughtAny = true;
+    }
+    return boughtAny;
+  }
+
   private updateBots(dt: number, state: GameState): void {
     // Non-host online clients follow host's authoritative bot snapshot rather than running diverging AI
     if (this.onlineRoomId && this.onlineAccountId !== this.onlineHostAccountId) {
@@ -9013,6 +9929,7 @@ export class BattleRoyaleEngine {
         if (distantVictim && distantKiller) {
           const wName = WEAPONS[distantKiller.weaponId]?.name ?? 'M4A1';
           distantKiller.kills += 1;
+          distantKiller.coins += 140;
           this.finalizeBotElimination(
             distantVictim,
             false,
@@ -9431,6 +10348,7 @@ export class BattleRoyaleEngine {
       }
       bot.escapeTimer = Math.max(0, bot.escapeTimer - dt);
       bot.drawTimer = Math.max(0, (bot.drawTimer ?? 0) - dt);
+      bot.shopCooldown = Math.max(0, (bot.shopCooldown ?? 0) - dt);
       if (bot.badLootTimer > 0) {
         bot.badLootTimer = Math.max(0, bot.badLootTimer - dt);
         if (bot.badLootTimer === 0) bot.badLootId = null;
@@ -9979,60 +10897,61 @@ export class BattleRoyaleEngine {
               bot.goalZ = pickedZ;
             }
           } else {
-            let foundAllyLoot = false;
+            let foundAllyTask = false;
             const curBotBldg = this.world.findBuildingNavZoneAt(bx, bz);
-            if (
-              isBotPistol(bot.weaponId) ||
-              !bot.secondaryWeaponId ||
-              bot.vestLevel < 2 ||
-              bot.medkits < 2
-            ) {
-              let bestLootScore = -1;
-              let chosenLoot: LootVisual | null = null;
-              for (let l = 0; l < this.world.loots.length; l++) {
-                const loot = this.world.loots[l];
-                if (
-                  loot.data.collected ||
-                  loot.data.kind === 'deathbox' ||
-                  loot.data.kind === 'coin' ||
-                  loot.data.id === bot.badLootId
-                ) {
-                  continue;
-                }
-                if (loot.data.kind === 'weapon' && loot.data.weaponId) {
-                  const wid = loot.data.weaponId;
-                  if (wid === bot.weaponId || wid === bot.secondaryWeaponId) continue;
-                  if (isBotPistol(wid) && !isBotPistol(bot.weaponId)) continue;
-                }
-                const ldx = loot.data.x - bx;
-                const ldz = loot.data.z - bz;
-                if (Math.abs(ldx) > 32 || Math.abs(ldz) > 32) continue;
-                if (Math.abs(loot.data.y - bot.group.position.y) > 2.2) {
-                  const lootBldg = this.world.findBuildingNavZoneAt(loot.data.x, loot.data.z);
-                  if (!curBotBldg || curBotBldg !== lootBldg) continue;
-                }
-                const db = Math.hypot(ldx, ldz);
-                const dp = Math.hypot(loot.data.x - this.pos.x, loot.data.z - this.pos.z);
-                if (db < 32 && dp > 4.5) {
-                  let prio = 32 - db;
-                  if (loot.data.kind === 'weapon' && loot.data.weaponId && !isBotPistol(loot.data.weaponId)) {
-                    prio += isBotPistol(bot.weaponId) ? 75 : !bot.secondaryWeaponId ? 48 : 20;
-                  }
-                  if (prio > bestLootScore) {
-                    bestLootScore = prio;
-                    chosenLoot = loot;
-                  }
-                }
+
+            const allyOffer =
+              this.gameVariant !== 'gladiadores' && (bot.shopCooldown ?? 0) <= 0
+                ? this.findBestVendingOfferForBot(bot)
+                : null;
+            if (allyOffer?.offerId === 'revive_ally') {
+              const vm = this.findNearbyVendingForBot(bx, bot.group.position.y, bz, 78);
+              if (vm) {
+                bot.aiState = 'shop';
+                bot.targetVendingId = vm.id;
+                bot.goalX = vm.x;
+                bot.goalY = vm.y;
+                bot.goalZ = vm.z;
+                bot.shopTimer = 0.65;
+                foundAllyTask = true;
               }
+            }
+
+            if (!foundAllyTask) {
+              const chosenLoot = this.findBestLootForBot(
+                bot,
+                bx,
+                bot.group.position.y,
+                bz,
+                curBotBldg,
+                34,
+              );
               if (chosenLoot) {
                 bot.aiState = 'loot';
                 bot.goalX = chosenLoot.data.x;
                 bot.goalY = chosenLoot.data.y;
                 bot.goalZ = chosenLoot.data.z;
-                foundAllyLoot = true;
+                foundAllyTask = true;
               }
             }
-            if (!foundAllyLoot && (distGoal < 3.5 || bot.huntTimer <= 0)) {
+
+            if (!foundAllyTask && allyOffer && bot.coins >= 150) {
+              const vm = this.findNearbyVendingForBot(bx, bot.group.position.y, bz, 46);
+              if (
+                vm &&
+                Math.hypot(vm.x - this.pos.x, vm.z - this.pos.z) < 52
+              ) {
+                bot.aiState = 'shop';
+                bot.targetVendingId = vm.id;
+                bot.goalX = vm.x;
+                bot.goalY = vm.y;
+                bot.goalZ = vm.z;
+                bot.shopTimer = 0.65;
+                foundAllyTask = true;
+              }
+            }
+
+            if (!foundAllyTask && (distGoal < 3.5 || bot.huntTimer <= 0)) {
               bot.huntTimer = 3.8 + curAllySlot * 0.7;
               bot.aiState = 'roam';
               const playerBldg = this.world.findBuildingNavZoneAt(this.pos.x, this.pos.z);
@@ -10065,57 +10984,43 @@ export class BattleRoyaleEngine {
             }
           }
         } else {
-          let foundLoot = false;
+          let foundLootOrShop = false;
           const curBotBldg = this.world.findBuildingNavZoneAt(bx, bz);
           const abEnemy = this.getActiveBounds();
-          if (isBotPistol(bot.weaponId) || !bot.secondaryWeaponId || bot.vestLevel === 0) {
-            let bestLootScore = -1;
-            let chosenLoot: LootVisual | null = null;
-            for (let l = 0; l < this.world.loots.length; l++) {
-              const loot = this.world.loots[l];
-              if (
-                loot.data.collected ||
-                loot.data.kind === 'deathbox' ||
-                loot.data.id === bot.badLootId
-              ) {
-                continue;
-              }
-              if (loot.data.kind === 'weapon' && loot.data.weaponId) {
-                const wid = loot.data.weaponId;
-                if (wid === bot.weaponId || wid === bot.secondaryWeaponId) continue;
-                if (isBotPistol(wid) && !isBotPistol(bot.weaponId)) continue;
-              }
-              const ldx = loot.data.x - bx;
-              const ldz = loot.data.z - bz;
-              if (Math.abs(ldx) > 30 || Math.abs(ldz) > 30) continue;
-              if (Math.abs(loot.data.y - bot.group.position.y) > 2.2) {
-                const lootBldg = this.world.findBuildingNavZoneAt(loot.data.x, loot.data.z);
-                if (!curBotBldg || curBotBldg !== lootBldg) continue;
-              }
-              const dp = Math.hypot(loot.data.x - this.pos.x, loot.data.z - this.pos.z);
-              if (!bot.isAlly && dp < 15) continue;
-              const db = Math.hypot(ldx, ldz);
-              if (db < 30) {
-                let prio = 30 - db;
-                if (loot.data.kind === 'weapon' && loot.data.weaponId && !isBotPistol(loot.data.weaponId)) {
-                  prio += isBotPistol(bot.weaponId) ? 75 : !bot.secondaryWeaponId ? 48 : 20;
-                }
-                if (prio > bestLootScore) {
-                  bestLootScore = prio;
-                  chosenLoot = loot;
-                }
-              }
-            }
+
+          if (isPlaying && this.gameVariant !== 'gladiadores') {
+            const chosenLoot = this.findBestLootForBot(
+              bot,
+              bx,
+              bot.group.position.y,
+              bz,
+              curBotBldg,
+              34,
+            );
             if (chosenLoot) {
               bot.aiState = 'loot';
               bot.goalX = chosenLoot.data.x;
               bot.goalY = chosenLoot.data.y;
               bot.goalZ = chosenLoot.data.z;
-              foundLoot = true;
+              foundLootOrShop = true;
+            } else if ((bot.shopCooldown ?? 0) <= 0 && bot.coins >= 100) {
+              const offer = this.findBestVendingOfferForBot(bot);
+              if (offer) {
+                const vm = this.findNearbyVendingForBot(bx, bot.group.position.y, bz, 58);
+                if (vm) {
+                  bot.aiState = 'shop';
+                  bot.targetVendingId = vm.id;
+                  bot.goalX = vm.x;
+                  bot.goalY = vm.y;
+                  bot.goalZ = vm.z;
+                  bot.shopTimer = 0.65;
+                  foundLootOrShop = true;
+                }
+              }
             }
           }
 
-          if (!foundLoot) {
+          if (!foundLootOrShop) {
             bot.aiState = 'roam';
             const distGoal = Math.hypot(bot.goalX - bx, bot.goalZ - bz);
             if (distGoal < 5.0 || (isPlaying && bot.huntTimer <= 0)) {
@@ -10506,6 +11411,7 @@ export class BattleRoyaleEngine {
                   }
                   if (!prevDead && (targetBot.eliminated || targetBot.downTimer > 0)) {
                     bot.kills += 1;
+                    bot.coins += 140;
                     bot.hp = Math.min(bot.maxHp, bot.hp + 45);
                   }
                 }
@@ -10527,7 +11433,7 @@ export class BattleRoyaleEngine {
         let targetGoalZ = bot.goalZ;
         if (
           !this.isBermudaMapActive() &&
-          (bot.aiState === 'roam' || bot.aiState === 'loot') &&
+          (bot.aiState === 'roam' || bot.aiState === 'loot' || bot.aiState === 'shop') &&
           !curRoamSurf.onBridge
         ) {
           if (HAS_SENTOSA) {
@@ -10554,9 +11460,10 @@ export class BattleRoyaleEngine {
         const rawDist = Math.hypot(targetGoalX - bx, targetGoalZ - bz);
         const curWalkB = this.world.findBuildingNavZoneAt(bx, bz);
         const goalWalkB = this.world.findBuildingNavZoneAt(targetGoalX, targetGoalZ);
-        if (rawDist > 1.4 || bot.escapeTimer > 0 || (curWalkB !== null && curWalkB !== goalWalkB)) {
+        const arriveDist = bot.aiState === 'shop' ? 2.85 : 1.4;
+        if (rawDist > arriveDist || bot.escapeTimer > 0 || (curWalkB !== null && curWalkB !== goalWalkB)) {
           const goalFloorGuess =
-            bot.aiState === 'loot'
+            bot.aiState === 'loot' || bot.aiState === 'shop'
               ? bot.goalY
               : bot.isAlly
                 ? this.pos.y
@@ -10577,56 +11484,39 @@ export class BattleRoyaleEngine {
           moveDirZ = dz / dist;
           isMoving = true;
           bot.group.rotation.y = lerpAngle(bot.group.rotation.y, Math.atan2(moveDirX, moveDirZ), 1 - Math.exp(-12 * dt));
+        } else if (bot.aiState === 'shop') {
+          const vm =
+            (bot.targetVendingId
+              ? this.world.vendingMachines.find((m) => m.id === bot.targetVendingId)
+              : undefined) ?? this.findNearbyVendingForBot(bx, bot.group.position.y, bz, 4.5);
+          if (!vm) {
+            bot.shopCooldown = 6;
+            bot.targetVendingId = null;
+            bot.aiState = 'roam';
+          } else {
+            bot.group.rotation.y = lerpAngle(
+              bot.group.rotation.y,
+              Math.atan2(vm.x - bx, vm.z - bz),
+              1 - Math.exp(-12 * dt),
+            );
+            bot.shopTimer = (bot.shopTimer ?? 0.65) - dt;
+            if (bot.shopTimer <= 0) {
+              this.executeBotVendingPurchase(bot, vm);
+              bot.shopCooldown = 14;
+              bot.targetVendingId = null;
+              bot.aiState = 'roam';
+            }
+          }
         } else if (bot.aiState === 'loot') {
           for (let l = 0; l < this.world.loots.length; l++) {
             const loot = this.world.loots[l];
-            if (loot.data.collected || loot.data.kind === 'deathbox') continue;
+            if (loot.data.collected) continue;
             const ldx = loot.data.x - bx;
             const ldz = loot.data.z - bz;
-            if (Math.abs(ldx) > 2.8 || Math.abs(ldz) > 2.8) continue;
-            if (Math.hypot(ldx, ldz) < 2.8) {
-              loot.data.collected = true;
-              loot.mesh.visible = false;
-              if (loot.data.kind === 'medkit') {
-                bot.medkits = Math.min(4, bot.medkits + 1);
-              } else if (loot.data.kind === 'gloo') {
-                bot.gloos = Math.min(4, bot.gloos + 1);
-              } else if (loot.data.kind === 'grenade') {
-                bot.grenades = Math.min(3, bot.grenades + (loot.data.grenadeAmount ?? 1));
-              } else if (loot.data.kind === 'ammo') {
-                bot.ammoCount += loot.data.ammoAmount ?? 30;
-              } else if (loot.data.kind === 'coin') {
-                bot.coins += loot.data.coinAmount ?? 100;
-              } else if (loot.data.kind === 'scope' && loot.data.scopeType) {
-                if (!bot.scopes.includes(loot.data.scopeType)) {
-                  bot.scopes.push(loot.data.scopeType);
-                }
-              } else if (loot.data.kind === 'attachment' && loot.data.attachmentKind) {
-                if (!bot.attachments.includes(loot.data.attachmentKind) && bot.attachments.length < 4) {
-                  bot.attachments.push(loot.data.attachmentKind);
-                }
-              } else if (loot.data.kind === 'backpack' && loot.data.level) {
-                if (loot.data.level > bot.backpackLevel) bot.backpackLevel = loot.data.level;
-              } else if (loot.data.kind === 'weapon' && loot.data.weaponId) {
-                giveBotLootedWeapon(bot, loot.data.weaponId);
-              } else if (loot.data.kind === 'vest') {
-                const lvl = loot.data.level ?? 1;
-                if (lvl > bot.vestLevel) {
-                  bot.vestLevel = lvl;
-                  bot.vestMaxHp = lvl === 1 ? 100 : lvl === 2 ? 160 : 220;
-                  bot.vestHp = bot.vestMaxHp;
-                  if (bot.vestMesh) bot.vestMesh.visible = false;
-                }
-              } else if (loot.data.kind === 'helmet') {
-                const lvl = loot.data.level ?? 1;
-                if (lvl > bot.helmetLevel) {
-                  bot.helmetLevel = lvl;
-                  bot.helmetMaxHp = lvl === 1 ? 75 : lvl === 2 ? 120 : 180;
-                  bot.helmetHp = bot.helmetMaxHp;
-                  if (bot.helmetMesh) bot.helmetMesh.visible = false;
-                }
-              }
-              break;
+            if (Math.abs(ldx) > 3.0 || Math.abs(ldz) > 3.0) continue;
+            if (Math.abs(loot.data.y - bot.group.position.y) > 2.6) continue;
+            if (Math.hypot(ldx, ldz) < 3.0) {
+              this.collectBotLootItem(bot, loot);
             }
           }
           bot.aiState = 'roam';
@@ -10720,7 +11610,7 @@ export class BattleRoyaleEngine {
               }
             }
           }
-        } else if (nextSurf.inWater && (bot.aiState === 'roam' || bot.aiState === 'loot')) {
+        } else if (nextSurf.inWater && (bot.aiState === 'roam' || bot.aiState === 'loot' || bot.aiState === 'shop')) {
           const tx = THREE.MathUtils.clamp(bx + moveDirX * stepDist * 0.85, botBounds.minX, botBounds.maxX);
           const tz = THREE.MathUtils.clamp(bz + moveDirZ * stepDist * 0.85, botBounds.minZ, botBounds.maxZ);
           const surfX = this.sampleEntitySurface(tx, bz);
@@ -10827,6 +11717,10 @@ export class BattleRoyaleEngine {
                   break;
                 }
               }
+              bot.aiState = 'roam';
+            } else if (bot.aiState === 'shop') {
+              bot.shopCooldown = 8;
+              bot.targetVendingId = null;
               bot.aiState = 'roam';
             }
           }
@@ -13077,6 +13971,7 @@ export class BattleRoyaleEngine {
         distance: Math.round(Math.hypot(ad.x - this.pos.x, ad.z - this.pos.z)),
       })),
       airDropNotice: this.airDropNotice,
+      stanceNotice: this.stanceNotice,
       isOnlineMatch: Boolean(this.onlineRoomId),
       autoFillBots: this.autoFillBots,
       ...(() => {

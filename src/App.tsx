@@ -250,6 +250,7 @@ const INITIAL_HUD: HudSnapshot = {
   teamMembers: [],
   airDrops: [],
   airDropNotice: null,
+  stanceNotice: null,
   isOnlineMatch: false,
   autoFillBots: true,
   pingMs: 24,

@@ -216,6 +216,8 @@ export interface CharacterAnimInput {
   isDriving?: boolean;
   isSwimming?: boolean;
   isOnSurfboard?: boolean;
+  isVaulting?: boolean;
+  vaultProgress?: number; // 0..1
   hasWeapon?: boolean;
   hasMoveInput?: boolean;
   weaponCategory?: 'HG' | 'AR' | 'SMG' | 'SG' | 'SR' | null;
@@ -596,6 +598,65 @@ export class CharacterAnimator {
       return;
     }
 
+    // 5b. Parkour One-Handed Speed Vault over window sill (plant left hand, swing both legs sideways over sill)
+    if (input.isVaulting) {
+      const p = THREE.MathUtils.clamp(input.vaultProgress ?? 0.5, 0, 1);
+      const plantEnv = Math.sin(Math.min(1, p / 0.88) * Math.PI);
+      const swingEnv = Math.sin(Math.pow(p, 0.82) * Math.PI);
+      const isMaxim = rig.modelId === 'maxim';
+
+      vis.position.set(0, 0.14 * swingEnv, 0);
+      vis.rotation.set(0.28 * plantEnv, 0, -0.54 * plantEnv);
+      this.playAdamClip(rig, 'Idle_Loop', 0.03, 1.0);
+      mixer.update(dt);
+      vis.updateMatrixWorld(true);
+      vis.getWorldQuaternion(_qVisW);
+
+      const aimQuats = getAimPoseQuats(rig.modelId ?? 'adam');
+      if (hasWeapon && aimQuats && rig.adamUpperBones) {
+        slerpArmBones(rig.adamUpperBones, aimQuats, 0.72 * plantEnv, false, 'rightOnly', 0);
+        vis.updateMatrixWorld(true);
+        vis.getWorldQuaternion(_qVisW);
+      }
+
+      // Twist upper torso slightly toward planted left hand, keep head looking over landing spot
+      rotateBoneCharAxis(_qVisW, rig.adamSpineBone, 0, 1, 0, -0.26 * plantEnv);
+      rotateBoneCharAxis(_qVisW, rig.adamSpineBone, 1, 0, 0, 0.14 * plantEnv);
+      rotateBoneCharAxis(_qVisW, rig.adamHeadBone, 1, 0, 0, -0.32 * plantEnv);
+
+      // Left arm braced straight down onto the window sill supporting body weight
+      rotateBoneCharAxis(_qVisW, rig.adamLeftShoulderBone, 0, 0, 1, 0.18 * plantEnv);
+      rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 1, 0, 0, -0.88 * plantEnv);
+      rotateBoneCharAxis(_qVisW, rig.adamUpperArmLBone, 0, 0, 1, 0.36 * plantEnv);
+      rotateBoneCharAxis(_qVisW, rig.adamLowerArmLBone, 1, 0, 0, -0.18 * plantEnv);
+      rotateBoneCharAxis(_qVisW, rig.adamHandLBone, 1, 0, 0, 0.35 * plantEnv);
+
+      // Right arm tucks weapon cleanly at right hip/side (or balances out if unarmed)
+      if (hasWeapon) {
+        if (isMaxim) {
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, 0.14 * plantEnv);
+        }
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, 0.22 * plantEnv);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 1, 0, (isMaxim ? -0.24 : -0.08) * plantEnv);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, -0.26 * plantEnv);
+        rotateBoneCharAxis(_qVisW, rig.adamLowerArmRBone, 1, 0, 0, -0.44 * plantEnv);
+      } else {
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, -0.62 * plantEnv);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, -0.58 * plantEnv);
+        rotateBoneCharAxis(_qVisW, rig.adamLowerArmRBone, 1, 0, 0, -0.88 * plantEnv);
+      }
+
+      // Sweep both tucked legs sideways to the right cleanly clearing the window sill
+      rotateBoneCharAxis(_qVisW, rig.adamThighLBone, 1, 0, 0, -1.12 * swingEnv);
+      rotateBoneCharAxis(_qVisW, rig.adamThighLBone, 0, 0, 1, -0.34 * swingEnv);
+      rotateBoneCharAxis(_qVisW, rig.adamShinLBone, 1, 0, 0, 1.38 * swingEnv);
+
+      rotateBoneCharAxis(_qVisW, rig.adamThighRBone, 1, 0, 0, -0.94 * swingEnv);
+      rotateBoneCharAxis(_qVisW, rig.adamThighRBone, 0, 0, 1, -0.42 * swingEnv);
+      rotateBoneCharAxis(_qVisW, rig.adamShinRBone, 1, 0, 0, 1.24 * swingEnv);
+      return;
+    }
+
     // 6. Prone (FF 2017 "Deitar": barriga apoiada rente ao chão, pernas alinhadas sem flutuar,
     //    rastejo alternado de joelhos e cotovelos, e arma nivelada à frente na altura do olhar)
     if (input.stance === 'prone') {
@@ -959,22 +1020,28 @@ export class CharacterAnimator {
       );
       vis.updateMatrixWorld(true);
       vis.getWorldQuaternion(_qVisW);
+      if (isMaxim) {
+        rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, 0.16 * combatW);
+        rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.08 * combatW);
+      }
       if (isLargeWeapon) {
-        // Seat rifle cleanly at front right shoulder with outward clearance so stock never clips chest
+        // Seat rifle cleanly at front right shoulder with outward clearance so stock & arm never clip chest
         rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, (isMaxim ? -0.02 : 0.04) * combatW);
-        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 1, 0, (isMaxim ? -0.14 : -0.04) * combatW);
-        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, (isMaxim ? -0.12 : -0.06) * combatW);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 1, 0, (isMaxim ? -0.22 : -0.04) * combatW);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, (isMaxim ? -0.14 : -0.06) * combatW);
         if (isMaxim) {
-          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, -0.05 * combatW);
-          rotateBoneCharAxis(_qVisW, rig.adamLeftShoulderBone, 0, 1, 0, 0.07 * combatW);
+          rotateBoneCharAxis(_qVisW, rig.adamLeftShoulderBone, 0, 1, 0, -0.07 * combatW);
         }
+      } else if (isMaxim) {
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 1, 0, -0.16 * combatW);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, -0.10 * combatW);
       }
     }
 
     // B. Standing Idle Weapon Hold (Natural human relaxed upright posture — lowered two-handed pistol / ready rifle)
     const idleW = this.idleHoldBlend * (1 - this.combatUpperBlend) * (1 - this.bandageBlend);
     if (idleW > 0.01 && rig.adamUpperBones && aimQuats) {
-      slerpArmBones(rig.adamUpperBones, aimQuats, idleW, false, 'all', 0);
+      slerpArmBones(rig.adamUpperBones, aimQuats, idleW, false, 'all', isMaxim ? 0.56 * idleW : 0);
       vis.updateMatrixWorld(true);
       vis.getWorldQuaternion(_qVisW);
 
@@ -989,9 +1056,9 @@ export class CharacterAnimator {
         );
         rotateBoneCharAxis(_qVisW, rig.adamSpine2Bone, 1, 0, 0, breath * 0.003 * idleW);
         if (isMaxim) {
-          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, -0.06 * idleW);
-          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.06 * idleW);
-          rotateBoneCharAxis(_qVisW, rig.adamLeftShoulderBone, 0, 1, 0, 0.06 * idleW);
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, 0.16 * idleW);
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.08 * idleW);
+          rotateBoneCharAxis(_qVisW, rig.adamLeftShoulderBone, 0, 1, 0, -0.06 * idleW);
         }
         rotateBoneCharAxis(
           _qVisW,
@@ -999,7 +1066,7 @@ export class CharacterAnimator {
           1,
           0,
           0,
-          ((isMaxim ? 0.24 : 0.36) + breath * 0.004) * idleW,
+          ((isMaxim ? 0.20 : 0.36) + breath * 0.004) * idleW,
         );
         rotateBoneCharAxis(
           _qVisW,
@@ -1007,7 +1074,7 @@ export class CharacterAnimator {
           0,
           1,
           0,
-          ((isMaxim ? 0.02 : 0.16) + breath * 0.002) * idleW,
+          ((isMaxim ? -0.28 : 0.16) + breath * 0.002) * idleW,
         );
         rotateBoneCharAxis(
           _qVisW,
@@ -1015,7 +1082,7 @@ export class CharacterAnimator {
           0,
           0,
           1,
-          (isMaxim ? -0.14 : -0.07) * idleW,
+          (isMaxim ? -0.18 : -0.07) * idleW,
         );
         rotateBoneCharAxis(
           _qVisW,
@@ -1036,16 +1103,27 @@ export class CharacterAnimator {
           (0.04 + breath * 0.002) * idleW,
         );
         rotateBoneCharAxis(_qVisW, rig.adamSpine2Bone, 1, 0, 0, breath * 0.003 * idleW);
+        if (isMaxim) {
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, 0.14 * idleW);
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.07 * idleW);
+        }
         rotateBoneCharAxis(
           _qVisW,
           rig.adamUpperArmRBone,
           1,
           0,
           0,
-          (0.62 + breath * 0.004) * idleW,
+          ((isMaxim ? 0.56 : 0.62) + breath * 0.004) * idleW,
         );
-        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 1, 0, (0.05 + breath * 0.002) * idleW);
-        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, -0.05 * idleW);
+        rotateBoneCharAxis(
+          _qVisW,
+          rig.adamUpperArmRBone,
+          0,
+          1,
+          0,
+          ((isMaxim ? -0.22 : 0.05) + breath * 0.002) * idleW,
+        );
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, (isMaxim ? -0.15 : -0.05) * idleW);
         rotateBoneCharAxis(_qVisW, rig.adamLowerArmRBone, 1, 0, 0, 0.10 * idleW);
       }
     }
@@ -1054,12 +1132,22 @@ export class CharacterAnimator {
     const crouchLowW =
       this.crouchLowBlend * (1 - this.combatUpperBlend) * (1 - this.bandageBlend);
     if (crouchLowW > 0.01 && rig.adamUpperBones && aimQuats) {
-      slerpArmBones(rig.adamUpperBones, aimQuats, crouchLowW, false, 'all', 0.55 * crouchLowW);
+      slerpArmBones(
+        rig.adamUpperBones,
+        aimQuats,
+        crouchLowW,
+        false,
+        'all',
+        (isMaxim ? 0.70 : 0.55) * crouchLowW,
+      );
       vis.updateMatrixWorld(true);
       vis.getWorldQuaternion(_qVisW);
-      if (isMaxim && isLargeWeapon) {
-        rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, -0.06 * crouchLowW);
-        rotateBoneCharAxis(_qVisW, rig.adamLeftShoulderBone, 0, 1, 0, 0.06 * crouchLowW);
+      if (isMaxim) {
+        rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, 0.16 * crouchLowW);
+        rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.08 * crouchLowW);
+        if (isLargeWeapon) {
+          rotateBoneCharAxis(_qVisW, rig.adamLeftShoulderBone, 0, 1, 0, -0.06 * crouchLowW);
+        }
       }
       rotateBoneCharAxis(
         _qVisW,
@@ -1067,7 +1155,7 @@ export class CharacterAnimator {
         1,
         0,
         0,
-        ((isLargeWeapon ? (isMaxim ? 0.20 : 0.30) : 0.52) + breath * 0.004) * crouchLowW,
+        ((isLargeWeapon ? (isMaxim ? 0.18 : 0.30) : 0.52) + breath * 0.004) * crouchLowW,
       );
       rotateBoneCharAxis(
         _qVisW,
@@ -1075,7 +1163,7 @@ export class CharacterAnimator {
         0,
         1,
         0,
-        (isLargeWeapon ? (isMaxim ? 0.02 : 0.14) : 0.05) * crouchLowW,
+        (isMaxim ? (isLargeWeapon ? -0.28 : -0.20) : isLargeWeapon ? 0.14 : 0.05) * crouchLowW,
       );
       rotateBoneCharAxis(
         _qVisW,
@@ -1083,7 +1171,7 @@ export class CharacterAnimator {
         0,
         0,
         1,
-        (isMaxim && isLargeWeapon ? -0.14 : -0.07) * crouchLowW,
+        (isMaxim ? (isLargeWeapon ? -0.18 : -0.14) : -0.07) * crouchLowW,
       );
     }
 
@@ -1094,7 +1182,14 @@ export class CharacterAnimator {
       (1 - this.sprintCarryBlend) *
       (1 - this.bandageBlend);
     if (analogW > 0.01 && rig.adamUpperBones && aimQuats) {
-      slerpArmBones(rig.adamUpperBones, aimQuats, analogW, false, 'all', 0.45 * analogW);
+      slerpArmBones(
+        rig.adamUpperBones,
+        aimQuats,
+        analogW,
+        false,
+        'all',
+        (isMaxim ? 0.70 : 0.45) * analogW,
+      );
       vis.updateMatrixWorld(true);
       vis.getWorldQuaternion(_qVisW);
 
@@ -1111,9 +1206,9 @@ export class CharacterAnimator {
           (0.08 + microSway) * analogW,
         );
         if (isMaxim) {
-          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, -0.06 * analogW);
-          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.06 * analogW);
-          rotateBoneCharAxis(_qVisW, rig.adamLeftShoulderBone, 0, 1, 0, 0.06 * analogW);
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, 0.16 * analogW);
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.08 * analogW);
+          rotateBoneCharAxis(_qVisW, rig.adamLeftShoulderBone, 0, 1, 0, -0.06 * analogW);
         }
         rotateBoneCharAxis(
           _qVisW,
@@ -1121,7 +1216,7 @@ export class CharacterAnimator {
           1,
           0,
           0,
-          ((isMaxim ? 0.22 : 0.34) + bob) * analogW,
+          ((isMaxim ? 0.18 : 0.34) + bob) * analogW,
         );
         rotateBoneCharAxis(
           _qVisW,
@@ -1129,7 +1224,7 @@ export class CharacterAnimator {
           0,
           1,
           0,
-          ((isMaxim ? 0.02 : 0.15) + microSway) * analogW,
+          ((isMaxim ? -0.28 : 0.15) + microSway) * analogW,
         );
         rotateBoneCharAxis(
           _qVisW,
@@ -1137,7 +1232,7 @@ export class CharacterAnimator {
           0,
           0,
           1,
-          (isMaxim ? -0.14 : -0.07) * analogW,
+          (isMaxim ? -0.18 : -0.07) * analogW,
         );
         rotateBoneCharAxis(
           _qVisW,
@@ -1157,9 +1252,27 @@ export class CharacterAnimator {
           0,
           (0.04 + microSway) * analogW,
         );
-        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 1, 0, 0, (0.60 + bob) * analogW);
-        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 1, 0, (0.05 + microSway) * analogW);
-        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, -0.05 * analogW);
+        if (isMaxim) {
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, 0.14 * analogW);
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.07 * analogW);
+        }
+        rotateBoneCharAxis(
+          _qVisW,
+          rig.adamUpperArmRBone,
+          1,
+          0,
+          0,
+          ((isMaxim ? 0.54 : 0.60) + bob) * analogW,
+        );
+        rotateBoneCharAxis(
+          _qVisW,
+          rig.adamUpperArmRBone,
+          0,
+          1,
+          0,
+          ((isMaxim ? -0.20 : 0.05) + microSway) * analogW,
+        );
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, (isMaxim ? -0.14 : -0.05) * analogW);
         rotateBoneCharAxis(_qVisW, rig.adamLowerArmRBone, 1, 0, 0, 0.10 * analogW);
       }
     }
@@ -1177,31 +1290,21 @@ export class CharacterAnimator {
       const sprintMicroSway = sway * 0.008;
 
       if (isPistolSprint) {
-        slerpArmBones(rig.adamUpperBones, aimQuats, sprintW, false, 'rightOnly', 0.20 * sprintW);
+        slerpArmBones(
+          rig.adamUpperBones,
+          aimQuats,
+          sprintW,
+          false,
+          'rightOnly',
+          (isMaxim ? 0.50 : 0.20) * sprintW,
+        );
         vis.updateMatrixWorld(true);
         vis.getWorldQuaternion(_qVisW);
 
         // Stretch right arm downward beside hip while running + left arm swings naturally
-        rotateBoneCharAxis(
-          _qVisW,
-          rig.adamUpperArmRBone,
-          1,
-          0,
-          0,
-          (0.94 + stepBounce * 0.015) * sprintW,
-        );
-        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 1, 0, -0.08 * sprintW);
-        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, -0.15 * sprintW);
-        rotateBoneCharAxis(_qVisW, rig.adamLowerArmRBone, 1, 0, 0, 0.22 * sprintW);
-      } else if (isSmgRushSprint) {
-        slerpArmBones(rig.adamUpperBones, aimQuats, sprintW, false, 'rightOnly', 0.25 * sprintW);
-        vis.updateMatrixWorld(true);
-        vis.getWorldQuaternion(_qVisW);
-
-        // Rush SMG (UMP): hold upward with one arm (right forearm raised ~40°), left arm swinging freely
         if (isMaxim) {
-          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, -0.08 * sprintW);
-          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.08 * sprintW);
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, 0.14 * sprintW);
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.07 * sprintW);
         }
         rotateBoneCharAxis(
           _qVisW,
@@ -1209,7 +1312,35 @@ export class CharacterAnimator {
           1,
           0,
           0,
-          ((isMaxim ? 0.22 : 0.34) + stepBounce * 0.012) * sprintW,
+          ((isMaxim ? 0.88 : 0.94) + stepBounce * 0.015) * sprintW,
+        );
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 1, 0, (isMaxim ? -0.24 : -0.08) * sprintW);
+        rotateBoneCharAxis(_qVisW, rig.adamUpperArmRBone, 0, 0, 1, (isMaxim ? -0.24 : -0.15) * sprintW);
+        rotateBoneCharAxis(_qVisW, rig.adamLowerArmRBone, 1, 0, 0, 0.22 * sprintW);
+      } else if (isSmgRushSprint) {
+        slerpArmBones(
+          rig.adamUpperBones,
+          aimQuats,
+          sprintW,
+          false,
+          'rightOnly',
+          (isMaxim ? 0.56 : 0.25) * sprintW,
+        );
+        vis.updateMatrixWorld(true);
+        vis.getWorldQuaternion(_qVisW);
+
+        // Rush SMG (UMP): hold upward with one arm (right forearm raised ~40°), left arm swinging freely
+        if (isMaxim) {
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, 0.16 * sprintW);
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.09 * sprintW);
+        }
+        rotateBoneCharAxis(
+          _qVisW,
+          rig.adamUpperArmRBone,
+          1,
+          0,
+          0,
+          ((isMaxim ? 0.20 : 0.34) + stepBounce * 0.012) * sprintW,
         );
         rotateBoneCharAxis(
           _qVisW,
@@ -1217,7 +1348,7 @@ export class CharacterAnimator {
           0,
           1,
           0,
-          (isMaxim ? -0.24 : -0.06) * sprintW,
+          (isMaxim ? -0.34 : -0.06) * sprintW,
         );
         rotateBoneCharAxis(
           _qVisW,
@@ -1225,7 +1356,7 @@ export class CharacterAnimator {
           0,
           0,
           1,
-          (isMaxim ? -0.25 : -0.14) * sprintW,
+          (isMaxim ? -0.28 : -0.14) * sprintW,
         );
         rotateBoneCharAxis(
           _qVisW,
@@ -1233,12 +1364,19 @@ export class CharacterAnimator {
           1,
           0,
           0,
-          (isMaxim ? -0.66 : -0.82) * sprintW,
+          (isMaxim ? -0.68 : -0.82) * sprintW,
         );
         rotateBoneCharAxis(_qVisW, rig.adamHandRBone, 1, 0, 0, -0.22 * sprintW);
       } else {
         // AR / XM8 / SG / SR: two-handed stationary chest hold with minimal living micro-bob/sway
-        slerpArmBones(rig.adamUpperBones, aimQuats, sprintW, false, 'all', 0.65 * sprintW);
+        slerpArmBones(
+          rig.adamUpperBones,
+          aimQuats,
+          sprintW,
+          false,
+          'all',
+          (isMaxim ? 0.78 : 0.65) * sprintW,
+        );
         vis.updateMatrixWorld(true);
         vis.getWorldQuaternion(_qVisW);
 
@@ -1251,9 +1389,9 @@ export class CharacterAnimator {
           (0.11 + sprintMicroSway) * sprintW,
         );
         if (isMaxim) {
-          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, -0.06 * sprintW);
-          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.06 * sprintW);
-          rotateBoneCharAxis(_qVisW, rig.adamLeftShoulderBone, 0, 1, 0, 0.06 * sprintW);
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 1, 0, 0.16 * sprintW);
+          rotateBoneCharAxis(_qVisW, rig.adamRightShoulderBone, 0, 0, 1, -0.08 * sprintW);
+          rotateBoneCharAxis(_qVisW, rig.adamLeftShoulderBone, 0, 1, 0, -0.06 * sprintW);
         }
         rotateBoneCharAxis(
           _qVisW,
@@ -1261,7 +1399,7 @@ export class CharacterAnimator {
           1,
           0,
           0,
-          ((isMaxim ? 0.20 : 0.30) + sprintBob) * sprintW,
+          ((isMaxim ? 0.18 : 0.30) + sprintBob) * sprintW,
         );
         rotateBoneCharAxis(
           _qVisW,
@@ -1269,7 +1407,7 @@ export class CharacterAnimator {
           0,
           1,
           0,
-          ((isMaxim ? 0.02 : 0.15) + sprintMicroSway) * sprintW,
+          ((isMaxim ? -0.28 : 0.15) + sprintMicroSway) * sprintW,
         );
         rotateBoneCharAxis(
           _qVisW,
@@ -1277,7 +1415,7 @@ export class CharacterAnimator {
           0,
           0,
           1,
-          (isMaxim ? -0.14 : -0.07) * sprintW,
+          (isMaxim ? -0.18 : -0.07) * sprintW,
         );
         rotateBoneCharAxis(
           _qVisW,
@@ -1960,6 +2098,25 @@ export class CharacterAnimator {
       rig.rightHip.rotation.set(-posR * 0.45, 0, -0.11 - posR * 0.22);
       rig.leftKnee.rotation.set(0.14 + posL * 0.65, 0, 0);
       rig.rightKnee.rotation.set(0.14 + posR * 0.65, 0, 0);
+      return;
+    }
+
+    if (input.isVaulting) {
+      const p = THREE.MathUtils.clamp(input.vaultProgress ?? 0.5, 0, 1);
+      const plantEnv = Math.sin(Math.min(1, p / 0.88) * Math.PI);
+      const swingEnv = Math.sin(Math.pow(p, 0.82) * Math.PI);
+      rig.pelvis.position.y = 1.02 + 0.14 * swingEnv;
+      rig.pelvis.rotation.set(0.28 * plantEnv, 0, -0.52 * plantEnv);
+      rig.torso.rotation.set(0.14 * plantEnv, -0.24 * plantEnv, 0);
+      rig.headGroup.rotation.set(-0.28 * plantEnv, 0, 0);
+      rig.leftShoulder.rotation.set(-0.95 * plantEnv, 0, 0.34 * plantEnv);
+      rig.leftElbow.rotation.set(-0.18 * plantEnv, 0, 0);
+      rig.rightShoulder.rotation.set(-0.55 * plantEnv, 0.16, -0.42 * plantEnv);
+      rig.rightElbow.rotation.set(-0.78 * plantEnv, 0, 0);
+      rig.leftHip.rotation.set(-1.08 * swingEnv, 0, -0.32 * swingEnv);
+      rig.leftKnee.rotation.set(1.36 * swingEnv, 0, 0);
+      rig.rightHip.rotation.set(-0.92 * swingEnv, 0, -0.4 * swingEnv);
+      rig.rightKnee.rotation.set(1.22 * swingEnv, 0, 0);
       return;
     }
 

@@ -787,6 +787,7 @@ export interface HudSnapshot {
     distance: number;
   }>;
   airDropNotice: string | null;
+  stanceNotice: string | null;
   isOnlineMatch?: boolean;
   autoFillBots?: boolean;
   pingMs: number;

@@ -171,7 +171,10 @@ export interface TargetDummy {
   landX: number;
   landZ: number;
   vy: number;
-  aiState: 'roam' | 'loot' | 'combat' | 'heal' | 'revive';
+  aiState: 'roam' | 'loot' | 'combat' | 'heal' | 'revive' | 'shop';
+  shopTimer?: number;
+  shopCooldown?: number;
+  targetVendingId?: string | null;
   goalX: number;
   goalY: number;
   goalZ: number;
@@ -1482,6 +1485,9 @@ function createBotEntity(
     landZ: z,
     vy: 0,
     aiState: 'roam',
+    shopTimer: 0,
+    shopCooldown: 0,
+    targetVendingId: null,
     goalX: x,
     goalY: y,
     goalZ: z,

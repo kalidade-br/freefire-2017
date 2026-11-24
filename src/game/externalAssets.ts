@@ -669,7 +669,7 @@ export class MeshCollisionGrid {
               if (absNy <= 0.45) {
                 const nh = Math.hypot(tri.nx, tri.nz);
                 if (nh > 1e-4) {
-                  const p = radius * 0.35;
+                  const p = radius * 0.72;
                   posObj.x += (tri.nx / nh) * p;
                   posObj.z += (tri.nz / nh) * p;
                   totalPush += p;
@@ -724,7 +724,12 @@ export class MeshCollisionGrid {
     return totalPush;
   }
 
-  public raycast(origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number): number | null {
+  public raycast(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxDist: number,
+    minHitDist = 0.05,
+  ): number | null {
     const endX = origin.x + dir.x * maxDist;
     const endY = origin.y + dir.y * maxDist;
     const endZ = origin.z + dir.z * maxDist;
@@ -782,7 +787,7 @@ export class MeshCollisionGrid {
             const v = dir.dot(_tQ) * invDet;
             if (v < 0 || u + v > 1) continue;
             const t = _tE2.dot(_tQ) * invDet;
-            if (t > 0.05 && t < bestT && t <= maxDist) {
+            if (t > minHitDist && t < bestT && t <= maxDist) {
               bestT = t;
             }
           }
