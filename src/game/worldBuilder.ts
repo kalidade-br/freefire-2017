@@ -301,6 +301,7 @@ export interface WorldHandle {
     isSoftwareGl: boolean,
     textureQuality?: TextureQuality,
     shadowQuality?: ShadowQuality,
+    maxAnisotropy?: number,
   ) => void;
   updateDynamicProps: (
     dt: number,
@@ -1553,8 +1554,8 @@ const BOT_HIT_PROXY_MAT = new THREE.MeshBasicMaterial({
   depthWrite: false,
   colorWrite: false,
 });
-const BOT_CHEST_PROXY_GEO = new THREE.BoxGeometry(0.42, 0.56, 0.3);
-const BOT_HEAD_PROXY_GEO = new THREE.BoxGeometry(0.26, 0.28, 0.26);
+const BOT_CHEST_PROXY_GEO = new THREE.BoxGeometry(0.54, 0.72, 0.38);
+const BOT_HEAD_PROXY_GEO = new THREE.BoxGeometry(0.3, 0.32, 0.3);
 const BOT_VEST_GEO = new THREE.CylinderGeometry(0.175, 0.155, 0.31, 10);
 const BOT_HELMET_GEO = new THREE.SphereGeometry(0.122, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.58);
 const BOT_PACK_GEO = new THREE.BoxGeometry(0.24, 0.32, 0.14);
@@ -1987,34 +1988,42 @@ export function createIslandWorld(
     1220,
   );
 
-  // Distant-Render Texture LOD uniform: strips texture resolution past threshold into flat base color
-  const texDistUniform = { value: 56.0 };
+  // Distant-Render Texture Blur LOD uniform: preserves normal textures at all distances with soft optical blur
+  const texDistUniform = { value: 64.0 };
+  let currentGlbAniso = 4;
+  const glbTextures = new Set<THREE.Texture>();
+
   const applyDistanceTextureLod = (
     mat: THREE.MeshStandardMaterial,
-    flatRgb: [number, number, number],
+    _flatRgb?: [number, number, number],
   ) => {
+    void _flatRgb;
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTexMaxDist = texDistUniform;
-      shader.uniforms.uUntexturedColor = {
-        value: new THREE.Vector3(flatRgb[0], flatRgb[1], flatRgb[2]),
-      };
-      shader.fragmentShader =
-        'uniform float uTexMaxDist;\nuniform vec3 uUntexturedColor;\n' +
-        shader.fragmentShader;
+      shader.fragmentShader = 'uniform float uTexMaxDist;\n' + shader.fragmentShader;
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <map_fragment>',
         `#ifdef USE_MAP
           vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+          float texBlurFade = smoothstep(uTexMaxDist * 0.44, uTexMaxDist * 1.15, length(vViewPosition));
+          float mipBias = texBlurFade * 2.25;
+          vec2 blurStep = vec2(0.0055) * texBlurFade;
+          vec4 blurSample = (
+            texture2D( map, vMapUv + vec2( blurStep.x, 0.0), mipBias ) +
+            texture2D( map, vMapUv + vec2(-blurStep.x, 0.0), mipBias ) +
+            texture2D( map, vMapUv + vec2(0.0,  blurStep.y), mipBias ) +
+            texture2D( map, vMapUv + vec2(0.0, -blurStep.y), mipBias )
+          ) * 0.25;
           #ifdef DECODE_VIDEO_TEXTURE
             sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
+            blurSample = sRGBTransferEOTF( blurSample );
           #endif
-          float texDistFade = smoothstep(uTexMaxDist * 0.56, uTexMaxDist, length(vViewPosition));
-          sampledDiffuseColor.rgb = mix(sampledDiffuseColor.rgb, uUntexturedColor, texDistFade);
+          sampledDiffuseColor.rgb = mix(sampledDiffuseColor.rgb, blurSample.rgb, texBlurFade * 0.92);
           diffuseColor *= sampledDiffuseColor;
         #endif`,
       );
     };
-    mat.customProgramCacheKey = () => 'proc-dist-flat-lod';
+    mat.customProgramCacheKey = () => 'proc-dist-blur-lod';
     mat.needsUpdate = true;
   };
 
@@ -2029,8 +2038,11 @@ export function createIslandWorld(
         if (!mat || !mat.map || patchedGlbMats.has(mat)) continue;
         patchedGlbMats.add(mat);
         if (mat.map) {
+          glbTextures.add(mat.map);
           mat.map.generateMipmaps = true;
           mat.map.minFilter = THREE.LinearMipmapLinearFilter;
+          mat.map.magFilter = THREE.LinearFilter;
+          mat.map.anisotropy = currentGlbAniso;
           mat.map.needsUpdate = true;
         }
         mat.onBeforeCompile = (shader) => {
@@ -2040,18 +2052,25 @@ export function createIslandWorld(
             '#include <map_fragment>',
             `#ifdef USE_MAP
               vec4 sampledDiffuseColor = texture2D( map, vMapUv );
-              vec4 flatDistTexColor = texture2D( map, vMapUv, 7.5 );
+              float texBlurFade = smoothstep(uTexMaxDist * 0.44, uTexMaxDist * 1.15, length(vViewPosition));
+              float mipBias = texBlurFade * 2.05;
+              vec2 blurStep = vec2(0.0018) * texBlurFade;
+              vec4 blurSample = (
+                texture2D( map, vMapUv + vec2( blurStep.x, 0.0), mipBias ) +
+                texture2D( map, vMapUv + vec2(-blurStep.x, 0.0), mipBias ) +
+                texture2D( map, vMapUv + vec2(0.0,  blurStep.y), mipBias ) +
+                texture2D( map, vMapUv + vec2(0.0, -blurStep.y), mipBias )
+              ) * 0.25;
               #ifdef DECODE_VIDEO_TEXTURE
                 sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
-                flatDistTexColor = sRGBTransferEOTF( flatDistTexColor );
+                blurSample = sRGBTransferEOTF( blurSample );
               #endif
-              float texDistFade = smoothstep(uTexMaxDist * 0.56, uTexMaxDist, length(vViewPosition));
-              sampledDiffuseColor.rgb = mix(sampledDiffuseColor.rgb, flatDistTexColor.rgb, texDistFade);
+              sampledDiffuseColor.rgb = mix(sampledDiffuseColor.rgb, blurSample.rgb, texBlurFade * 0.92);
               diffuseColor *= sampledDiffuseColor;
             #endif`,
           );
         };
-        mat.customProgramCacheKey = () => 'glb-dist-flat-lod';
+        mat.customProgramCacheKey = () => 'glb-dist-blur-lod';
         mat.needsUpdate = true;
       }
     });
@@ -2257,14 +2276,16 @@ export function createIslandWorld(
   joaoPessoaGroup.add(water);
 
   // Seamless surrounding tropical ocean skirt for Bermuda 3D map
+  const bermudaOceanSkirtMat = new THREE.MeshStandardMaterial({
+    map: textures.waterWave,
+    color: 0x1680b0,
+    roughness: 0.28,
+    metalness: 0.18,
+  });
+  applyDistanceTextureLod(bermudaOceanSkirtMat);
   const bermudaOceanSkirt = new THREE.Mesh(
     new THREE.PlaneGeometry(4600, 4600),
-    new THREE.MeshStandardMaterial({
-      map: textures.waterWave,
-      color: 0x1680b0,
-      roughness: 0.28,
-      metalness: 0.18,
-    }),
+    bermudaOceanSkirtMat,
   );
   bermudaOceanSkirt.rotation.x = -Math.PI / 2;
   bermudaOceanSkirt.position.y = BERMUDA_GLB_WATER_Y - 0.18;
@@ -4649,7 +4670,7 @@ export function createIslandWorld(
       bermudaCollisionGrid.buildFromObject(bermudaModel);
 
       // Collect discrete buildings, trees, rocks & props in bermuda.glb for view-cone + distance culling
-      // Keep large terrain/ground/road/ocean meshes always visible (handled by fog & flat-color LOD).
+      // Keep large terrain/ground/road/ocean meshes always visible (handled by fog & soft-blur normal-texture LOD).
       bermudaCullables.length = 0;
       const cullBox = new THREE.Box3();
       const cullCenter = new THREE.Vector3();
@@ -5095,17 +5116,18 @@ export function createIslandWorld(
     });
   }
 
-  let structureCullDist = 250;
+  let structureCullDist = 155;
 
-  let baseFogNear = 175;
-  let baseFogFar = 385;
-  let baseCamFar = 430;
+  let baseFogNear = 102;
+  let baseFogFar = 195;
+  let baseCamFar = 230;
 
   const applyQuality = (
     quality: GraphicsQuality,
     isSoftwareGl: boolean,
     textureQuality?: TextureQuality,
     shadowQuality?: ShadowQuality,
+    maxAnisotropy = 8,
   ) => {
     const resolvedTex: TextureQuality =
       textureQuality ?? (quality === 'low' ? 'low' : quality === 'high' ? 'ultra' : 'medium');
@@ -5113,16 +5135,33 @@ export function createIslandWorld(
       ? 'off'
       : (shadowQuality ?? (quality === 'low' ? 'off' : quality === 'high' ? 'high' : 'low'));
 
-    textures.applyQuality(resolvedTex);
-    // Distant texture-detail cutoff -> flat base color beyond threshold
+    const capAniso = Math.max(1, maxAnisotropy);
+    currentGlbAniso =
+      resolvedTex === 'low'
+        ? Math.min(2, capAniso)
+        : resolvedTex === 'medium'
+          ? Math.min(4, capAniso)
+          : resolvedTex === 'high'
+            ? Math.min(8, capAniso)
+            : Math.min(16, capAniso);
+
+    textures.applyQuality(resolvedTex, capAniso);
+    for (const tex of glbTextures) {
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.anisotropy = currentGlbAniso;
+      tex.needsUpdate = true;
+    }
+
+    // Distant texture-blur transition threshold (keeps normal texture softly blurred at range)
     texDistUniform.value =
       resolvedTex === 'low'
-        ? 42.0
+        ? 46.0
         : resolvedTex === 'medium'
-          ? 68.0
+          ? 64.0
           : resolvedTex === 'high'
-            ? 96.0
-            : 128.0;
+            ? 84.0
+            : 106.0;
     terrainMat.roughness = resolvedTex === 'low' ? 0.94 : resolvedTex === 'ultra' ? 0.86 : 0.9;
     asphaltRoadMat.roughness = resolvedTex === 'low' ? 0.88 : resolvedTex === 'ultra' ? 0.76 : 0.82;
 
@@ -5179,10 +5218,10 @@ export function createIslandWorld(
     }
 
     if (quality === 'low' || isSoftwareGl) {
-      baseFogNear = 115;
-      baseFogFar = 265;
-      baseCamFar = 300;
-      structureCullDist = 175;
+      baseFogNear = 70;
+      baseFogFar = 148;
+      baseCamFar = 175;
+      structureCullDist = 115;
       sunLight.intensity = 1.95;
       hemi.intensity = 1.62;
       waterMat.roughness = 0.72;
@@ -5192,10 +5231,10 @@ export function createIslandWorld(
       scene.environment = null;
       scene.environmentIntensity = 0;
     } else if (quality === 'medium') {
-      baseFogNear = 175;
-      baseFogFar = 385;
-      baseCamFar = 430;
-      structureCullDist = 250;
+      baseFogNear = 102;
+      baseFogFar = 195;
+      baseCamFar = 230;
+      structureCullDist = 155;
       sunLight.intensity = 1.98;
       hemi.intensity = 1.38;
       waterMat.roughness = 0.32;
@@ -5205,10 +5244,10 @@ export function createIslandWorld(
       scene.environment = envMap;
       scene.environmentIntensity = 0.58;
     } else {
-      baseFogNear = 255;
-      baseFogFar = 540;
-      baseCamFar = 600;
-      structureCullDist = 360;
+      baseFogNear = 132;
+      baseFogFar = 245;
+      baseCamFar = 285;
+      structureCullDist = 195;
       sunLight.intensity = 2.24;
       hemi.intensity = 1.36;
       waterMat.roughness = 0.12;
@@ -5274,9 +5313,9 @@ export function createIslandWorld(
     const fwdX = hasFwd ? camFwdX! / fwdLen : 0;
     const fwdZ = hasFwd ? camFwdZ! / fwdLen : -1;
 
-    const targetFogNear = isAirborne ? Math.max(baseFogNear, 360) : baseFogNear;
-    const targetFogFar = isAirborne ? Math.max(baseFogFar, 720) : baseFogFar;
-    const targetCamFar = isAirborne ? Math.max(baseCamFar, 800) : baseCamFar;
+    const targetFogNear = isAirborne ? Math.max(baseFogNear, 240) : baseFogNear;
+    const targetFogFar = isAirborne ? Math.max(baseFogFar, 460) : baseFogFar;
+    const targetCamFar = isAirborne ? Math.max(baseCamFar, 520) : baseCamFar;
     if (fog.near !== targetFogNear || fog.far !== targetFogFar) {
       fog.near = targetFogNear;
       fog.far = targetFogFar;
@@ -5340,8 +5379,8 @@ export function createIslandWorld(
       }
 
       // Vehicles keep full physics/collision simulation regardless of visibility;
-      // 42m 360-deg safety bubble + active driver guard prevents reverse/turning bugs.
-      const vehCullR = structureCullDist + 40;
+      // 50m 360-deg safety bubble + active driver guard prevents reverse/turning bugs.
+      const vehCullR = structureCullDist + 24;
       for (let i = 0; i < vehicles.length; i++) {
         const v = vehicles[i];
         const vis =

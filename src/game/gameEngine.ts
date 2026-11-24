@@ -1044,15 +1044,15 @@ export class BattleRoyaleEngine {
   }
 
   private getEnemyRenderDist(): number {
-    if (this.settings.quality === 'low') return 135;
-    if (this.settings.quality === 'high') return 265;
-    return 195;
+    if (this.settings.quality === 'low') return 100;
+    if (this.settings.quality === 'high') return 165;
+    return 130;
   }
 
   private getLootRenderDist(): number {
-    if (this.settings.quality === 'low') return 28;
-    if (this.settings.quality === 'high') return 56;
-    return 40;
+    if (this.settings.quality === 'low') return 22;
+    if (this.settings.quality === 'high') return 42;
+    return 30;
   }
 
   private isInCameraViewCone(
@@ -1125,13 +1125,14 @@ export class BattleRoyaleEngine {
     this.renderer.toneMappingExposure =
       settings.quality === 'low' ? 1.12 : settings.quality === 'high' ? 1.2 : 1.15;
 
+    const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
     if (this.textures) {
-      this.textures.applyQuality(texLevel, this.renderer.capabilities.getMaxAnisotropy());
+      this.textures.applyQuality(texLevel, maxAniso);
     }
     if (this.world) {
-      this.world.applyQuality(settings.quality, this.isSoftwareGl, texLevel, shadowLevel);
+      this.world.applyQuality(settings.quality, this.isSoftwareGl, texLevel, shadowLevel, maxAniso);
       this.world.camera.far =
-        settings.quality === 'low' ? 300 : settings.quality === 'high' ? 600 : 430;
+        settings.quality === 'low' ? 175 : settings.quality === 'high' ? 285 : 230;
       this.world.camera.updateProjectionMatrix();
       if (prevShadowEnabled !== nextShadowEnabled || prevShadowType !== nextShadowType) {
         this.world.scene.traverse((obj) => {
@@ -2349,7 +2350,7 @@ export class BattleRoyaleEngine {
       }
       const maxRemoteDist =
         entity.teamId === this.onlineTeamId
-          ? Math.max(this.getEnemyRenderDist(), 210)
+          ? Math.max(this.getEnemyRenderDist(), 165)
           : this.getEnemyRenderDist();
       const nearRemote360 = entity.teamId === this.onlineTeamId ? 40 : 30;
       const isAirDropState =
@@ -5030,13 +5031,13 @@ export class BattleRoyaleEngine {
     dist: number,
   ): boolean {
     if (dist <= 2) return false;
-    const steps = dist > 45 ? 8 : 5;
+    const steps = dist > 60 ? 12 : 6;
     for (let s = 1; s < steps; s++) {
       const t = (s / steps) * dist;
       const sx = origin.x + dir.x * t;
       const sy = origin.y + dir.y * t;
       const sz = origin.z + dir.z * t;
-      if (sy < this.world.groundHeightAt(sx, sz) - 0.12) {
+      if (sy < this.world.groundHeightAt(sx, sz) - 0.16) {
         return true;
       }
     }
@@ -5048,7 +5049,7 @@ export class BattleRoyaleEngine {
     dir: THREE.Vector3,
     maxRange: number,
   ): number {
-    const steps = 14;
+    const steps = maxRange > 140 ? 24 : 16;
     const stepLen = maxRange / steps;
     let prevT = 0;
     for (let s = 1; s <= steps; s++) {
@@ -5057,7 +5058,7 @@ export class BattleRoyaleEngine {
       const sy = origin.y + dir.y * t;
       const sz = origin.z + dir.z * t;
       const gy = this.world.groundHeightAt(sx, sz);
-      if (sy <= gy) {
+      if (sy <= gy - 0.08) {
         // Binary refine once between prevT and t
         const midT = (prevT + t) * 0.5;
         const msy = origin.y + dir.y * midT;
@@ -5065,7 +5066,7 @@ export class BattleRoyaleEngine {
           origin.x + dir.x * midT,
           origin.z + dir.z * midT,
         );
-        return msy <= mgy ? midT : t;
+        return msy <= mgy - 0.08 ? midT : t;
       }
       prevT = t;
     }
@@ -5861,11 +5862,12 @@ export class BattleRoyaleEngine {
         ? 1.0
         : Math.max(0.18, 1.0 - (this.consecutiveShots - 4) * 0.12);
 
+    const renderReach = this.getEnemyRenderDist() + 30;
     const assistMaxRange = activeDef
       ? activeDef.category === 'SG'
         ? Math.max(activeDef.range, 62)
-        : Math.max(activeDef.range, this.isAiming ? 265 : 225)
-      : 180;
+        : Math.max(activeDef.range, this.isAiming ? renderReach + 25 : renderReach)
+      : renderReach;
 
     // Camera Look with per-scope sensitivity (zero weapon recoil)
     const sensScale = this.getScopeSensitivityScale(activeScope);
@@ -6457,12 +6459,20 @@ export class BattleRoyaleEngine {
     let diffCharYaw = desiredCharYaw - this.characterYaw;
     while (diffCharYaw > Math.PI) diffCharYaw -= Math.PI * 2;
     while (diffCharYaw < -Math.PI) diffCharYaw += Math.PI * 2;
-    const charTurnRate = this.combatFacingTimer > 0 ? 60 : 38;
+    const charTurnRate = this.combatFacingTimer > 0 ? 60 : this.isSprinting ? 36 : 26;
     this.prevCharYawForTurn = this.characterYaw;
     this.characterYaw += diffCharYaw * (1 - Math.exp(-charTurnRate * dt));
     let turnDeltaRad = this.characterYaw - this.prevCharYawForTurn;
     while (turnDeltaRad > Math.PI) turnDeltaRad -= Math.PI * 2;
     while (turnDeltaRad < -Math.PI) turnDeltaRad += Math.PI * 2;
+
+    const charFwdX = -Math.sin(this.characterYaw);
+    const charFwdZ = -Math.cos(this.characterYaw);
+    const charRightX = Math.cos(this.characterYaw);
+    const charRightZ = -Math.sin(this.characterYaw);
+    const speedDenom = Math.max(0.5, horizSpeed);
+    const moveLocalX = horizSpeed > 0.25 ? (this.vel.x * charRightX + this.vel.z * charRightZ) / speedDenom : 0;
+    const moveLocalZ = horizSpeed > 0.25 ? (this.vel.x * charFwdX + this.vel.z * charFwdZ) / speedDenom : 1;
 
     // Character orientation & animation
     this.playerRig.root.position.copy(this.pos);
@@ -6491,6 +6501,8 @@ export class BattleRoyaleEngine {
         this.activeSlot !== 4 && !this.isSwimming && activeDef ? activeDef.category : null,
       pitchRad: this.pitch,
       turnDeltaRad,
+      moveLocalX,
+      moveLocalZ,
     });
 
     // Update Gloo preview / Grenade curved trajectory line
@@ -7569,9 +7581,13 @@ export class BattleRoyaleEngine {
     if (slotState.attachments.muzzle === 'compensator') spreadMult *= 0.68;
     if (slotState.attachments.foregrip === 'grip') spreadMult *= 0.78;
     const baseEffectiveRange = isSilenced ? def.range * 1.08 : def.range;
+    const minVisibleHitRange =
+      def.category === 'SG'
+        ? baseEffectiveRange
+        : Math.max(baseEffectiveRange, this.getEnemyRenderDist() + 55);
     const effectiveRange = Math.max(
-      baseEffectiveRange,
-      def.category === 'AR' || def.category === 'SR' ? 280 : baseEffectiveRange,
+      minVisibleHitRange,
+      def.category === 'AR' || def.category === 'SR' ? 240 : minVisibleHitRange,
     );
 
     // Progressive spray bloom after 3 consecutive shots
@@ -7600,7 +7616,7 @@ export class BattleRoyaleEngine {
         this.raycaster.ray.direction,
         effectiveRange,
       );
-      let endDist = Math.min(effectiveRange * 0.55, terrainDist);
+      let endDist = Math.min(effectiveRange, terrainDist);
 
       // 2. Test tiny enemy hitboxes first (skip targets standing behind the player between camera & pivot)
       this.raycaster.far = terrainDist;
@@ -8594,7 +8610,7 @@ export class BattleRoyaleEngine {
     const enemyRenderDist = this.getEnemyRenderDist();
     const effectiveRenderDist =
       state === GameState.DROPPING || state === GameState.PARACHUTE
-        ? Math.max(enemyRenderDist, 240)
+        ? Math.max(enemyRenderDist, 185)
         : enemyRenderDist;
     const effectiveRenderDistSq = effectiveRenderDist * effectiveRenderDist;
     const playerSightRange = Math.min(82, enemyRenderDist * 0.9);
@@ -9025,7 +9041,7 @@ export class BattleRoyaleEngine {
           bot.goalX = bot.landX;
           bot.goalZ = bot.landZ;
         }
-        const skyRenderRange = Math.max(effectiveRenderDist, 260);
+        const skyRenderRange = Math.max(effectiveRenderDist, 185);
         const showSky =
           this.isInCameraViewCone(
             bot.group.position.x,
@@ -9091,7 +9107,7 @@ export class BattleRoyaleEngine {
       const bz = bot.group.position.z;
       const botCamDistSq =
         (bx - this.pos.x) * (bx - this.pos.x) + (bz - this.pos.z) * (bz - this.pos.z);
-      const allyVisDist = Math.max(effectiveRenderDist, 210);
+      const allyVisDist = Math.max(effectiveRenderDist, 165);
       const isSpectatedBot =
         this.isSpectating &&
         this.spectateTargetRef?.kind === 'bot' &&

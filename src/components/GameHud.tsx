@@ -988,7 +988,7 @@ export const GameHud: React.FC<GameHudProps> = ({
         const ny = (dy * clamped) / maxR;
         setJoyKnob({ x: nx * maxR, y: ny * maxR });
         input.setVirtualJoystick(nx, ny);
-        input.setTouchSprint(ny < -0.78);
+        input.setTouchSprint(ny < -0.82 && dist > maxR * 1.18);
         if (ny > 0.35 && autoSprintActive) {
           setAutoSprintActive(false);
         }

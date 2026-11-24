@@ -19,8 +19,13 @@ export interface CharacterRig {
   actions?: Record<string, THREE.AnimationAction>;
   activeClipName?: string;
   adamPelvisBone?: THREE.Object3D | null;
+  adamSpineBaseBone?: THREE.Object3D | null;
   adamSpineBone?: THREE.Object3D | null;
+  adamSpine2Bone?: THREE.Object3D | null;
   adamHeadBone?: THREE.Object3D | null;
+  adamLeftShoulderBone?: THREE.Object3D | null;
+  adamRightShoulderBone?: THREE.Object3D | null;
+  adamHandLBone?: THREE.Object3D | null;
   adamHandRBone?: THREE.Object3D | null;
   adamThighLBone?: THREE.Object3D | null;
   adamThighRBone?: THREE.Object3D | null;
@@ -51,6 +56,7 @@ export interface CharacterRig {
   surfboardGroup: THREE.Group;
   contactShadow: THREE.Mesh;
   weaponMeshes: Record<WeaponId, THREE.Group>;
+  activeWeaponId?: WeaponId | null;
   bodyMeshes: THREE.Mesh[];
   setWeapon: (weaponId: WeaponId | null) => void;
   setBackWeapons: (left: WeaponId | null, right: WeaponId | null) => void;
@@ -444,9 +450,12 @@ function createAdamCharacterRig(
 
   // Locate real Free Fire Mixamo skeleton bones
   const adamPelvisBone = clonedScene.getObjectByName('mixamorigHips') ?? null;
+  const adamSpineBaseBone = clonedScene.getObjectByName('mixamorigSpine') ?? adamPelvisBone;
   const adamSpineBone = clonedScene.getObjectByName('mixamorigSpine1') ?? adamPelvisBone;
   const adamSpine2Bone = clonedScene.getObjectByName('mixamorigSpine2') ?? adamSpineBone;
   const adamHeadBone = clonedScene.getObjectByName('mixamorigHead') ?? adamSpine2Bone;
+  const adamLeftShoulderBone = clonedScene.getObjectByName('mixamorigLeftShoulder') ?? null;
+  const adamRightShoulderBone = clonedScene.getObjectByName('mixamorigRightShoulder') ?? null;
   const adamHandRBone = clonedScene.getObjectByName('mixamorigRightHand') ?? adamSpine2Bone;
   const adamThighLBone = clonedScene.getObjectByName('mixamorigLeftUpLeg') ?? null;
   const adamThighRBone = clonedScene.getObjectByName('mixamorigRightUpLeg') ?? null;
@@ -582,7 +591,7 @@ function createAdamCharacterRig(
     awm: createWeaponModel('awm'),
   };
   Object.values(weaponMeshes).forEach((wm) => {
-    wm.position.set(0, -0.02, 0.05);
+    wm.position.set(0.004, 0.016, 0.062);
     wm.visible = false;
     weaponMount.add(wm);
   });
@@ -597,7 +606,7 @@ function createAdamCharacterRig(
       opacity: 0.92,
     }),
   );
-  muzzleFlash.position.set(0, 0.02, 0.41);
+  muzzleFlash.position.set(0, 0.036, 0.42);
   muzzleFlash.rotation.x = Math.PI / 2;
   muzzleFlash.visible = false;
   weaponMount.add(muzzleFlash);
@@ -647,7 +656,10 @@ function createAdamCharacterRig(
 
   applyConfig(initialConfig);
 
+  let rigObj: CharacterRig | null = null;
+
   const setWeapon = (weaponId: WeaponId | null) => {
+    if (rigObj) rigObj.activeWeaponId = weaponId;
     (Object.keys(weaponMeshes) as WeaponId[]).forEach((id) => {
       weaponMeshes[id].visible = weaponId === id;
     });
@@ -721,7 +733,7 @@ function createAdamCharacterRig(
     });
   };
 
-  return {
+  rigObj = {
     isAdam: true,
     modelId,
     root,
@@ -730,8 +742,13 @@ function createAdamCharacterRig(
     actions,
     activeClipName,
     adamPelvisBone,
+    adamSpineBaseBone,
     adamSpineBone,
+    adamSpine2Bone,
     adamHeadBone,
+    adamLeftShoulderBone,
+    adamRightShoulderBone,
+    adamHandLBone,
     adamHandRBone,
     adamThighLBone,
     adamThighRBone,
@@ -761,6 +778,7 @@ function createAdamCharacterRig(
     surfboardGroup: surfboard.group,
     contactShadow,
     weaponMeshes,
+    activeWeaponId: 'm4a1',
     bodyMeshes,
     setWeapon,
     setBackWeapons,
@@ -772,6 +790,7 @@ function createAdamCharacterRig(
     applyConfig,
     dispose,
   };
+  return rigObj;
 }
 
 export function createCharacterRig(
@@ -1127,7 +1146,10 @@ function createProceduralCharacterRig(
 
   applyConfig(initialConfig);
 
+  let procRigObj: CharacterRig | null = null;
+
   const setWeapon = (weaponId: WeaponId | null) => {
+    if (procRigObj) procRigObj.activeWeaponId = weaponId;
     (Object.keys(weaponMeshes) as WeaponId[]).forEach((id) => {
       weaponMeshes[id].visible = weaponId === id;
     });
@@ -1178,7 +1200,7 @@ function createProceduralCharacterRig(
     headgear.helmetMat.dispose();
   };
 
-  return {
+  procRigObj = {
     isAdam: false,
     root,
     pelvis,
@@ -1200,6 +1222,7 @@ function createProceduralCharacterRig(
     surfboardGroup: surfboard.group,
     contactShadow,
     weaponMeshes,
+    activeWeaponId: 'm4a1',
     bodyMeshes,
     setWeapon,
     setBackWeapons,
@@ -1210,4 +1233,5 @@ function createProceduralCharacterRig(
     applyConfig,
     dispose,
   };
+  return procRigObj;
 }

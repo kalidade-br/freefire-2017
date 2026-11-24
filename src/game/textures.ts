@@ -20,11 +20,7 @@ function finalizeTexture(
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeatX, repeatY);
-  const isMobile =
-    typeof window !== 'undefined' &&
-    (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
-      (navigator.maxTouchPoints ?? 0) > 0);
-  tex.anisotropy = isMobile ? 1 : Math.min(4, Math.max(1, anisotropy));
+  tex.anisotropy = Math.min(8, Math.max(2, anisotropy));
   tex.magFilter = THREE.LinearFilter;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.needsUpdate = true;
@@ -522,22 +518,25 @@ export function createProceduralTextures(
   ];
 
   let appliedLevel: TextureQuality | null = null;
-  const applyQuality = (level: TextureQuality, maxAniso = maxAnisotropy) => {
-    if (appliedLevel === level) return;
+  let lastMaxAniso = Math.max(1, maxAnisotropy);
+  const applyQuality = (level: TextureQuality, maxAniso?: number) => {
+    const resolvedMaxAniso =
+      typeof maxAniso === 'number' && maxAniso > 0
+        ? Math.max(1, maxAniso)
+        : lastMaxAniso;
+    if (appliedLevel === level && resolvedMaxAniso === lastMaxAniso) return;
     appliedLevel = level;
-    const cap = Math.max(1, maxAniso);
+    lastMaxAniso = resolvedMaxAniso;
+    const cap = lastMaxAniso;
     const targetAniso =
       level === 'low'
-        ? 1
+        ? Math.min(2, cap)
         : level === 'medium'
-          ? Math.min(2, cap)
+          ? Math.min(4, cap)
           : level === 'high'
             ? Math.min(8, cap)
             : Math.min(16, cap);
-    const targetMinFilter =
-      level === 'low'
-        ? THREE.LinearMipmapNearestFilter
-        : THREE.LinearMipmapLinearFilter;
+    const targetMinFilter = THREE.LinearMipmapLinearFilter;
 
     for (let i = 0; i < allTextures.length; i++) {
       const t = allTextures[i];

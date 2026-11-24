@@ -47,6 +47,28 @@ const BONE_MAP: ReadonlyArray<readonly [src: string, dst: string]> = [
   ['foot_r', 'mixamorigRightFoot'],
 ];
 
+const RUN_BONE_MAP: ReadonlyArray<readonly [src: string, dst: string]> = [
+  ['bone_Hips_02', 'mixamorigHips'],
+  ['bone_Spine_011', 'mixamorigSpine'],
+  ['bone_Spine1_012', 'mixamorigSpine1'],
+  ['bone_Neck_027', 'mixamorigNeck'],
+  ['bone_Head_028', 'mixamorigHead'],
+  ['bone_LeftClav_015', 'mixamorigLeftShoulder'],
+  ['bone_LeftArm_016', 'mixamorigLeftArm'],
+  ['bone_LeftForeArm_019', 'mixamorigLeftForeArm'],
+  ['bone_LeftHand_020', 'mixamorigLeftHand'],
+  ['bone_RightClav_034', 'mixamorigRightShoulder'],
+  ['bone_RightArm_035', 'mixamorigRightArm'],
+  ['bone_RightForeArm_038', 'mixamorigRightForeArm'],
+  ['bone_RightHand_039', 'mixamorigRightHand'],
+  ['bone_LeftLegUpper_03', 'mixamorigLeftUpLeg'],
+  ['bone_LeftLeg_04', 'mixamorigLeftLeg'],
+  ['bone_LeftAnkle_05', 'mixamorigLeftFoot'],
+  ['bone_RightLegUpper_07', 'mixamorigRightUpLeg'],
+  ['bone_RightLeg_08', 'mixamorigRightLeg'],
+  ['bone_RightAnkle_09', 'mixamorigRightFoot'],
+];
+
 export interface FFModelAssetPack {
   modelId: FFModelId;
   baseScene: THREE.Group;
@@ -161,12 +183,197 @@ function getWorldLimbDir(root: THREE.Object3D, aName: string, bName: string, fal
   return d.normalize();
 }
 
+function buildRunLoopFromRunGlb(
+  runScene: THREE.Group,
+  runClip: THREE.AnimationClip,
+  wrapper: THREE.Group,
+): THREE.AnimationClip | null {
+  let runSkinned: THREE.SkinnedMesh | null = null;
+  runScene.traverse((obj) => {
+    if (!runSkinned && (obj as THREE.SkinnedMesh).isSkinnedMesh) {
+      runSkinned = obj as THREE.SkinnedMesh;
+    }
+  });
+  if (!runSkinned) return null;
+  const skel = (runSkinned as THREE.SkinnedMesh).skeleton;
+  if (!skel || !skel.bones.length || !skel.boneInverses.length) return null;
+
+  const srcBindWorldPos = new Map<string, THREE.Vector3>();
+  const srcBindWorldQ = new Map<string, THREE.Quaternion>();
+  const m = new THREE.Matrix4();
+  for (let i = 0; i < skel.bones.length; i++) {
+    const bone = skel.bones[i];
+    const inv = skel.boneInverses[i];
+    if (!bone || !inv) continue;
+    m.copy(inv).invert();
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    const scl = new THREE.Vector3();
+    m.decompose(pos, quat, scl);
+    srcBindWorldPos.set(bone.name, pos);
+    srcBindWorldQ.set(bone.name, quat);
+  }
+
+  const getBindDir = (aName: string, bName: string, fallback: THREE.Vector3): THREE.Vector3 => {
+    const a = srcBindWorldPos.get(aName);
+    const b = srcBindWorldPos.get(bName);
+    if (!a || !b) return fallback.clone().normalize();
+    const d = b.clone().sub(a);
+    return d.lengthSq() > 1e-8 ? d.normalize() : fallback.clone().normalize();
+  };
+
+  const dstTemp = SkeletonUtils.clone(wrapper) as THREE.Group;
+  dstTemp.updateMatrixWorld(true);
+  alignBoneToWorldDir(dstTemp, 'mixamorigLeftArm', 'mixamorigLeftForeArm', getBindDir('bone_LeftArm_016', 'bone_LeftForeArm_019', new THREE.Vector3(0.6, -0.8, 0)));
+  alignBoneToWorldDir(dstTemp, 'mixamorigLeftForeArm', 'mixamorigLeftHand', getBindDir('bone_LeftForeArm_019', 'bone_LeftHand_020', new THREE.Vector3(0.6, -0.8, 0.2)));
+  alignBoneToWorldDir(dstTemp, 'mixamorigRightArm', 'mixamorigRightForeArm', getBindDir('bone_RightArm_035', 'bone_RightForeArm_038', new THREE.Vector3(-0.6, -0.8, 0)));
+  alignBoneToWorldDir(dstTemp, 'mixamorigRightForeArm', 'mixamorigRightHand', getBindDir('bone_RightForeArm_038', 'bone_RightHand_039', new THREE.Vector3(-0.6, -0.8, 0.2)));
+  alignBoneToWorldDir(dstTemp, 'mixamorigLeftUpLeg', 'mixamorigLeftLeg', getBindDir('bone_LeftLegUpper_03', 'bone_LeftLeg_04', new THREE.Vector3(0, -1, 0)));
+  alignBoneToWorldDir(dstTemp, 'mixamorigLeftLeg', 'mixamorigLeftFoot', getBindDir('bone_LeftLeg_04', 'bone_LeftAnkle_05', new THREE.Vector3(0, -1, 0)));
+  alignBoneToWorldDir(dstTemp, 'mixamorigRightUpLeg', 'mixamorigRightLeg', getBindDir('bone_RightLegUpper_07', 'bone_RightLeg_08', new THREE.Vector3(0, -1, 0)));
+  alignBoneToWorldDir(dstTemp, 'mixamorigRightLeg', 'mixamorigRightFoot', getBindDir('bone_RightLeg_08', 'bone_RightAnkle_09', new THREE.Vector3(0, -1, 0)));
+  dstTemp.updateMatrixWorld(true);
+
+  const dstNodes = new Map<string, THREE.Object3D>();
+  const dstBindWorldQ = new Map<string, THREE.Quaternion>();
+  for (let b = 0; b < RUN_BONE_MAP.length; b++) {
+    const [, dstName] = RUN_BONE_MAP[b];
+    const db = dstTemp.getObjectByName(dstName);
+    if (db) {
+      dstNodes.set(dstName, db);
+      dstBindWorldQ.set(dstName, db.getWorldQuaternion(new THREE.Quaternion()));
+    }
+  }
+  const dstHips = dstNodes.get('mixamorigHips');
+  const dstHipsBindWorldPos = dstHips
+    ? dstHips.getWorldPosition(new THREE.Vector3())
+    : new THREE.Vector3(0, 0.9, 0);
+  const dstSpine2 = dstTemp.getObjectByName('mixamorigSpine2');
+  const dstSpine2NeutralQ = dstSpine2 ? dstSpine2.quaternion.clone() : null;
+
+  const runClone = SkeletonUtils.clone(runScene) as THREE.Group;
+  runClone.updateMatrixWorld(true);
+  let runCloneMeshScale = 1;
+  runClone.traverse((obj) => {
+    if (runCloneMeshScale === 1 && (obj as THREE.SkinnedMesh).isSkinnedMesh) {
+      runCloneMeshScale = Math.max(0.01, obj.getWorldScale(new THREE.Vector3()).y);
+    }
+  });
+
+  const srcNodes = new Map<string, THREE.Object3D>();
+  for (let b = 0; b < RUN_BONE_MAP.length; b++) {
+    const [srcName] = RUN_BONE_MAP[b];
+    const sb = runClone.getObjectByName(srcName);
+    if (sb) srcNodes.set(srcName, sb);
+  }
+  const srcHips = srcNodes.get('bone_Hips_02');
+  const srcBindHipsY = srcBindWorldPos.get('bone_Hips_02')?.y ?? 0.55;
+
+  const duration = Math.max(0.1, runClip.duration);
+  const fps = 30;
+  const frameCount = Math.max(2, Math.ceil(duration * fps) + 1);
+  const times = new Float32Array(frameCount);
+  const quatBuffers = new Map<string, Float32Array>();
+  for (let b = 0; b < RUN_BONE_MAP.length; b++) {
+    const [srcName, dstName] = RUN_BONE_MAP[b];
+    if (srcNodes.has(srcName) && dstNodes.has(dstName) && srcBindWorldQ.has(srcName)) {
+      quatBuffers.set(dstName, new Float32Array(frameCount * 4));
+    }
+  }
+  const hipsPosBuf = srcHips && dstHips ? new Float32Array(frameCount * 3) : null;
+
+  const runMixer = new THREE.AnimationMixer(runClone);
+  const action = runMixer.clipAction(runClip);
+  action.reset().play();
+
+  const qSrcCurW = new THREE.Quaternion();
+  const qInvSrcBindW = new THREE.Quaternion();
+  const qTargetW = new THREE.Quaternion();
+  const qParentW = new THREE.Quaternion();
+  const qLocal = new THREE.Quaternion();
+  const tmpSrcPos = new THREE.Vector3();
+  const tmpDstWorldTargetPos = new THREE.Vector3();
+
+  for (let f = 0; f < frameCount; f++) {
+    const t = f === frameCount - 1 ? duration : (f / (frameCount - 1)) * duration;
+    times[f] = t;
+    runMixer.setTime(t);
+    runClone.updateMatrixWorld(true);
+
+    if (hipsPosBuf && srcHips && dstHips && dstHips.parent) {
+      srcHips.getWorldPosition(tmpSrcPos);
+      const srcCurHipsY = tmpSrcPos.y / runCloneMeshScale;
+      const worldDeltaY = (srcCurHipsY - srcBindHipsY) * (dstHipsBindWorldPos.y / Math.max(0.1, srcBindHipsY));
+      tmpDstWorldTargetPos.copy(dstHipsBindWorldPos);
+      tmpDstWorldTargetPos.y += worldDeltaY;
+      dstHips.parent.worldToLocal(tmpDstWorldTargetPos);
+      hipsPosBuf[f * 3] = tmpDstWorldTargetPos.x;
+      hipsPosBuf[f * 3 + 1] = tmpDstWorldTargetPos.y;
+      hipsPosBuf[f * 3 + 2] = tmpDstWorldTargetPos.z;
+    }
+
+    for (let b = 0; b < RUN_BONE_MAP.length; b++) {
+      const [srcName, dstName] = RUN_BONE_MAP[b];
+      const sb = srcNodes.get(srcName);
+      const db = dstNodes.get(dstName);
+      const buf = quatBuffers.get(dstName);
+      const sbBindW = srcBindWorldQ.get(srcName);
+      const dbBindW = dstBindWorldQ.get(dstName);
+      if (!sb || !db || !buf || !sbBindW || !dbBindW) continue;
+
+      sb.getWorldQuaternion(qSrcCurW);
+      qInvSrcBindW.copy(sbBindW).invert();
+      qTargetW.copy(qSrcCurW).multiply(qInvSrcBindW).multiply(dbBindW);
+
+      if (db.parent) {
+        db.parent.getWorldQuaternion(qParentW);
+        qLocal.copy(qParentW).invert().multiply(qTargetW).normalize();
+      } else {
+        qLocal.copy(qTargetW).normalize();
+      }
+
+      db.quaternion.copy(qLocal);
+      db.updateMatrixWorld(false);
+
+      buf[f * 4] = qLocal.x;
+      buf[f * 4 + 1] = qLocal.y;
+      buf[f * 4 + 2] = qLocal.z;
+      buf[f * 4 + 3] = qLocal.w;
+    }
+  }
+
+  action.stop();
+  runMixer.stopAllAction();
+  runMixer.uncacheRoot(runClone);
+
+  const tracks: THREE.KeyframeTrack[] = [];
+  if (hipsPosBuf) {
+    tracks.push(new THREE.VectorKeyframeTrack('mixamorigHips.position', times, hipsPosBuf));
+  }
+  if (dstSpine2NeutralQ) {
+    const s2Buf = new Float32Array(frameCount * 4);
+    for (let f = 0; f < frameCount; f++) {
+      s2Buf[f * 4] = dstSpine2NeutralQ.x;
+      s2Buf[f * 4 + 1] = dstSpine2NeutralQ.y;
+      s2Buf[f * 4 + 2] = dstSpine2NeutralQ.z;
+      s2Buf[f * 4 + 3] = dstSpine2NeutralQ.w;
+    }
+    tracks.push(new THREE.QuaternionKeyframeTrack('mixamorigSpine2.quaternion', times, s2Buf));
+  }
+  for (const [dstName, buf] of quatBuffers.entries()) {
+    tracks.push(new THREE.QuaternionKeyframeTrack(`${dstName}.quaternion`, times, buf));
+  }
+
+  return new THREE.AnimationClip('FF_Run_Loop', duration, tracks);
+}
+
 function buildFFPack(
   modelId: FFModelId,
   rawScene: THREE.Group,
   srcScene: THREE.Group,
   srcClips: THREE.AnimationClip[],
   rawRotY = -Math.PI / 2,
+  runData?: { scene: THREE.Group; clip: THREE.AnimationClip } | null,
 ): FFModelAssetPack {
   // Normalize meshes: disable frustum culling & preserve clean PBR skin/outfit maps
   rawScene.traverse((obj) => {
@@ -424,6 +631,13 @@ function buildFFPack(
   if (dstHips) dstHips.position.copy(savedHipsPos);
   wrapper.updateMatrixWorld(true);
 
+  if (runData) {
+    const ffRunClip = buildRunLoopFromRunGlb(runData.scene, runData.clip, wrapper);
+    if (ffRunClip) {
+      retargetedClips.push(ffRunClip);
+    }
+  }
+
   // Calibrate mount inverse quaternions & extract upper-body Aim pose quats on a fresh sample clone
   const spineMountQuat = new THREE.Quaternion();
   const headMountQuat = new THREE.Quaternion();
@@ -496,21 +710,27 @@ export function preloadAdamAssets(
     try {
       const loader = new GLTFLoader();
       onStep?.(46, 'Carregando personagens Adam, Eva, Maxim e Kelly...');
-      const [animLibGltf, ffAdamGltf, ffEvaGltf, maximGltf, kellyGltf] = await Promise.all([
+      const [animLibGltf, ffAdamGltf, ffEvaGltf, maximGltf, kellyGltf, runGltf] = await Promise.all([
         loadGlbAsync(loader, '/assets/models/adam.glb'),
         loadGlbAsync(loader, '/assets/models/ff_adam.glb'),
         loadGlbAsync(loader, '/assets/models/ff_eva.glb'),
         loadGlbAsync(loader, '/assets/models/maxim.glb'),
         loadGlbAsync(loader, '/assets/models/kelly.glb'),
+        loadGlbAsync(loader, '/assets/models/run.glb').catch(() => null),
       ]);
 
+      const runData =
+        runGltf && runGltf.animations.length > 0
+          ? { scene: runGltf.scene, clip: runGltf.animations[0] }
+          : null;
+
       onStep?.(72, 'Aplicando animações Free Fire nos 4 personagens...');
-      const adamPack = buildFFPack('adam', ffAdamGltf.scene, animLibGltf.scene, animLibGltf.animations);
-      const evaPack = buildFFPack('eva', ffEvaGltf.scene, animLibGltf.scene, animLibGltf.animations);
+      const adamPack = buildFFPack('adam', ffAdamGltf.scene, animLibGltf.scene, animLibGltf.animations, -Math.PI / 2, runData);
+      const evaPack = buildFFPack('eva', ffEvaGltf.scene, animLibGltf.scene, animLibGltf.animations, -Math.PI / 2, runData);
       const maximRigged = autoRigStaticCharacter(maximGltf.scene, 'maxim');
       const kellyRigged = autoRigStaticCharacter(kellyGltf.scene, 'kelly');
-      const maximPack = buildFFPack('maxim', maximRigged, animLibGltf.scene, animLibGltf.animations, 0);
-      const kellyPack = buildFFPack('kelly', kellyRigged, animLibGltf.scene, animLibGltf.animations, 0);
+      const maximPack = buildFFPack('maxim', maximRigged, animLibGltf.scene, animLibGltf.animations, 0, runData);
+      const kellyPack = buildFFPack('kelly', kellyRigged, animLibGltf.scene, animLibGltf.animations, 0, runData);
 
       loadedData = {
         adam: adamPack,
