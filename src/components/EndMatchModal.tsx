@@ -4,9 +4,10 @@ import {
   CharacterModelId,
   GameState,
   HudSnapshot,
+  PlayerAvatarId,
   getRankInfo,
 } from '../game/types';
-import { getCharacterAvatar } from '../game/avatars';
+import { getCharacterAvatar, getPlayerAvatar } from '../game/avatars';
 import { soundEngine } from '../game/audio';
 import { RankEmblemSvg } from './HudIcons';
 
@@ -21,6 +22,7 @@ interface EndMatchModalProps {
   rankDelta: number | null;
   playerNickname: string;
   playerModelId?: CharacterModelId;
+  playerAvatarId?: PlayerAvatarId;
   onReturnLobby: () => void;
 }
 
@@ -59,6 +61,7 @@ export const EndMatchModal: React.FC<EndMatchModalProps> = ({
   rankDelta,
   playerNickname,
   playerModelId,
+  playerAvatarId,
   onReturnLobby,
 }) => {
   const isWin = state === GameState.WIN;
@@ -308,7 +311,7 @@ export const EndMatchModal: React.FC<EndMatchModalProps> = ({
     : isRanked
       ? 'BR RANQUEADO'
       : 'BR CLÁSSICO';
-  const mapTitle = hud.mapId === 'joao_pessoa' ? 'JOÃO PESSOA' : 'BERMUDA';
+  const mapTitle = 'BERMUDA';
 
   // =========================================================================
   // STAGE 1: LIVE BATTLEFIELD BOOYAH OVERLAY (Screenshot 4)
@@ -511,6 +514,8 @@ export const EndMatchModal: React.FC<EndMatchModalProps> = ({
                 <RankEmblemSvg
                   color={currentRank.color}
                   accent={currentRank.accent}
+                  iconUrl={currentRank.iconUrl}
+                  alt={currentRank.name}
                   className="w-24 h-24 drop-shadow-[0_6px_18px_rgba(0,0,0,0.65)]"
                 />
               </div>
@@ -628,7 +633,9 @@ export const EndMatchModal: React.FC<EndMatchModalProps> = ({
             <RankEmblemSvg
               color={finalRank.color}
               accent={finalRank.accent}
-              className="w-6 h-6"
+              iconUrl={finalRank.iconUrl}
+              alt={finalRank.name}
+              className="w-7 h-7"
             />
             <div className="text-right leading-tight">
               <div className="text-[11px] font-black uppercase text-white">{finalRank.name}</div>
@@ -697,7 +704,11 @@ export const EndMatchModal: React.FC<EndMatchModalProps> = ({
                     <div className="flex items-center gap-2.5">
                       <div className="relative w-9 h-9 shrink-0 border border-white/30 bg-black/50 overflow-hidden">
                         <img
-                          src={getCharacterAvatar(row.model)}
+                          src={
+                            row.isLocal
+                              ? getPlayerAvatar(playerAvatarId, row.model)
+                              : getCharacterAvatar(row.model)
+                          }
                           alt={row.nick}
                           className="w-full h-full object-cover"
                         />

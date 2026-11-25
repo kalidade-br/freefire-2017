@@ -620,6 +620,28 @@ function buildFFPack(
     }
 
     retargetedClips.push(new THREE.AnimationClip(srcClip.name, duration, tracks));
+
+    if (srcClip.name === 'Punch_Jab' || srcClip.name === 'Punch_Cross') {
+      const upperTracks = tracks.filter((tr) => {
+        const boneName = tr.name.split('.')[0];
+        return (UPPER_AIM_BONE_NAMES as readonly string[]).includes(boneName);
+      });
+      if (upperTracks.length > 0) {
+        retargetedClips.push(
+          new THREE.AnimationClip(`${srcClip.name}_Upper`, duration, upperTracks),
+        );
+      }
+    } else if (srcClip.name === 'Crouch_Idle_Loop' || srcClip.name === 'Crouch_Fwd_Loop') {
+      const lowerTracks = tracks.filter((tr) => {
+        const boneName = tr.name.split('.')[0];
+        return !(UPPER_AIM_BONE_NAMES as readonly string[]).includes(boneName);
+      });
+      if (lowerTracks.length > 0) {
+        const lowerClipName =
+          srcClip.name === 'Crouch_Idle_Loop' ? 'Crouch_Lower_Idle' : 'Crouch_Lower_Fwd';
+        retargetedClips.push(new THREE.AnimationClip(lowerClipName, duration, lowerTracks));
+      }
+    }
   }
 
   srcMixer.stopAllAction();

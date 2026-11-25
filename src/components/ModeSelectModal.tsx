@@ -138,6 +138,8 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                       <RankEmblemSvg
                         color={rank.color}
                         accent={rank.accent}
+                        iconUrl={rank.iconUrl}
+                        alt={rank.name}
                         className="w-12 h-12"
                       />
                     </div>
@@ -159,7 +161,7 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                         BR RANQUEADO
                       </div>
                       <div className="text-[10px] font-mono text-white/85">
-                        {brMapId === 'bermuda' ? 'Bermuda (Principal)' : 'João Pessoa (2ª Opção)'} ⇄ · Pontos de Patente
+                        Mapa Bermuda · Pontos de Patente
                       </div>
                     </div>
                     <span className="px-2 py-0.5 bg-black/55 border border-amber-400/60 text-[10px] font-mono text-amber-200">
@@ -209,7 +211,7 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                       BATTLE ROYALE
                     </div>
                     <div className="text-[10px] font-mono text-white/85">
-                      {brMapId === 'bermuda' ? 'Bermuda (Principal)' : 'João Pessoa (2ª Opção)'} ⇄ · Sem perda de patente
+                      Mapa Bermuda · Sem perda de patente
                     </div>
                   </div>
                 </button>
@@ -243,10 +245,10 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                   <div className="my-auto text-center py-3 space-y-1.5">
                     <Swords className="w-11 h-11 text-amber-300 mx-auto drop-shadow" />
                     <div className="text-xs font-black uppercase text-amber-200">
-                      {gladiadoresFormat.toUpperCase()} · {gladiadoresTargetRounds} RODADAS
+                      {gladiadoresFormat.toUpperCase()} · 5 RODADAS
                     </div>
                     <div className="text-[10px] font-mono text-red-100/90">
-                      Vence quem chegar primeiro em {gladiadoresTargetRounds} rodadas
+                      Apenas 5 rodadas · Vence quem ganhar 3
                     </div>
                   </div>
 
@@ -323,74 +325,34 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
 
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-[10px] font-mono uppercase text-neutral-400">
-                      META DE RODADAS:
+                      PARTIDA:
                     </span>
-                    {[3, 5, 7].map((rounds) => (
-                      <button
-                        key={rounds}
-                        type="button"
-                        onClick={() => onChangeGladiadoresTargetRounds(rounds)}
-                        className={`px-3 py-2 border text-xs font-black uppercase cursor-pointer whitespace-nowrap ${
-                          gladiadoresTargetRounds === rounds
-                            ? 'bg-amber-500 text-black border-amber-200'
-                            : 'bg-[#171d26] text-neutral-300 border-neutral-600 hover:border-white'
-                        }`}
-                      >
-                        {rounds} RODADAS
-                      </button>
-                    ))}
+                    <span className="px-3 py-2 border text-xs font-black uppercase bg-amber-500 text-black border-amber-200 whitespace-nowrap">
+                      APENAS 5 RODADAS (MD5)
+                    </span>
                   </div>
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {/* BR Map Selector: Bermuda (Principal) vs João Pessoa (2ª Opção) */}
-                  <div className="bg-black/65 border border-amber-500/30 p-3 sm:p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+                  <div className="bg-black/65 border border-amber-500/30 px-3 py-2.5 sm:px-4 flex items-center justify-between gap-2.5">
                     <div className="text-[10px] font-mono uppercase text-amber-300 font-bold tracking-wider">
-                      MAPA DO BATTLE ROYALE:
+                      MAPA DO BATTLE ROYALE
                     </div>
-                    <div className="grid grid-cols-2 gap-2 flex-1 sm:max-w-lg">
-                      <button
-                        type="button"
-                        disabled={!isPartyLeader}
-                        onClick={() => onChangeBrMap('bermuda')}
-                        className={`px-3 py-2 border text-left cursor-pointer disabled:cursor-not-allowed transition-colors ${
-                          brMapId === 'bermuda'
-                            ? 'bg-amber-500/20 border-amber-400 text-white'
-                            : 'bg-[#171d26] border-neutral-600 text-neutral-300 hover:border-white'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-1.5">
-                          <span className="text-xs font-black uppercase">Bermuda</span>
-                          <span className="px-1.5 py-0.5 text-[9px] font-mono bg-amber-400 text-black font-black">
-                            PRINCIPAL
-                          </span>
-                        </div>
-                        <div className="text-[10px] font-mono text-neutral-300 mt-0.5">
-                          Ilha Clássica Completa
-                        </div>
-                      </button>
-
-                      <button
-                        type="button"
-                        disabled={!isPartyLeader}
-                        onClick={() => onChangeBrMap('joao_pessoa')}
-                        className={`px-3 py-2 border text-left cursor-pointer disabled:cursor-not-allowed transition-colors ${
-                          brMapId === 'joao_pessoa'
-                            ? 'bg-sky-500/20 border-sky-400 text-white'
-                            : 'bg-[#171d26] border-neutral-600 text-neutral-300 hover:border-white'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-1.5">
-                          <span className="text-xs font-black uppercase">João Pessoa</span>
-                          <span className="px-1.5 py-0.5 text-[9px] font-mono bg-white/10 border border-white/25 text-sky-200">
-                            2ª OPÇÃO
-                          </span>
-                        </div>
-                        <div className="text-[10px] font-mono text-neutral-300 mt-0.5">
-                          Orla, Lagoa e Farol
-                        </div>
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      disabled={!isPartyLeader}
+                      onClick={() => onChangeBrMap('bermuda')}
+                      className={`px-3 py-1.5 border text-left cursor-pointer disabled:cursor-not-allowed transition-colors ${
+                        brMapId === 'bermuda'
+                          ? 'bg-amber-500/20 border-amber-400 text-white'
+                          : 'bg-[#171d26] border-neutral-600 text-neutral-300'
+                      }`}
+                    >
+                      <span className="text-xs font-black uppercase">Bermuda</span>
+                      <span className="ml-2 text-[10px] font-mono text-neutral-300">
+                        Ilha Clássica Completa
+                      </span>
+                    </button>
                   </div>
 
                   <div className="bg-black/65 border border-white/20 p-3 sm:p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
@@ -461,8 +423,8 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
             {!isPartyLeader
               ? 'Apenas o líder do grupo pode alterar o modo.'
               : gameVariant === 'gladiadores'
-                ? `GLADIADORES · ${gladiadoresFormat.toUpperCase()} · Meta ${gladiadoresTargetRounds} Rodadas`
-                : `${isRanked ? 'BR RANQUEADO' : 'BATTLE ROYALE'} · ${brMapId === 'bermuda' ? 'Bermuda' : 'João Pessoa'} · ${matchMode.toUpperCase()}${matchMode !== 'solo' ? (autoFillBots ? ' · Auto Formação ON' : ' · Sem Bots Aliados') : ''}`}
+                ? `GLADIADORES · ${gladiadoresFormat.toUpperCase()} · Apenas 5 Rodadas (MD5)`
+                : `${isRanked ? 'BR RANQUEADO' : 'BATTLE ROYALE'} · Bermuda · ${matchMode.toUpperCase()}${matchMode !== 'solo' ? (autoFillBots ? ' · Auto Formação ON' : ' · Sem Bots Aliados') : ''}`}
           </span>
           <button
             type="button"

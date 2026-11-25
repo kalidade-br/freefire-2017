@@ -4,15 +4,20 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { ensureDatabaseSchema } from './src/db/index.ts';
+import { isDatabaseConfigured } from './src/db/index.ts';
 import {
+  claimSeason1Reward,
+  createGuestAccount,
   findAccountByPublicIdOrNick,
   getAccountByToken,
+  getAccountMatchHistory,
   getAccountProfileById,
+  getLeaderboard,
   listFriendsAndRequests,
   loginAccount,
   loginOrRegisterFirebaseAccount,
   logoutSession,
+  recordMatchHistory,
   registerAccount,
   respondFriendRequest,
   removeFriend,
@@ -20,12 +25,20 @@ import {
   updateAccountStatsAndProfile,
 } from './src/db/accounts.ts';
 import { adminAuth } from './src/lib/firebase-admin.ts';
+import {
+  fetchSupabaseLeaderboard,
+  isSupabaseConfigured,
+  syncAccountToSupabase,
+  syncMatchHistoryToSupabase,
+  verifySupabaseToken,
+} from './src/lib/supabase.ts';
 import type {
   AirplaneRouteSync,
   ClientMatchStatePush,
   MatchRoomAction,
   MatchRoomJoinInfo,
   MatchRoomSnapshot,
+  MatchmakingSearchStatus,
   PartyInvitePayload,
   PartyMemberInfo,
   PartyState,
@@ -38,6 +51,8 @@ import type {
   RemoteVehicleSync,
   RoomHumanSlot,
   SafeZoneSyncState,
+  SearchingPlayerInfo,
+  SearchingPoolInfo,
 } from './src/shared/multiplayerTypes.ts';
 import type { BrMapId, MatchMode } from './src/game/types.ts';
 
@@ -61,6 +76,32 @@ const parties = new Map<string, PartyState>();
 const partyInvites = new Map<string, PartyInvitePayload[]>(); // keyed by targetAccountId (as string)
 const accountMatchMap = new Map<number, string>();
 const rooms = new Map<string, ServerMatchRoom>();
+
+// Initial-lobby matchmaking queue pools (gather online players in 10s-20s BEFORE entering match)
+const QUEUE_SOLO_LAUNCH_MS = 12_000;
+const QUEUE_MAX_WINDOW_MS = 20_000;
+const QUEUE_JOIN_GRACE_MS = 5_000;
+const ROOM_BRIEF_WARMUP_MS = 5_500;
+
+interface MatchmakingPoolEntry {
+  partyId: string;
+  joinedAtMs: number;
+  lastPollAtMs: number;
+}
+
+interface MatchmakingPool {
+  poolKey: string;
+  mode: MatchMode;
+  mapId: BrMapId;
+  isRanked: boolean;
+  startedAtMs: number;
+  launchAtMs: number;
+  entries: MatchmakingPoolEntry[];
+}
+
+const matchmakingPools = new Map<string, MatchmakingPool>();
+const partyPoolKeyMap = new Map<string, string>();
+const pendingMatchFound = new Map<number, { joinInfo: MatchRoomJoinInfo; expiresAtMs: number }>();
 
 interface ServerMatchRoom {
   roomId: string;
@@ -118,6 +159,17 @@ function sendWs(accountId: number, payload: unknown): void {
   }
 }
 
+function broadcastAllWs(payload: unknown): void {
+  const raw = JSON.stringify(payload);
+  for (const set of onlineSockets.values()) {
+    for (const ws of set) {
+      if (ws.readyState === 1) {
+        ws.send(raw);
+      }
+    }
+  }
+}
+
 function broadcastParty(party: PartyState): void {
   for (const m of party.members) {
     sendWs(m.accountId, { type: 'party_update', party });
@@ -143,6 +195,7 @@ function makePartyMember(acc: PublicPlayerAccount, isLeader: boolean): PartyMemb
     nickname: acc.nickname,
     level: acc.level,
     rankPoints: acc.rankPoints,
+    avatarId: acc.avatarId,
     character: acc.character,
     ready: true,
     isLeader,
@@ -158,6 +211,7 @@ function ensurePartyForAccount(acc: PublicPlayerAccount): PartyState {
       member.nickname = acc.nickname;
       member.level = acc.level;
       member.rankPoints = acc.rankPoints;
+      member.avatarId = acc.avatarId;
       member.character = acc.character;
       return party;
     }
@@ -179,13 +233,163 @@ function ensurePartyForAccount(acc: PublicPlayerAccount): PartyState {
   return party;
 }
 
+function makePoolKey(mode: MatchMode, mapId: BrMapId, isRanked: boolean): string {
+  return `${mode}:${mapId}:${isRanked ? 'ranked' : 'classic'}`;
+}
+
+function buildSearchingPoolsList(): SearchingPoolInfo[] {
+  const result: SearchingPoolInfo[] = [];
+  for (const pool of matchmakingPools.values()) {
+    const players: SearchingPlayerInfo[] = [];
+    for (const entry of pool.entries) {
+      const party = parties.get(entry.partyId);
+      if (!party || party.status !== 'matchmaking') continue;
+      for (const m of party.members) {
+        players.push({
+          accountId: m.accountId,
+          publicId: m.publicId,
+          nickname: m.nickname,
+          level: m.level,
+          rankPoints: m.rankPoints,
+          characterModelId: String(m.character?.modelId || 'adam'),
+          avatarId: m.avatarId ?? m.character?.avatarId ?? 'default',
+        });
+      }
+    }
+    if (players.length === 0) continue;
+    result.push({
+      poolKey: pool.poolKey,
+      mode: pool.mode,
+      mapId: pool.mapId,
+      isRanked: pool.isRanked,
+      startedAtMs: pool.startedAtMs,
+      launchAtMs: pool.launchAtMs,
+      players,
+    });
+  }
+  result.sort((a, b) => a.startedAtMs - b.startedAtMs);
+  return result;
+}
+
+function broadcastSearchingQueue(): void {
+  broadcastAllWs({
+    type: 'matchmaking_queue_update',
+    pools: buildSearchingPoolsList(),
+  });
+}
+
+function removePartyFromMatchmaking(partyId: string, broadcast = true): void {
+  const poolKey = partyPoolKeyMap.get(partyId);
+  if (!poolKey) return;
+  partyPoolKeyMap.delete(partyId);
+  const pool = matchmakingPools.get(poolKey);
+  if (pool) {
+    pool.entries = pool.entries.filter((e) => e.partyId !== partyId);
+    if (pool.entries.length === 0) {
+      matchmakingPools.delete(poolKey);
+    }
+  }
+  const party = parties.get(partyId);
+  if (party && party.status === 'matchmaking') {
+    party.status = 'idle';
+    party.roomId = null;
+    if (broadcast) {
+      broadcastParty(party);
+      for (const m of party.members) {
+        sendWs(m.accountId, {
+          type: 'matchmaking_status',
+          status: { searching: false },
+        });
+      }
+    }
+  }
+  if (broadcast) {
+    broadcastSearchingQueue();
+  }
+}
+
+function getSearchStatusForParty(party: PartyState): MatchmakingSearchStatus {
+  const poolKey = partyPoolKeyMap.get(party.partyId);
+  const pool = poolKey ? matchmakingPools.get(poolKey) : undefined;
+  if (!pool || party.status !== 'matchmaking') {
+    return { searching: false };
+  }
+  const entry = pool.entries.find((e) => e.partyId === party.partyId);
+  return {
+    searching: true,
+    poolKey: pool.poolKey,
+    startedAtMs: entry?.joinedAtMs ?? pool.startedAtMs,
+    launchAtMs: pool.launchAtMs,
+    mode: pool.mode,
+    mapId: pool.mapId,
+    isRanked: pool.isRanked,
+  };
+}
+
+function joinPoolForParty(
+  party: PartyState,
+  mode: MatchMode,
+  mapId: BrMapId,
+  isRanked: boolean,
+): MatchmakingSearchStatus {
+  const now = Date.now();
+  removePartyFromMatchmaking(party.partyId, false);
+  const poolKey = makePoolKey(mode, mapId, isRanked);
+  let pool = matchmakingPools.get(poolKey);
+  if (!pool) {
+    pool = {
+      poolKey,
+      mode,
+      mapId,
+      isRanked,
+      startedAtMs: now,
+      launchAtMs: now + QUEUE_SOLO_LAUNCH_MS,
+      entries: [],
+    };
+    matchmakingPools.set(poolKey, pool);
+  } else {
+    pool.launchAtMs = Math.min(
+      pool.startedAtMs + QUEUE_MAX_WINDOW_MS,
+      Math.max(pool.launchAtMs, now + QUEUE_JOIN_GRACE_MS),
+    );
+  }
+
+  pool.entries.push({
+    partyId: party.partyId,
+    joinedAtMs: now,
+    lastPollAtMs: now,
+  });
+  partyPoolKeyMap.set(party.partyId, poolKey);
+  party.status = 'matchmaking';
+  party.roomId = null;
+  broadcastParty(party);
+
+  const status: MatchmakingSearchStatus = {
+    searching: true,
+    poolKey: pool.poolKey,
+    startedAtMs: now,
+    launchAtMs: pool.launchAtMs,
+    mode: pool.mode,
+    mapId: pool.mapId,
+    isRanked: pool.isRanked,
+  };
+  for (const m of party.members) {
+    pendingMatchFound.delete(m.accountId);
+    sendWs(m.accountId, { type: 'matchmaking_status', status });
+  }
+  broadcastSearchingQueue();
+  return status;
+}
+
 function leaveCurrentParty(acc: PublicPlayerAccount): PartyState {
   const oldId = accountPartyMap.get(acc.id);
   if (oldId && parties.has(oldId)) {
     const oldParty = parties.get(oldId)!;
     oldParty.members = oldParty.members.filter((m) => m.accountId !== acc.id);
     if (oldParty.members.length === 0) {
+      removePartyFromMatchmaking(oldId, false);
       parties.delete(oldId);
+      broadcastSearchingQueue();
     } else {
       if (oldParty.leaderId === acc.id) {
         oldParty.leaderId = oldParty.members[0].accountId;
@@ -206,63 +410,117 @@ function maxMembersForMode(mode: MatchMode): number {
 
 function computeServerSafeZone(room: ServerMatchRoom, nowMs: number): SafeZoneSyncState {
   const elapsedAfterPlane = Math.max(0, (nowMs - room.planeStartedAtMs) / 1000);
-  const isBermuda = (room.mapId ?? 'bermuda') === 'bermuda';
-  // Deterministic safe center derived from room seed
-  const s1 = Math.sin(room.seed * 0.0017) * 0.5 + 0.5;
-  const s2 = Math.cos(room.seed * 0.0029) * 0.5 + 0.5;
-  const targetCenterX = (s1 - 0.5) * (isBermuda ? 680 : 420);
-  const targetCenterZ = (s2 - 0.5) * (isBermuda ? 560 : 420);
+  const radii = [820, 480, 300, 175, 85, 0];
+  const dmgRates = [1, 2, 4, 8, 16];
+  const phases = [
+    { waitSec: 40, baseShrinkSec: 90, maxEdgeSpeed: 4.6 },
+    { waitSec: 35, baseShrinkSec: 85, maxEdgeSpeed: 3.3 },
+    { waitSec: 30, baseShrinkSec: 85, maxEdgeSpeed: 2.2 },
+    { waitSec: 25, baseShrinkSec: 85, maxEdgeSpeed: 1.45 },
+    { waitSec: 20, baseShrinkSec: 90, maxEdgeSpeed: 1.05 },
+  ];
 
-  const radii = isBermuda ? [820, 480, 300, 175, 85, 22] : [890, 560, 340, 185, 85, 22];
-  const dmgRates = [2, 5, 11, 18, 28];
-  const holdDur = 14;
-  const shrinkDur = 24;
-  const cycleDur = holdDur + shrinkDur;
+  // Build deterministic off-center zone chain from room.seed across varied island locations
+  const centers: Array<{ x: number; z: number }> = [{ x: 0, z: 0 }];
+  const shrinkSecs: number[] = [];
+  for (let i = 0; i < phases.length; i++) {
+    const prev = centers[i];
+    const prevR = radii[i];
+    const nextR = radii[i + 1];
+    const maxAvailShift = Math.max(0, prevR - nextR);
+    const h1 = Math.sin(room.seed * 0.00173 + (i + 1) * 19.37) * 43758.5453;
+    const u1 = h1 - Math.floor(h1);
+    const h2 = Math.cos(room.seed * 0.00291 + (i + 1) * 31.71) * 29341.1279;
+    const u2 = h2 - Math.floor(h2);
+    const ang = u1 * Math.PI * 2;
+    const frac = nextR > 0 ? 0.48 + u2 * 0.42 : 0.22 + u2 * 0.4;
+    const dist = maxAvailShift * frac;
+    let nx = prev.x + Math.cos(ang) * dist;
+    let nz = prev.z + Math.sin(ang) * dist;
+    // Clamp gently inside Bermuda dry island bounds while staying inside previous circle
+    const maxBoundX = 620;
+    const maxBoundZ = 520;
+    if (Math.abs(nx) > maxBoundX || Math.abs(nz) > maxBoundZ) {
+      const clampedX = Math.max(-maxBoundX, Math.min(maxBoundX, nx));
+      const clampedZ = Math.max(-maxBoundZ, Math.min(maxBoundZ, nz));
+      const cDist = Math.hypot(clampedX - prev.x, clampedZ - prev.z);
+      if (cDist > maxAvailShift && cDist > 0.001) {
+        const s = maxAvailShift / cDist;
+        nx = prev.x + (clampedX - prev.x) * s;
+        nz = prev.z + (clampedZ - prev.z) * s;
+      } else {
+        nx = clampedX;
+        nz = clampedZ;
+      }
+    }
+    centers.push({ x: nx, z: nz });
+    const shiftDist = Math.hypot(nx - prev.x, nz - prev.z);
+    const farEdgeTravel = Math.max(10, (prevR - nextR) + shiftDist);
+    shrinkSecs.push(
+      Math.max(phases[i].baseShrinkSec, Math.round(farEdgeTravel / phases[i].maxEdgeSpeed)),
+    );
+  }
 
-  const rawPhaseIdx = Math.min(4, Math.floor(elapsedAfterPlane / cycleDur));
-  const phaseElapsed = elapsedAfterPlane - rawPhaseIdx * cycleDur;
-  const isShrinking = phaseElapsed >= holdDur;
-  const timerSec = isShrinking
-    ? Math.max(0, cycleDur - phaseElapsed)
-    : Math.max(0, holdDur - phaseElapsed);
+  let accSec = 0;
+  for (let i = 0; i < phases.length; i++) {
+    const phaseCfg = phases[i];
+    const shrinkSec = shrinkSecs[i];
+    const phaseDur = phaseCfg.waitSec + shrinkSec;
+    const prev = centers[i];
+    const next = centers[i + 1];
+    const prevR = radii[i];
+    const nextR = radii[i + 1];
 
-  const prevR = radii[rawPhaseIdx];
-  const nextR = radii[rawPhaseIdx + 1];
-  const prevFrac = rawPhaseIdx / 5;
-  const nextFrac = (rawPhaseIdx + 1) / 5;
-  const prevX = targetCenterX * prevFrac;
-  const prevZ = targetCenterZ * prevFrac;
-  const nextX = targetCenterX * nextFrac;
-  const nextZ = targetCenterZ * nextFrac;
+    if (elapsedAfterPlane < accSec + phaseDur) {
+      const phaseElapsed = elapsedAfterPlane - accSec;
+      const isShrinking = phaseElapsed >= phaseCfg.waitSec;
+      const timerSec = isShrinking
+        ? Math.max(0, phaseDur - phaseElapsed)
+        : Math.max(0, phaseCfg.waitSec - phaseElapsed);
+      const t = isShrinking
+        ? Math.min(1, (phaseElapsed - phaseCfg.waitSec) / Math.max(1, shrinkSec))
+        : 0;
+      return {
+        phase: i + 1,
+        totalPhases: 5,
+        isShrinking,
+        timerSec,
+        currentX: prev.x + (next.x - prev.x) * t,
+        currentZ: prev.z + (next.z - prev.z) * t,
+        currentRadius: prevR + (nextR - prevR) * t,
+        nextX: next.x,
+        nextZ: next.z,
+        nextRadius: nextR,
+        damagePerSec: dmgRates[i] ?? 16,
+      };
+    }
+    accSec += phaseDur;
+  }
 
-  const t = isShrinking ? Math.min(1, (phaseElapsed - holdDur) / shrinkDur) : 0;
-  const currentRadius = prevR + (nextR - prevR) * t;
-  const currentX = prevX + (nextX - prevX) * t;
-  const currentZ = prevZ + (nextZ - prevZ) * t;
-
+  const finalCenter = centers[centers.length - 1];
   return {
-    phase: rawPhaseIdx + 1,
+    phase: 5,
     totalPhases: 5,
-    isShrinking,
-    timerSec,
-    currentX,
-    currentZ,
-    currentRadius,
-    nextX,
-    nextZ,
-    nextRadius: nextR,
-    damagePerSec: dmgRates[rawPhaseIdx] ?? 28,
+    isShrinking: false,
+    timerSec: 0,
+    currentX: finalCenter.x,
+    currentZ: finalCenter.z,
+    currentRadius: 0,
+    nextX: finalCenter.x,
+    nextZ: finalCenter.z,
+    nextRadius: 0,
+    damagePerSec: dmgRates[4],
   };
 }
 
 function createAirplaneRoute(
   seed: number,
   startedAtMs: number,
-  mapId: BrMapId = 'bermuda',
+  _mapId: BrMapId = 'bermuda',
 ): AirplaneRouteSync {
   const angle = ((seed % 3600) / 3600) * Math.PI * 2;
-  const radius = mapId === 'bermuda' ? 840 : 630;
-  const offset = (((seed * 7) % 1000) / 1000 - 0.5) * (mapId === 'bermuda' ? 320 : 240);
+  const radius = 840;
+  const offset = (((seed * 7) % 1000) / 1000 - 0.5) * 320;
   const perpX = -Math.sin(angle);
   const perpZ = Math.cos(angle);
   return {
@@ -325,6 +583,8 @@ function removeHumanFromRoom(accountId: number): void {
   if (!room) return;
 
   const p = room.humans.get(accountId);
+  const wasAlive = Boolean(p && !p.eliminated);
+  const nick = p?.nickname ?? '';
   if (p) {
     p.eliminated = true;
     p.hp = 0;
@@ -336,6 +596,20 @@ function removeHumanFromRoom(accountId: number): void {
   if (room.humans.size === 0) {
     rooms.delete(roomId);
     return;
+  }
+
+  if (wasAlive && nick && room.winnerTeamId === null) {
+    const entry: RemoteKillFeedEvent = {
+      id: room.nextKillFeedId++,
+      killerName: '',
+      victimName: nick,
+      weaponShort: 'ELIM_ENV',
+      isHeadshot: false,
+      killerAccountId: 0,
+    };
+    room.killFeed.push(entry);
+    if (room.killFeed.length > 16) room.killFeed.shift();
+    broadcastRoom(room, { type: 'kill_feed_event', entry });
   }
 
   if (room.hostAccountId === accountId) {
@@ -365,6 +639,16 @@ function applyClientStatePush(
   existing.stance = push.stance;
   existing.isSprinting = push.isSprinting;
   existing.isAiming = push.isAiming;
+  existing.isFiring = Boolean(push.isFiring);
+  existing.isReloading = Boolean(push.isReloading);
+  existing.isHealing = Boolean(push.isHealing);
+  existing.isReviving = Boolean(push.isReviving);
+  existing.isGrounded = push.isGrounded ?? true;
+  existing.isVaulting = Boolean(push.isVaulting);
+  existing.vaultProgress =
+    typeof push.vaultProgress === 'number' && Number.isFinite(push.vaultProgress)
+      ? Math.max(0, Math.min(1, push.vaultProgress))
+      : 0;
   existing.inWater = push.inWater;
   existing.isSwimming = push.isSwimming;
   existing.isOnSurfboard = push.isOnSurfboard;
@@ -529,13 +813,17 @@ function handleRoomAction(
   }
 
   if (action.type === 'kill_feed') {
+    const isEnv =
+      !action.killerName ||
+      action.weaponShort === 'ELIM_ENV' ||
+      action.weaponShort === 'KNOCK_ENV';
     const entry: RemoteKillFeedEvent = {
       id: room.nextKillFeedId++,
-      killerName: action.killerName,
+      killerName: isEnv ? '' : action.killerName,
       victimName: action.victimName,
       weaponShort: action.weaponShort,
-      isHeadshot: action.isHeadshot,
-      killerAccountId: actorAccountId,
+      isHeadshot: isEnv ? false : action.isHeadshot,
+      killerAccountId: isEnv ? 0 : actorAccountId,
     };
     room.killFeed.push(entry);
     if (room.killFeed.length > 16) room.killFeed.shift();
@@ -570,7 +858,199 @@ function handleRoomAction(
   }
 }
 
-// Periodic cleanup of stale empty rooms & expired party invites
+function launchMatchmakingPool(pool: MatchmakingPool): void {
+  matchmakingPools.delete(pool.poolKey);
+  const activeParties: PartyState[] = [];
+  for (const entry of pool.entries) {
+    partyPoolKeyMap.delete(entry.partyId);
+    const p = parties.get(entry.partyId);
+    if (p && p.members.length > 0 && p.status === 'matchmaking') {
+      activeParties.push(p);
+    }
+  }
+  if (activeParties.length === 0) {
+    broadcastSearchingQueue();
+    return;
+  }
+
+  const now = Date.now();
+  const seed = Math.floor(100000 + Math.random() * 899999);
+  const roomId = `rm_${now.toString(36)}_${seed.toString(36)}`;
+  const waitingEndsAtMs = now + ROOM_BRIEF_WARMUP_MS;
+  const planeStartedAtMs = waitingEndsAtMs;
+  const firstParty = activeParties[0];
+
+  const matchedRoom: ServerMatchRoom = {
+    roomId,
+    seed,
+    mode: pool.mode,
+    mapId: pool.mapId,
+    isRanked: pool.isRanked,
+    autoFillBots: firstParty.autoFillBots,
+    hostAccountId: firstParty.members[0].accountId,
+    createdAtMs: now,
+    waitingEndsAtMs,
+    planeStartedAtMs,
+    joinOpen: false,
+    nextTeamId: 1,
+    airplane: createAirplaneRoute(seed, planeStartedAtMs, pool.mapId),
+    humans: new Map(),
+    humanMeta: new Map(),
+    vehicles: new Map(),
+    bots: [],
+    collectedLootIds: new Set(),
+    glooWalls: new Map(),
+    killFeed: [],
+    nextKillFeedId: 1,
+    aliveCount: 51,
+    winnerTeamId: null,
+    lastRequestMs: new Map(),
+  };
+
+  for (const party of activeParties) {
+    const assignedTeamId = matchedRoom.nextTeamId;
+    matchedRoom.nextTeamId += 1;
+    party.members.forEach((m, idx) => {
+      removeHumanFromRoom(m.accountId);
+      const slotInTeam = idx + 1;
+      const isTeamLeader = m.accountId === party.leaderId;
+      const spawnSlotIdx = matchedRoom.humans.size;
+      const spawnDx = ((spawnSlotIdx % 12) - 5.5) * 1.35;
+      const spawnDz = Math.floor(spawnSlotIdx / 12) * 1.35;
+      const meta: RoomHumanSlot = {
+        accountId: m.accountId,
+        publicId: m.publicId,
+        nickname: m.nickname,
+        level: m.level,
+        rankPoints: m.rankPoints,
+        avatarId: m.avatarId ?? m.character?.avatarId ?? 'default',
+        teamId: assignedTeamId,
+        slotInTeam,
+        isTeamLeader,
+        character: m.character,
+      };
+      matchedRoom.humanMeta.set(m.accountId, meta);
+      matchedRoom.lastRequestMs.set(m.accountId, now);
+      matchedRoom.humans.set(m.accountId, {
+        accountId: m.accountId,
+        publicId: m.publicId,
+        nickname: m.nickname,
+        level: m.level,
+        rankPoints: m.rankPoints,
+        avatarId: m.avatarId ?? m.character?.avatarId ?? 'default',
+        teamId: assignedTeamId,
+        slotInTeam,
+        isTeamLeader,
+        character: m.character,
+        x: 2598 + spawnDx,
+        y: 18.12,
+        z: 2596 + spawnDz,
+        yaw: 0,
+        pitch: -0.14,
+        stance: 'stand',
+        isSprinting: false,
+        isAiming: false,
+        isFiring: false,
+        isReloading: false,
+        isHealing: false,
+        isReviving: false,
+        isGrounded: true,
+        isVaulting: false,
+        vaultProgress: 0,
+        inWater: false,
+        isSwimming: false,
+        isOnSurfboard: false,
+        flightPhase: 'waiting',
+        weaponId: 'g18',
+        ammoInMag: 15,
+        reserveAmmo: 45,
+        hp: 200,
+        maxHp: 200,
+        vestLevel: 0,
+        helmetLevel: 0,
+        isDowned: false,
+        bleedHp: 100,
+        eliminated: false,
+        kills: 0,
+        activeVehicleId: null,
+        updatedAtMs: now,
+      });
+      accountMatchMap.set(m.accountId, matchedRoom.roomId);
+    });
+  }
+
+  matchedRoom.aliveCount = Math.max(51, matchedRoom.humans.size);
+  rooms.set(roomId, matchedRoom);
+
+  for (const party of activeParties) {
+    party.status = 'in_match';
+    party.roomId = matchedRoom.roomId;
+    broadcastParty(party);
+    for (const m of party.members) {
+      const joinInfo = buildJoinInfo(matchedRoom, m.accountId);
+      pendingMatchFound.set(m.accountId, {
+        joinInfo,
+        expiresAtMs: now + 35_000,
+      });
+      sendWs(m.accountId, {
+        type: 'match_found',
+        joinInfo,
+      });
+    }
+  }
+  broadcastRoom(matchedRoom, {
+    type: 'room_snapshot',
+    snapshot: buildRoomSnapshot(matchedRoom),
+  });
+  broadcastSearchingQueue();
+}
+
+// Launch ready lobby matchmaking pools every 400ms
+const matchmakingTickTimer = setInterval(() => {
+  const now = Date.now();
+  for (const pool of Array.from(matchmakingPools.values())) {
+    let changed = false;
+    const kept: MatchmakingPoolEntry[] = [];
+    for (const entry of pool.entries) {
+      const party = parties.get(entry.partyId);
+      if (!party || party.status !== 'matchmaking' || party.members.length === 0) {
+        partyPoolKeyMap.delete(entry.partyId);
+        changed = true;
+        continue;
+      }
+      const anyAlive = party.members.some((m) => {
+        const socks = onlineSockets.get(m.accountId);
+        if (socks && socks.size > 0) return true;
+        const lastHb = lastHeartbeatMs.get(m.accountId) ?? 0;
+        return now - lastHb < 30_000;
+      });
+      if (!anyAlive && now - entry.lastPollAtMs > 30_000) {
+        partyPoolKeyMap.delete(entry.partyId);
+        party.status = 'idle';
+        changed = true;
+        continue;
+      }
+      kept.push(entry);
+    }
+    pool.entries = kept;
+    if (pool.entries.length === 0) {
+      matchmakingPools.delete(pool.poolKey);
+      changed = true;
+      if (changed) broadcastSearchingQueue();
+      continue;
+    }
+    if (now >= pool.launchAtMs) {
+      launchMatchmakingPool(pool);
+      continue;
+    }
+    if (changed) {
+      broadcastSearchingQueue();
+    }
+  }
+}, 400);
+matchmakingTickTimer.unref?.();
+
+// Periodic cleanup of stale empty rooms, pending notifications & expired party invites
 const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [roomId, room] of rooms.entries()) {
@@ -580,6 +1060,9 @@ const cleanupTimer = setInterval(() => {
     if (room.humans.size === 0 || now - room.createdAtMs > 45 * 60 * 1000) {
       rooms.delete(roomId);
     }
+  }
+  for (const [accId, item] of pendingMatchFound.entries()) {
+    if (now > item.expiresAtMs) pendingMatchFound.delete(accId);
   }
   for (const [k, list] of partyInvites.entries()) {
     const fresh = list.filter((inv) => now - inv.createdAt < 90_000);
@@ -598,8 +1081,6 @@ let cachedServerlessApp: express.Express | null = null;
 export async function createExpressApp(
   options: { attachFrontend?: boolean } = {},
 ): Promise<express.Express> {
-  await ensureDatabaseSchema();
-
   const app = express();
   app.set('trust proxy', true);
   app.use(express.json({ limit: '512kb' }));
@@ -688,9 +1169,19 @@ export async function createExpressApp(
     }
   };
 
-  // --- LIGHTWEIGHT LATENCY PING ---
+  // --- LIGHTWEIGHT LATENCY PING & BACKEND CAPABILITIES ---
   app.get('/api/ping', (_req, res) => {
     return res.json({ ok: true, serverTimeMs: Date.now() });
+  });
+
+  app.get(['/api/health', '/api/supabase/status'], (_req, res) => {
+    return res.json({
+      ok: true,
+      cloudSql: isDatabaseConfigured,
+      supabase: isSupabaseConfigured(),
+      websocket: true,
+      serverTimeMs: Date.now(),
+    });
   });
 
   // --- AUTH ---
@@ -758,6 +1249,50 @@ export async function createExpressApp(
     }
   });
 
+  app.post('/api/auth/supabase', async (req, res) => {
+    try {
+      const accessToken = String(req.body?.accessToken ?? '').trim();
+      if (!accessToken) {
+        return res.status(400).json({ error: 'Token Supabase ausente.' });
+      }
+      const sbUser = await verifySupabaseToken(accessToken);
+      if (!sbUser) {
+        return res.status(401).json({ error: 'Token Supabase inválido ou não configurado.' });
+      }
+      const out = await loginOrRegisterFirebaseAccount({
+        firebaseUid: `sb:${sbUser.id}`,
+        nickname:
+          typeof req.body?.nickname === 'string' && req.body.nickname.trim()
+            ? req.body.nickname
+            : sbUser.nickname,
+        character: req.body?.character,
+      });
+      lastHeartbeatMs.set(out.account.id, Date.now());
+      const party = ensurePartyForAccount(out.account);
+      const invites = partyInvites.get(String(out.account.id)) ?? [];
+      void syncAccountToSupabase(out.account);
+      return res.json({ ...out, party, invites });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro ao autenticar com Supabase.';
+      return res.status(401).json({ error: msg });
+    }
+  });
+
+  app.post('/api/auth/guest', async (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const nickname = typeof body.nickname === 'string' ? body.nickname : undefined;
+      const character = body.character && typeof body.character === 'object' ? body.character : undefined;
+      const out = await createGuestAccount({ nickname, character });
+      lastHeartbeatMs.set(out.account.id, Date.now());
+      const party = ensurePartyForAccount(out.account);
+      return res.json({ ...out, party, invites: [] });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro ao criar sessão de convidado.';
+      return res.status(500).json({ error: msg });
+    }
+  });
+
   app.post('/api/auth/logout', requireSession, async (req: AuthenticatedRequest, res) => {
     const acc = req.account!;
     removeHumanFromRoom(acc.id);
@@ -783,9 +1318,104 @@ export async function createExpressApp(
       const updated = await updateAccountStatsAndProfile(acc.id, req.body ?? {});
       const party = ensurePartyForAccount(updated);
       broadcastParty(party);
+      void syncAccountToSupabase(updated);
+      if (
+        req.body &&
+        (typeof req.body.rankPoints === 'number' ||
+          typeof req.body.wins === 'number' ||
+          typeof req.body.avatarId === 'string')
+      ) {
+        broadcastAllWs({ type: 'leaderboard_update' });
+      }
       return res.json({ account: { ...updated, presence: getPresence(updated.id) } });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Erro ao salvar perfil.';
+      const status = msg.includes('Avatar bloqueado') ? 403 : 500;
+      return res.status(status).json({ error: msg });
+    }
+  });
+
+  app.post('/api/season/s1/claim', requireSession, async (req: AuthenticatedRequest, res) => {
+    try {
+      const acc = req.account!;
+      const rewardId = String(req.body?.rewardId ?? '').trim();
+      const result = await claimSeason1Reward(acc.id, rewardId);
+      const party = ensurePartyForAccount(result.account);
+      broadcastParty(party);
+      void syncAccountToSupabase(result.account);
+      return res.json({
+        account: { ...result.account, presence: getPresence(result.account.id) },
+        grantedGold: result.grantedGold,
+        grantedGems: result.grantedGems,
+        grantedAvatars: result.grantedAvatars,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro ao resgatar recompensa S1.';
+      const status = msg.includes('precisa atingir')
+        ? 403
+        : msg.includes('não encontrada')
+          ? 404
+          : 400;
+      return res.status(status).json({ error: msg });
+    }
+  });
+
+  // --- CLOUD SQL + SUPABASE REST APIs (LEADERBOARD & MATCH HISTORY) ---
+  app.get(['/api/leaderboard', '/rest/v1/leaderboard'], async (req, res) => {
+    try {
+      const rawLimit = Number(req.query.limit ?? 50);
+      const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(100, rawLimit)) : 50;
+      const source = req.query.source === 'supabase' ? 'supabase' : 'cloudsql';
+      if (source === 'supabase' && isSupabaseConfigured()) {
+        const sbRows = await fetchSupabaseLeaderboard(limit);
+        if (sbRows) {
+          return res.json({ source: 'supabase', leaderboard: sbRows });
+        }
+      }
+      const rows = await getLeaderboard(limit);
+      return res.json({ source: isDatabaseConfigured ? 'cloudsql' : 'memory', leaderboard: rows });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro ao carregar ranking.';
+      return res.status(500).json({ error: msg });
+    }
+  });
+
+  app.get(['/api/matches/me', '/rest/v1/match_history'], requireSession, async (req: AuthenticatedRequest, res) => {
+    try {
+      const rawLimit = Number(req.query.limit ?? 20);
+      const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(50, rawLimit)) : 20;
+      const matches = await getAccountMatchHistory(req.account!.id, limit);
+      return res.json({ matches });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro ao carregar histórico.';
+      return res.status(500).json({ error: msg });
+    }
+  });
+
+  app.post(['/api/matches/record', '/rest/v1/match_history'], requireSession, async (req: AuthenticatedRequest, res) => {
+    try {
+      const acc = req.account!;
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const entry = await recordMatchHistory(acc.id, {
+        roomId: typeof body.roomId === 'string' ? body.roomId : 'offline',
+        mode: typeof body.mode === 'string' ? body.mode : 'solo',
+        mapId: 'bermuda',
+        isRanked: Boolean(body.isRanked),
+        placement: Number(body.placement ?? 51),
+        kills: Number(body.kills ?? 0),
+        damage: Number(body.damage ?? 0),
+        survivalSec: Number(body.survivalSec ?? 0),
+        booyah: Boolean(body.booyah),
+        rankDelta: Number(body.rankDelta ?? 0),
+      });
+      void syncMatchHistoryToSupabase({
+        publicId: acc.publicId,
+        ...entry,
+      });
+      broadcastAllWs({ type: 'leaderboard_update' });
+      return res.status(201).json({ match: entry });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro ao registrar partida.';
       return res.status(500).json({ error: msg });
     }
   });
@@ -895,6 +1525,9 @@ export async function createExpressApp(
     if (party.leaderId !== acc.id) {
       return res.status(403).json({ error: 'Apenas o líder do grupo pode alterar o modo.' });
     }
+    if (party.status === 'matchmaking') {
+      return res.status(400).json({ error: 'Cancele a busca de partida antes de alterar o modo.' });
+    }
     const { mode, mapId, isRanked, autoFillBots } = req.body ?? {};
     if (mode === 'solo' || mode === 'duo' || mode === 'squad') {
       if (mode === 'solo' && party.members.length > 1) {
@@ -905,8 +1538,8 @@ export async function createExpressApp(
       }
       party.mode = mode;
     }
-    if (mapId === 'bermuda' || mapId === 'joao_pessoa') {
-      party.mapId = mapId;
+    if (mapId === 'bermuda') {
+      party.mapId = 'bermuda';
     }
     if (typeof isRanked === 'boolean') party.isRanked = isRanked;
     if (typeof autoFillBots === 'boolean') party.autoFillBots = autoFillBots;
@@ -1014,7 +1647,39 @@ export async function createExpressApp(
     return res.json({ party });
   });
 
-  // --- MATCHMAKING & REAL-TIME MATCH ROOM ---
+  // --- MATCHMAKING QUEUE (INITIAL LOBBY) & REAL-TIME MATCH ROOM ---
+  app.get('/api/matchmaking/searching', (_req, res) => {
+    return res.json({ pools: buildSearchingPoolsList() });
+  });
+
+  app.get('/api/matchmaking/status', requireSession, (req: AuthenticatedRequest, res) => {
+    const acc = req.account!;
+    const pending = pendingMatchFound.get(acc.id);
+    if (pending && rooms.has(pending.joinInfo.roomId)) {
+      pendingMatchFound.delete(acc.id);
+      return res.json({
+        search: { searching: false },
+        joinInfo: pending.joinInfo,
+      });
+    }
+    const activeRoomId = accountMatchMap.get(acc.id);
+    const activeRoom = activeRoomId ? rooms.get(activeRoomId) : undefined;
+    if (activeRoom && activeRoom.humanMeta.has(acc.id)) {
+      return res.json({
+        search: { searching: false },
+        joinInfo: buildJoinInfo(activeRoom, acc.id),
+      });
+    }
+    const party = ensurePartyForAccount(acc);
+    const poolKey = partyPoolKeyMap.get(party.partyId);
+    const pool = poolKey ? matchmakingPools.get(poolKey) : undefined;
+    const entry = pool?.entries.find((e) => e.partyId === party.partyId);
+    if (entry) entry.lastPollAtMs = Date.now();
+    return res.json({
+      search: getSearchStatusForParty(party),
+    });
+  });
+
   app.post('/api/matchmaking/start', requireSession, (req: AuthenticatedRequest, res) => {
     const acc = req.account!;
     const party = ensurePartyForAccount(acc);
@@ -1025,134 +1690,48 @@ export async function createExpressApp(
     if (partySize > 4) {
       return res.status(400).json({ error: 'Máximo de 4 jogadores por esquadrão.' });
     }
-
-    // Find an existing open room matching mode + map + ranked where total online humans <= 51
-    const partyMapId: BrMapId = party.mapId === 'joao_pessoa' ? 'joao_pessoa' : 'bermuda';
-    const now = Date.now();
-    let matchedRoom: ServerMatchRoom | undefined;
-    for (const r of rooms.values()) {
-      if (
-        r.joinOpen &&
-        r.mode === party.mode &&
-        r.mapId === partyMapId &&
-        r.isRanked === party.isRanked &&
-        now < r.waitingEndsAtMs - 1500 &&
-        r.humans.size + partySize <= 51
-      ) {
-        matchedRoom = r;
-        break;
-      }
-    }
-
-    if (!matchedRoom) {
-      const seed = Math.floor(100000 + Math.random() * 899999);
-      const roomId = `rm_${Date.now().toString(36)}_${seed.toString(36)}`;
-      const waitingEndsAtMs = now + 10000;
-      const planeStartedAtMs = waitingEndsAtMs;
-      matchedRoom = {
-        roomId,
-        seed,
-        mode: party.mode,
-        mapId: partyMapId,
-        isRanked: party.isRanked,
-        autoFillBots: party.autoFillBots,
-        hostAccountId: party.members[0].accountId,
-        createdAtMs: now,
-        waitingEndsAtMs,
-        planeStartedAtMs,
-        joinOpen: true,
-        nextTeamId: 1,
-        airplane: createAirplaneRoute(seed, planeStartedAtMs, partyMapId),
-        humans: new Map(),
-        humanMeta: new Map(),
-        vehicles: new Map(),
-        bots: [],
-        collectedLootIds: new Set(),
-        glooWalls: new Map(),
-        killFeed: [],
-        nextKillFeedId: 1,
-        aliveCount: 51,
-        winnerTeamId: null,
-        lastRequestMs: new Map(),
-      };
-      rooms.set(roomId, matchedRoom);
-    }
-
-    const assignedTeamId = matchedRoom.nextTeamId;
-    matchedRoom.nextTeamId = Math.min(51, matchedRoom.nextTeamId + 1);
-
-    party.members.forEach((m, idx) => {
-      const slotInTeam = idx + 1;
-      const isTeamLeader = m.accountId === party.leaderId;
-      const spawnSlotIdx = matchedRoom!.humans.size;
-      const spawnDx = ((spawnSlotIdx % 5) - 2) * 1.45;
-      const spawnDz = Math.floor(spawnSlotIdx / 5) * 1.45;
-      const meta: RoomHumanSlot = {
-        accountId: m.accountId,
-        publicId: m.publicId,
-        nickname: m.nickname,
-        level: m.level,
-        rankPoints: m.rankPoints,
-        teamId: assignedTeamId,
-        slotInTeam,
-        isTeamLeader,
-        character: m.character,
-      };
-      matchedRoom!.humanMeta.set(m.accountId, meta);
-      matchedRoom!.lastRequestMs.set(m.accountId, now);
-      matchedRoom!.humans.set(m.accountId, {
-        accountId: m.accountId,
-        publicId: m.publicId,
-        nickname: m.nickname,
-        level: m.level,
-        rankPoints: m.rankPoints,
-        teamId: assignedTeamId,
-        slotInTeam,
-        isTeamLeader,
-        character: m.character,
-        x: 2598 + spawnDx,
-        y: 18.12,
-        z: 2596 + spawnDz,
-        yaw: 0,
-        pitch: -0.14,
-        stance: 'stand',
-        isSprinting: false,
-        isAiming: false,
-        inWater: false,
-        isSwimming: false,
-        isOnSurfboard: false,
-        flightPhase: 'waiting',
-        weaponId: 'g18',
-        ammoInMag: 15,
-        reserveAmmo: 45,
-        hp: 200,
-        maxHp: 200,
-        vestLevel: 0,
-        helmetLevel: 0,
-        isDowned: false,
-        bleedHp: 100,
-        eliminated: false,
-        kills: 0,
-        activeVehicleId: null,
-        updatedAtMs: now,
-      });
-      accountMatchMap.set(m.accountId, matchedRoom!.roomId);
-    });
-
-    party.status = 'in_match';
-    party.roomId = matchedRoom.roomId;
-    broadcastParty(party);
-
     for (const m of party.members) {
-      sendWs(m.accountId, {
-        type: 'match_found',
-        joinInfo: buildJoinInfo(matchedRoom, m.accountId),
+      removeHumanFromRoom(m.accountId);
+    }
+    const partyMapId: BrMapId = 'bermuda';
+    const search = joinPoolForParty(party, party.mode, partyMapId, party.isRanked);
+    return res.json({ search });
+  });
+
+  app.post('/api/matchmaking/join-queue', requireSession, (req: AuthenticatedRequest, res) => {
+    const acc = req.account!;
+    const party = ensurePartyForAccount(acc);
+    if (party.leaderId !== acc.id) {
+      return res.status(403).json({ error: 'Apenas o líder pode entrar em outra fila.' });
+    }
+    const targetPoolKey = typeof req.body?.poolKey === 'string' ? req.body.poolKey.trim() : '';
+    const targetPool = matchmakingPools.get(targetPoolKey);
+    if (!targetPool || targetPool.entries.length === 0) {
+      return res.status(404).json({ error: 'Essa busca já foi iniciada ou encerrada.' });
+    }
+    if (party.members.length > maxMembersForMode(targetPool.mode)) {
+      return res.status(400).json({
+        error: `Seu grupo tem ${party.members.length} jogadores; o modo ${targetPool.mode.toUpperCase()} comporta até ${maxMembersForMode(targetPool.mode)}.`,
       });
     }
+    for (const m of party.members) {
+      removeHumanFromRoom(m.accountId);
+    }
+    party.mode = targetPool.mode;
+    party.mapId = targetPool.mapId;
+    party.isRanked = targetPool.isRanked;
+    const search = joinPoolForParty(party, targetPool.mode, targetPool.mapId, targetPool.isRanked);
+    return res.json({ search, party });
+  });
 
-    return res.json({
-      joinInfo: buildJoinInfo(matchedRoom, acc.id),
-    });
+  app.post('/api/matchmaking/cancel', requireSession, (req: AuthenticatedRequest, res) => {
+    const acc = req.account!;
+    const party = ensurePartyForAccount(acc);
+    if (party.leaderId !== acc.id) {
+      return res.status(403).json({ error: 'Apenas o líder pode cancelar a busca.' });
+    }
+    removePartyFromMatchmaking(party.partyId, true);
+    return res.json({ ok: true, party });
   });
 
   app.post('/api/match/leave', requireSession, (req: AuthenticatedRequest, res) => {
@@ -1216,7 +1795,7 @@ export async function getServerlessApp(): Promise<express.Express> {
 export async function startServer(): Promise<void> {
   const app = await createExpressApp({ attachFrontend: true });
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
   server.on('upgrade', (req, socket, head) => {
     const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -1229,6 +1808,21 @@ export async function startServer(): Promise<void> {
     });
   });
 
+  const wsAliveMap = new WeakMap<WebSocket, boolean>();
+  const wsHeartbeatTimer = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (wsAliveMap.get(ws) === false) {
+        ws.terminate();
+        continue;
+      }
+      wsAliveMap.set(ws, false);
+      if (ws.readyState === 1) {
+        ws.ping();
+      }
+    }
+  }, 25_000);
+  wsHeartbeatTimer.unref?.();
+
   wss.on('connection', async (ws, req) => {
     const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const token = reqUrl.searchParams.get('token') || '';
@@ -1239,6 +1833,12 @@ export async function startServer(): Promise<void> {
     }
 
     const accountId = account.id;
+    wsAliveMap.set(ws, true);
+    ws.on('pong', () => {
+      wsAliveMap.set(ws, true);
+      lastHeartbeatMs.set(accountId, Date.now());
+    });
+
     let set = onlineSockets.get(accountId);
     if (!set) {
       set = new Set();
@@ -1247,7 +1847,54 @@ export async function startServer(): Promise<void> {
     set.add(ws);
     lastHeartbeatMs.set(accountId, Date.now());
     const party = ensurePartyForAccount(account);
+    ws.send(
+      JSON.stringify({
+        type: 'ws_ready',
+        serverTimeMs: Date.now(),
+        capabilities: {
+          cloudSql: isDatabaseConfigured,
+          supabase: isSupabaseConfigured(),
+          websocket: true,
+        },
+      }),
+    );
     ws.send(JSON.stringify({ type: 'party_update', party }));
+    ws.send(
+      JSON.stringify({
+        type: 'matchmaking_queue_update',
+        pools: buildSearchingPoolsList(),
+      }),
+    );
+    if (party.status === 'matchmaking') {
+      ws.send(
+        JSON.stringify({
+          type: 'matchmaking_status',
+          status: getSearchStatusForParty(party),
+        }),
+      );
+    }
+
+    const pendingJoin = pendingMatchFound.get(accountId);
+    if (pendingJoin && rooms.has(pendingJoin.joinInfo.roomId)) {
+      pendingMatchFound.delete(accountId);
+      ws.send(
+        JSON.stringify({
+          type: 'match_found',
+          joinInfo: pendingJoin.joinInfo,
+        }),
+      );
+    }
+
+    const activeRoomId = accountMatchMap.get(accountId);
+    const activeRoom = activeRoomId ? rooms.get(activeRoomId) : undefined;
+    if (activeRoom && activeRoom.humanMeta.has(accountId)) {
+      ws.send(
+        JSON.stringify({
+          type: 'room_snapshot',
+          snapshot: buildRoomSnapshot(activeRoom),
+        }),
+      );
+    }
 
     ws.on('message', (raw) => {
       lastHeartbeatMs.set(accountId, Date.now());
@@ -1270,6 +1917,36 @@ export async function startServer(): Promise<void> {
 
       const roomId = accountMatchMap.get(accountId);
       const room = roomId ? rooms.get(roomId) : undefined;
+
+      if (msg.type === 'lobby_chat') {
+        const cleanText =
+          typeof msg.text === 'string'
+            ? msg.text.replace(/[<>"'`]/g, '').trim().slice(0, 160)
+            : '';
+        if (!cleanText) return;
+        const chatPayload = {
+          type: 'chat_message',
+          scope: room ? 'match' : 'party',
+          fromAccountId: accountId,
+          nickname: account.nickname,
+          text: cleanText,
+          sentAtMs: Date.now(),
+        };
+        if (room) {
+          broadcastRoom(room, chatPayload);
+        } else {
+          const senderPartyId = accountPartyMap.get(accountId);
+          const senderParty = senderPartyId ? parties.get(senderPartyId) : undefined;
+          if (senderParty) {
+            for (const m of senderParty.members) {
+              sendWs(m.accountId, chatPayload);
+            }
+          } else {
+            sendWs(accountId, chatPayload);
+          }
+        }
+        return;
+      }
 
       if (msg.type === 'webrtc_signal') {
         const targetId = Number(msg.targetAccountId);

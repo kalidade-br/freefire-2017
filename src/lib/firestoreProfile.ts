@@ -1,7 +1,21 @@
 import type { User } from 'firebase/auth';
 import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
-import type { CharacterConfig, CharacterModelId, PlayerProfile } from '../game/types';
-import { normalizeCharacterModelId } from '../game/types';
+import {
+  FREE_PLAYER_AVATARS,
+  S1_MESTRE_AVATARS,
+  normalizePlayerAvatarId,
+} from '../game/avatars';
+import type {
+  CharacterConfig,
+  CharacterModelId,
+  PlayerAvatarId,
+  PlayerProfile,
+} from '../game/types';
+import {
+  CURRENT_RANKED_SEASON,
+  MESTRE_MIN_PTS,
+  normalizeCharacterModelId,
+} from '../game/types';
 import { db, handleFirestoreError, OperationType } from './firebase';
 
 export interface FirestoreUserProfileDoc {
@@ -18,6 +32,11 @@ export interface FirestoreUserProfileDoc {
   rankedWins: number;
   totalKills: number;
   characterModelId: CharacterModelId;
+  avatarId: PlayerAvatarId;
+  unlockedAvatars: PlayerAvatarId[];
+  seasonId: string;
+  s1PeakRankPoints: number;
+  s1ClaimedRewards: string[];
 }
 
 function clampInt(val: number, min: number, max: number): number {
@@ -38,6 +57,39 @@ function sanitizePublicId(raw: string | null | undefined): string {
 
 function sanitizeModelId(raw: string | undefined): CharacterModelId {
   return normalizeCharacterModelId(raw);
+}
+
+function sanitizeUnlockedAvatars(
+  raw: unknown,
+  peakRankPoints: number,
+): PlayerAvatarId[] {
+  const set = new Set<PlayerAvatarId>(FREE_PLAYER_AVATARS);
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item === 'string') {
+        const norm = normalizePlayerAvatarId(item);
+        if (
+          FREE_PLAYER_AVATARS.includes(norm) ||
+          peakRankPoints >= MESTRE_MIN_PTS
+        ) {
+          set.add(norm);
+        }
+      }
+    }
+  }
+  if (peakRankPoints >= MESTRE_MIN_PTS) {
+    for (const av of S1_MESTRE_AVATARS) {
+      set.add(av);
+    }
+  }
+  return Array.from(set).slice(0, 10);
+}
+
+function sanitizeClaimedRewards(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length <= 32)
+    .slice(0, 10);
 }
 
 export async function syncPrivateUserInfo(user: User): Promise<void> {
@@ -93,7 +145,22 @@ export async function loadOrCreateFirestoreProfile(
     if (snap.exists()) {
       const data = snap.data() as Partial<FirestoreUserProfileDoc>;
       void syncPrivateUserInfo(user).catch(() => undefined);
-      return {
+
+      // One-time Season 1 Bronze Reset if profile predates S1
+      const isSeason1 = data.seasonId === CURRENT_RANKED_SEASON;
+      const rankPoints = isSeason1 ? clampInt(Number(data.rankPoints ?? 0), 0, 1000000) : 0;
+      const s1PeakRankPoints = isSeason1
+        ? Math.max(rankPoints, clampInt(Number(data.s1PeakRankPoints ?? rankPoints), 0, 1000000))
+        : 0;
+      const unlockedAvatars = sanitizeUnlockedAvatars(
+        isSeason1 ? data.unlockedAvatars : undefined,
+        s1PeakRankPoints,
+      );
+      const candidateAvatar = normalizePlayerAvatarId(data.avatarId);
+      const avatarId = unlockedAvatars.includes(candidateAvatar) ? candidateAvatar : 'default';
+      const s1ClaimedRewards = isSeason1 ? sanitizeClaimedRewards(data.s1ClaimedRewards) : [];
+
+      const docModel: FirestoreUserProfileDoc = {
         uid: user.uid,
         publicId: sanitizePublicId(data.publicId ?? suggestedPublicId),
         nickname: sanitizeNickname(data.nickname ?? fallbackProfile.nickname),
@@ -102,13 +169,43 @@ export async function loadOrCreateFirestoreProfile(
         gems: clampInt(Number(data.gems ?? fallbackProfile.gems), 0, 100000000),
         matchesPlayed: clampInt(Number(data.matchesPlayed ?? 0), 0, 1000000),
         wins: clampInt(Number(data.wins ?? 0), 0, 1000000),
-        rankPoints: clampInt(Number(data.rankPoints ?? 1000), 0, 1000000),
-        rankedMatches: clampInt(Number(data.rankedMatches ?? 0), 0, 1000000),
-        rankedWins: clampInt(Number(data.rankedWins ?? 0), 0, 1000000),
+        rankPoints,
+        rankedMatches: isSeason1 ? clampInt(Number(data.rankedMatches ?? 0), 0, 1000000) : 0,
+        rankedWins: isSeason1 ? clampInt(Number(data.rankedWins ?? 0), 0, 1000000) : 0,
         totalKills: clampInt(Number(data.totalKills ?? 0), 0, 10000000),
         characterModelId: sanitizeModelId(data.characterModelId),
+        avatarId,
+        unlockedAvatars,
+        seasonId: CURRENT_RANKED_SEASON,
+        s1PeakRankPoints,
+        s1ClaimedRewards,
       };
+
+      if (!isSeason1 || !data.avatarId) {
+        try {
+          await updateDoc(ref, {
+            rankPoints: docModel.rankPoints,
+            rankedMatches: docModel.rankedMatches,
+            rankedWins: docModel.rankedWins,
+            avatarId: docModel.avatarId,
+            unlockedAvatars: docModel.unlockedAvatars,
+            seasonId: CURRENT_RANKED_SEASON,
+            s1PeakRankPoints: docModel.s1PeakRankPoints,
+            s1ClaimedRewards: docModel.s1ClaimedRewards,
+            updatedAt: serverTimestamp(),
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, docPath);
+        }
+      }
+
+      return docModel;
     }
+
+    const initialRank = clampInt(fallbackProfile.rankPoints ?? 0, 0, 1000000);
+    const initialPeak = Math.max(initialRank, clampInt(fallbackProfile.s1PeakRankPoints ?? 0, 0, 1000000));
+    const initialUnlocked = sanitizeUnlockedAvatars(fallbackProfile.unlockedAvatars, initialPeak);
+    const initialAvatar = normalizePlayerAvatarId(fallbackProfile.avatarId ?? fallbackCharacter.avatarId);
 
     const initial: FirestoreUserProfileDoc = {
       uid: user.uid,
@@ -119,11 +216,16 @@ export async function loadOrCreateFirestoreProfile(
       gems: clampInt(fallbackProfile.gems, 0, 100000000),
       matchesPlayed: clampInt(fallbackProfile.matchesPlayed, 0, 1000000),
       wins: clampInt(fallbackProfile.wins, 0, 1000000),
-      rankPoints: clampInt(fallbackProfile.rankPoints, 0, 1000000),
+      rankPoints: initialRank,
       rankedMatches: clampInt(fallbackProfile.rankedMatches, 0, 1000000),
       rankedWins: clampInt(fallbackProfile.rankedWins, 0, 1000000),
       totalKills: clampInt(fallbackProfile.totalKills, 0, 10000000),
       characterModelId: sanitizeModelId(fallbackCharacter.modelId),
+      avatarId: initialUnlocked.includes(initialAvatar) ? initialAvatar : 'default',
+      unlockedAvatars: initialUnlocked,
+      seasonId: CURRENT_RANKED_SEASON,
+      s1PeakRankPoints: initialPeak,
+      s1ClaimedRewards: sanitizeClaimedRewards(fallbackProfile.s1ClaimedRewards),
     };
 
     try {
@@ -164,6 +266,11 @@ export async function saveFirestoreProfile(
       | 'rankedWins'
       | 'totalKills'
       | 'characterModelId'
+      | 'avatarId'
+      | 'unlockedAvatars'
+      | 'seasonId'
+      | 's1PeakRankPoints'
+      | 's1ClaimedRewards'
     >
   >,
 ): Promise<void> {
@@ -186,6 +293,22 @@ export async function saveFirestoreProfile(
   if (patch.rankedWins !== undefined) updateData.rankedWins = clampInt(patch.rankedWins, 0, 1000000);
   if (patch.totalKills !== undefined) updateData.totalKills = clampInt(patch.totalKills, 0, 10000000);
   if (patch.characterModelId !== undefined) updateData.characterModelId = sanitizeModelId(patch.characterModelId);
+  if (patch.avatarId !== undefined) updateData.avatarId = normalizePlayerAvatarId(patch.avatarId);
+  if (patch.s1PeakRankPoints !== undefined) {
+    updateData.s1PeakRankPoints = clampInt(patch.s1PeakRankPoints, 0, 1000000);
+  }
+  if (patch.unlockedAvatars !== undefined) {
+    const peakHint = clampInt(
+      Number(patch.s1PeakRankPoints ?? patch.rankPoints ?? 0),
+      0,
+      1000000,
+    );
+    updateData.unlockedAvatars = sanitizeUnlockedAvatars(patch.unlockedAvatars, peakHint);
+  }
+  if (patch.seasonId !== undefined) updateData.seasonId = CURRENT_RANKED_SEASON;
+  if (patch.s1ClaimedRewards !== undefined) {
+    updateData.s1ClaimedRewards = sanitizeClaimedRewards(patch.s1ClaimedRewards);
+  }
 
   try {
     await updateDoc(ref, updateData);

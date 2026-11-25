@@ -6,6 +6,7 @@ import {
   Crosshair,
   HeartPulse,
   LogOut,
+  MousePointerClick,
   Move,
   Play,
   Settings,
@@ -20,14 +21,19 @@ import {
   ATTACHMENT_LABELS,
   BrMapId,
   ControlMode,
+  DEFAULT_GG_MOUSE_PRO,
   DEFAULT_KEY_BINDINGS,
   formatKeyCodeLabel,
   GameState,
+  GG_PIN_META,
+  GgKeyPinId,
+  GgMouseProConfig,
   GlooSkinId,
   HudElementLayout,
   HudLayoutConfig,
   HudSnapshot,
   KeyBindingsConfig,
+  MacroConfig,
   MinimapBuilding,
   MinimapRoad,
   PoiMarker,
@@ -41,11 +47,6 @@ import {
   BERMUDA_MAP_RANGE,
   GLADIADORES_BOUNDS,
   GLADIADORES_ORIGIN,
-  HAS_SENTOSA,
-  riverCenterZ,
-  sampleMainIslandEdgeRadius,
-  sampleSentosaEdgeRadius,
-  SENTOSA_CENTER,
   WAIT_LOBBY_ORIGIN,
 } from '../game/worldBuilder';
 import {
@@ -88,6 +89,8 @@ interface GameHudProps {
   controlMode: ControlMode;
   keyBindings?: KeyBindingsConfig;
   emulatorMode?: boolean;
+  macros?: MacroConfig[];
+  ggMousePro?: GgMouseProConfig;
   hudLayout: HudLayoutConfig;
   showFps: boolean;
   isPaused: boolean;
@@ -106,6 +109,7 @@ interface GameHudProps {
   onToggleVehicle: () => void;
   onOpenSettings: () => void;
   onOpenHudEditor: () => void;
+  onOpenGgMacroModal?: () => void;
   onSelectScope: (scope: ScopeType) => void;
   onSelectGlooSkin?: (skin: GlooSkinId) => void;
   onSkipWaiting: () => void;
@@ -158,6 +162,8 @@ export const GameHud: React.FC<GameHudProps> = ({
   controlMode,
   keyBindings,
   emulatorMode = false,
+  macros = [],
+  ggMousePro,
   hudLayout,
   showFps,
   isPaused,
@@ -176,6 +182,7 @@ export const GameHud: React.FC<GameHudProps> = ({
   onToggleVehicle,
   onOpenSettings,
   onOpenHudEditor,
+  onOpenGgMacroModal,
   onSelectScope,
   onSelectGlooSkin,
   onSkipWaiting,
@@ -207,8 +214,10 @@ export const GameHud: React.FC<GameHudProps> = ({
   const kSlot3 = formatKeyCodeLabel(kb.slot3);
   const kSlot4 = formatKeyCodeLabel(kb.slot4);
   const minimapCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fullMapCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const minimapBgRef = useRef<HTMLCanvasElement | null>(null);
   const [minimapZoomed, setMinimapZoomed] = useState(true);
+  const [fullMapOpen, setFullMapOpen] = useState(false);
   const [isTouchDevice, setIsTouchDevice] = useState(false);
   const [joyKnob, setJoyKnob] = useState({ x: 0, y: 0 });
   const [fireKnob, setFireKnob] = useState({ x: 0, y: 0 });
@@ -224,6 +233,7 @@ export const GameHud: React.FC<GameHudProps> = ({
     ly: number;
     showKnob: boolean;
   } | null>(null);
+  const leftFireIdsRef = useRef<Set<number>>(new Set());
   const vehTouchRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   const setVehAxis = (axis: 'x' | 'y', value: number) => {
@@ -265,6 +275,7 @@ export const GameHud: React.FC<GameHudProps> = ({
       (gameState !== GameState.WAITING && gameState !== GameState.PLAYING)
     ) {
       fireDragRef.current = null;
+      leftFireIdsRef.current.clear();
       setFireKnob((prev) => (prev.x === 0 && prev.y === 0 ? prev : { x: 0, y: 0 }));
       setIsFirePressed((prev) => (prev ? false : prev));
       input.setTouchFire(false);
@@ -281,35 +292,97 @@ export const GameHud: React.FC<GameHudProps> = ({
   useEffect(() => {
     const minimapCode = kb.minimap || 'KeyM';
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code !== minimapCode || e.repeat || input.isRebinding) return;
+      if (input.isRebinding) return;
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
-      setMinimapZoomed((v) => !v);
+      if (e.code === 'Escape' && fullMapOpen) {
+        setFullMapOpen(false);
+        return;
+      }
+      if (e.code !== minimapCode || e.repeat) return;
+      if (hud.gameVariant === 'gladiadores' || gameState === GameState.WAITING) {
+        setMinimapZoomed((v) => !v);
+      } else {
+        setFullMapOpen((v) => !v);
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [kb.minimap, input]);
+  }, [kb.minimap, input, fullMapOpen, hud.gameVariant, gameState]);
 
-  // Guarantee Fire button never stays stuck down if pointer leaves or cancels outside
   useEffect(() => {
+    if (
+      gameState === GameState.LOBBY ||
+      gameState === GameState.WIN ||
+      gameState === GameState.GAMEOVER ||
+      hud.gameVariant === 'gladiadores'
+    ) {
+      setFullMapOpen(false);
+    }
+  }, [gameState, hud.gameVariant]);
+
+  // Track fire button dragging globally on window so fast upward "puxar capa" swipes never freeze
+  // or drop if pointer leaves the button bounds or pointer capture resets on Android/WebViews.
+  useEffect(() => {
+    const syncFireState = () => {
+      const anyActive = Boolean(fireDragRef.current) || leftFireIdsRef.current.size > 0;
+      input.setTouchFire(anyActive);
+    };
+    const clearRightFire = () => {
+      fireDragRef.current = null;
+      setFireKnob({ x: 0, y: 0 });
+      setIsFirePressed(false);
+      syncFireState();
+    };
+    const moveFire = (e: PointerEvent) => {
+      const drag = fireDragRef.current;
+      if (!drag || drag.id !== e.pointerId) return;
+      if (e.pointerType === 'mouse' && (e.buttons & 1) === 0) {
+        clearRightFire();
+        return;
+      }
+      const dx = e.clientX - drag.lx;
+      const dy = e.clientY - drag.ly;
+      drag.lx = e.clientX;
+      drag.ly = e.clientY;
+      input.addTouchLook(dx * 2.0, dy * 2.0);
+      if (drag.showKnob) {
+        const ox = e.clientX - drag.startX;
+        const oy = e.clientY - drag.startY;
+        const maxR = 26;
+        const dist = Math.hypot(ox, oy);
+        const scale = dist > maxR ? maxR / dist : 1;
+        setFireKnob({ x: ox * scale, y: oy * scale });
+      }
+    };
     const releaseFire = (e: PointerEvent) => {
+      let changed = false;
+      if (leftFireIdsRef.current.delete(e.pointerId)) {
+        changed = true;
+      }
       if (fireDragRef.current && fireDragRef.current.id === e.pointerId) {
         fireDragRef.current = null;
         setFireKnob({ x: 0, y: 0 });
         setIsFirePressed(false);
-        input.setTouchFire(false);
+        changed = true;
+      }
+      if (changed) {
+        syncFireState();
       }
     };
     const clearAllOnBlur = () => {
       fireDragRef.current = null;
+      leftFireIdsRef.current.clear();
       setFireKnob({ x: 0, y: 0 });
       setIsFirePressed(false);
       input.setTouchFire(false);
     };
+    window.addEventListener('pointermove', moveFire);
     window.addEventListener('pointerup', releaseFire);
     window.addEventListener('pointercancel', releaseFire);
     window.addEventListener('blur', clearAllOnBlur);
     return () => {
+      window.removeEventListener('pointermove', moveFire);
       window.removeEventListener('pointerup', releaseFire);
       window.removeEventListener('pointercancel', releaseFire);
       window.removeEventListener('blur', clearAllOnBlur);
@@ -319,12 +392,10 @@ export const GameHud: React.FC<GameHudProps> = ({
   const showTouchHud =
     controlMode === 'mobile' || (controlMode === 'auto' && isTouchDevice);
 
-  // Pre-render static 2D Minimap terrain, coastal reefs, Sentosa, river, roads, buildings & POIs at 512x512
+  // Pre-render static 2D Bermuda Minimap terrain & POIs at 512x512
   useEffect(() => {
     const size = 512;
-    const activeMapId = mapId ?? hud.mapId ?? 'bermuda';
-    const isBermudaMap = activeMapId === 'bermuda';
-    const activeMapRange = isBermudaMap ? (mapRange ?? BERMUDA_MAP_RANGE) : BERMUDA_MAP_RANGE;
+    const activeMapRange = mapRange ?? BERMUDA_MAP_RANGE;
     const worldToBg = size / (activeMapRange * 2);
     const off = document.createElement('canvas');
     off.width = size;
@@ -337,318 +408,49 @@ export const GameHud: React.FC<GameHudProps> = ({
       y: (wz + activeMapRange) * worldToBg,
     });
 
-    if (isBermudaMap && bermudaMinimapCanvas) {
-      ctx.fillStyle = '#0d3650';
-      ctx.fillRect(0, 0, size, size);
-      ctx.drawImage(bermudaMinimapCanvas, 0, 0, size, size);
-
-      ctx.font = 'bold 11px monospace';
-      ctx.textAlign = 'center';
-      pois.forEach((poi) => {
-        const p = toPx(poi.x, poi.z);
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = 'rgba(0,0,0,0.84)';
-        ctx.strokeText(poi.name, p.x, p.y - 6);
-        ctx.fillStyle = 'rgba(255,255,255,0.95)';
-        ctx.fillText(poi.name, p.x, p.y - 6);
-      });
-
-      minimapBgRef.current = off;
-      return;
-    }
-
-    ctx.fillStyle = '#14496e';
+    ctx.fillStyle = '#0d3650';
     ctx.fillRect(0, 0, size, size);
 
-    // Coastal turquoise reef halo around main island & Sentosa
-    const drawMainPoly = () => {
-      ctx.beginPath();
-      for (let i = 0; i <= 96; i++) {
-        const a = (i / 96) * Math.PI * 2;
-        const edgeR = sampleMainIslandEdgeRadius(a);
-        const p = toPx(Math.cos(a) * edgeR, Math.sin(a) * edgeR);
-        if (i === 0) ctx.moveTo(p.x, p.y);
-        else ctx.lineTo(p.x, p.y);
-      }
-      ctx.closePath();
-    };
-    const drawSentosaPoly = () => {
-      ctx.beginPath();
-      for (let i = 0; i <= 40; i++) {
-        const a = (i / 40) * Math.PI * 2;
-        const edgeR = sampleSentosaEdgeRadius(a);
-        const p = toPx(SENTOSA_CENTER.x + Math.cos(a) * edgeR, SENTOSA_CENTER.z + Math.sin(a) * edgeR);
-        if (i === 0) ctx.moveTo(p.x, p.y);
-        else ctx.lineTo(p.x, p.y);
-      }
-      ctx.closePath();
-    };
-
-    ctx.strokeStyle = 'rgba(34, 216, 236, 0.55)';
-    ctx.lineWidth = 15;
-    drawMainPoly();
-    ctx.stroke();
-    if (HAS_SENTOSA) {
-      drawSentosaPoly();
-      ctx.stroke();
-    }
-
-    // Sand beach & urban/forest green terrain fill
-    ctx.fillStyle = '#5e7640';
-    ctx.strokeStyle = '#e5cb8f';
-    ctx.lineWidth = 6.5;
-    drawMainPoly();
-    ctx.fill();
-    ctx.stroke();
-
-    // Warm golden-sand Orla belt on Eastern shoreline (+X > 275)
-    ctx.save();
-    drawMainPoly();
-    ctx.clip();
-    const beachGrad = ctx.createLinearGradient(toPx(265, 0).x, 0, toPx(380, 0).x, 0);
-    beachGrad.addColorStop(0, 'rgba(235, 206, 138, 0)');
-    beachGrad.addColorStop(0.55, 'rgba(235, 206, 138, 0.72)');
-    beachGrad.addColorStop(1, 'rgba(240, 214, 152, 0.95)');
-    ctx.fillStyle = beachGrad;
-    ctx.fillRect(toPx(265, 0).x, 0, size, size);
-
-    // Mata do Buraquinho (Central Atlantic Forest Reserve)
-    const mataP = toPx(10, 58);
-    const mataGrad = ctx.createRadialGradient(mataP.x, mataP.y, 6, mataP.x, mataP.y, 48);
-    mataGrad.addColorStop(0, 'rgba(26, 94, 42, 0.85)');
-    mataGrad.addColorStop(0.7, 'rgba(34, 112, 48, 0.55)');
-    mataGrad.addColorStop(1, 'rgba(34, 112, 48, 0)');
-    ctx.fillStyle = mataGrad;
-    ctx.beginPath();
-    ctx.arc(mataP.x, mataP.y, 48, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Altiplano Cabo Branco urban highland shading
-    const altiP = toPx(138, 48);
-    ctx.fillStyle = 'rgba(130, 144, 128, 0.42)';
-    ctx.beginPath();
-    ctx.ellipse(altiP.x, altiP.y, 26, 36, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Falésia / Ponta do Seixas reddish clay cliff plateau
-    const falP = toPx(245, 305);
-    ctx.fillStyle = 'rgba(176, 96, 62, 0.52)';
-    ctx.beginPath();
-    ctx.arc(falP.x, falP.y, 28, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-
-    // Ilha de Areia Vermelha offshore sandbar (warm reddish-ochre sand)
-    if (HAS_SENTOSA) {
-      ctx.fillStyle = '#cf7f56';
-      ctx.strokeStyle = '#ecd29e';
-      ctx.lineWidth = 4.5;
-      drawSentosaPoly();
-      ctx.fill();
-      ctx.stroke();
-    }
-
-    // Rio Paraíba / Sanhauá channel across the North
-    ctx.strokeStyle = '#1fc6df';
-    ctx.lineWidth = 11.5;
-    ctx.beginPath();
-    for (let wx = -540; wx <= 540; wx += 20) {
-      const wz = riverCenterZ(wx);
-      const p = toPx(wx, wz);
-      if (wx === -540) ctx.moveTo(p.x, p.y);
-      else ctx.lineTo(p.x, p.y);
-    }
-    ctx.stroke();
-
-    roads.forEach((r) => {
-      const p1 = toPx(r.x1, r.z1);
-      const p2 = toPx(r.x2, r.z2);
-      ctx.strokeStyle = r.kind === 'asphalt' ? '#686e77' : '#b2976e';
-      ctx.lineWidth = Math.max(2.6, r.width * worldToBg * 0.92);
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(p1.x, p1.y);
-      ctx.lineTo(p2.x, p2.y);
-      ctx.stroke();
-    });
-
-    buildings.forEach((b) => {
-      const p = toPx(b.x, b.z);
-      const bw = Math.max(2.6, b.w * worldToBg);
-      const bd = Math.max(2.6, b.d * worldToBg);
-
-      ctx.save();
-      ctx.translate(p.x, p.y);
-      ctx.rotate(-b.rotY);
-
-      if (b.kind === 'lagoa') {
-        const outerR = bw * 0.54;
-        const innerR = bw * 0.45;
-        ctx.fillStyle = '#94a3b8';
+    if (bermudaMinimapCanvas) {
+      ctx.drawImage(bermudaMinimapCanvas, 0, 0, size, size);
+    } else {
+      roads.forEach((r) => {
+        const p1 = toPx(r.x1, r.z1);
+        const p2 = toPx(r.x2, r.z2);
+        ctx.strokeStyle = r.kind === 'asphalt' ? '#686e77' : '#b2976e';
+        ctx.lineWidth = Math.max(2.6, r.width * worldToBg * 0.92);
+        ctx.lineCap = 'round';
         ctx.beginPath();
-        ctx.arc(0, 0, outerR, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#168aad';
-        ctx.beginPath();
-        ctx.arc(0, 0, innerR, 0, Math.PI * 2);
-        ctx.fill();
-        // Footbridges
-        ctx.fillStyle = '#d97706';
-        ctx.fillRect(-innerR, -1.6, innerR * 2, 3.2);
-        // Central Fountain Island
-        ctx.fillStyle = '#f1f5f9';
-        ctx.beginPath();
-        ctx.arc(0, 0, innerR * 0.28, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-        return;
-      }
-
-      if (b.kind === 'hotelTambau') {
-        const r = Math.max(6, bw * 0.5);
-        ctx.fillStyle = '#f8fafc';
-        ctx.strokeStyle = '#0284c7';
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
         ctx.stroke();
-        ctx.fillStyle = '#22d3ee';
-        ctx.beginPath();
-        ctx.arc(0, 0, r * 0.42, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-        return;
-      }
+      });
 
-      if (b.kind === 'estacao') {
-        const r = Math.max(5, bw * 0.5);
-        ctx.fillStyle = '#e0f2fe';
-        ctx.strokeStyle = '#0284c7';
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-        return;
-      }
-
-      if (b.kind === 'farol') {
-        const r = Math.max(4, bw * 0.5);
-        ctx.fillStyle = '#ffffff';
-        ctx.strokeStyle = '#eab308';
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-        return;
-      }
-
-      if (b.kind === 'quiosque') {
-        const r = Math.max(2.2, bw * 0.5);
-        ctx.fillStyle = '#f97316';
-        ctx.strokeStyle = '#fef3c7';
+      buildings.forEach((b) => {
+        const p = toPx(b.x, b.z);
+        const bw = Math.max(2.6, b.w * worldToBg);
+        const bd = Math.max(2.6, b.d * worldToBg);
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(-b.rotY);
+        ctx.fillStyle = b.kind === 'sobrado' ? '#fde68a' : '#e6d8b5';
+        ctx.strokeStyle = '#44403c';
         ctx.lineWidth = 0.8;
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-        return;
-      }
-
-      if (b.kind === 'bridge' || b.kind === 'pier') {
-        ctx.fillStyle = b.kind === 'pier' ? '#b45309' : '#cbd5e1';
-        ctx.strokeStyle = '#334155';
-        ctx.lineWidth = 0.9;
         ctx.fillRect(-bw * 0.5, -bd * 0.5, bw, bd);
         ctx.strokeRect(-bw * 0.5, -bd * 0.5, bw, bd);
         ctx.restore();
-        return;
-      }
+      });
+    }
 
-      if (b.kind === 'casaL') {
-        // L-shape footprint matching createCasaL wings
-        ctx.fillStyle = '#f5e6c8';
-        ctx.strokeStyle = '#b45309';
-        ctx.lineWidth = 0.85;
-        ctx.beginPath();
-        ctx.moveTo(-bw * 0.5, -bd * 0.5);
-        ctx.lineTo(bw * 0.5, -bd * 0.5);
-        ctx.lineTo(bw * 0.5, -bd * 0.02);
-        ctx.lineTo(-bw * 0.04, -bd * 0.02);
-        ctx.lineTo(-bw * 0.04, bd * 0.5);
-        ctx.lineTo(-bw * 0.5, bd * 0.5);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-        return;
-      }
-
-      if (b.kind === 'skyscraper') {
-        ctx.fillStyle = '#bae6fd';
-        ctx.strokeStyle = '#0369a1';
-      } else if (b.kind === 'igreja') {
-        ctx.fillStyle = '#fef3c7';
-        ctx.strokeStyle = '#92400e';
-      } else if (b.kind === 'letreiro') {
-        ctx.fillStyle = '#06b6d4';
-        ctx.strokeStyle = '#facc15';
-      } else if (b.kind === 'casaGod') {
-        ctx.fillStyle = '#f59e0b';
-        ctx.strokeStyle = '#451a03';
-      } else if (b.kind === 'celeiro') {
-        ctx.fillStyle = '#dc6843';
-        ctx.strokeStyle = '#450a0a';
-      } else if (b.kind === 'sobrado') {
-        ctx.fillStyle = '#fde68a';
-        ctx.strokeStyle = '#78350f';
-      } else if (b.kind === 'guarita') {
-        ctx.fillStyle = '#d6d3d1';
-        ctx.strokeStyle = '#292524';
-      } else if (b.kind === 'container') {
-        ctx.fillStyle = '#38bdf8';
-        ctx.strokeStyle = '#0c4a6e';
-      } else if (b.kind === 'tower') {
-        ctx.fillStyle = '#facc15';
-        ctx.strokeStyle = '#422006';
-      } else {
-        ctx.fillStyle = '#e6d8b5';
-        ctx.strokeStyle = '#44403c';
-      }
-      ctx.lineWidth = 0.8;
-      ctx.fillRect(-bw * 0.5, -bd * 0.5, bw, bd);
-      ctx.strokeRect(-bw * 0.5, -bd * 0.5, bw, bd);
-      ctx.restore();
-    });
-
-    const poiShortLabel = (name: string): string => {
-      if (name === 'A LAGOA') return 'LAGOA';
-      if (name === 'CABO BRANCO') return 'CABO BRANCO';
-      if (name === 'FAROL DO SEIXAS') return 'FAROL';
-      if (name === 'AREIA VERMELHA') return 'A. VERMELHA';
-      if (name === 'MATA BURAQUINHO') return 'BURAQUINHO';
-      if (name === 'CENTRO HISTÓRICO') return 'CENTRO';
-      if (name === 'PRAIA DO JACARÉ') return 'JACARÉ';
-      if (name === 'PORTO SANHAUÁ') return 'PORTO';
-      return name;
-    };
-
-    ctx.font = 'bold 12px monospace';
+    ctx.font = 'bold 11px monospace';
     ctx.textAlign = 'center';
     pois.forEach((poi) => {
-      if (poi.name.startsWith('PONTE')) return;
       const p = toPx(poi.x, poi.z);
-      const label = poiShortLabel(poi.name);
       ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(0,0,0,0.78)';
-      ctx.strokeText(label, p.x, p.y - 8);
-      ctx.fillStyle = 'rgba(255,255,255,0.92)';
-      ctx.fillText(label, p.x, p.y - 8);
+      ctx.strokeStyle = 'rgba(0,0,0,0.84)';
+      ctx.strokeText(poi.name, p.x, p.y - 6);
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.fillText(poi.name, p.x, p.y - 6);
     });
 
     minimapBgRef.current = off;
@@ -741,177 +543,216 @@ export const GameHud: React.FC<GameHudProps> = ({
       return;
     }
 
-    const isBermudaMap = (mapId ?? hud.mapId ?? 'bermuda') === 'bermuda';
-    const mapRangeVal = isBermudaMap ? (mapRange ?? BERMUDA_MAP_RANGE) : BERMUDA_MAP_RANGE;
-    const isGround = gameState === GameState.PLAYING;
-    const isZoomed = minimapZoomed && isGround;
-    const radarHalfRange = isBermudaMap ? 235 : 185; // tactical zoomed view on ground
+    const drawTacticalMap = (
+      ctx: CanvasRenderingContext2D,
+      canvasSize: number,
+      isZoomed: boolean,
+    ) => {
+      const mapRangeVal = mapRange ?? BERMUDA_MAP_RANGE;
+      const radarHalfRange = 235;
 
-    const minWorldX = isZoomed ? hud.playerX - radarHalfRange : -mapRangeVal;
-    const minWorldZ = isZoomed ? hud.playerZ - radarHalfRange : -mapRangeVal;
-    const worldSpan = isZoomed ? radarHalfRange * 2 : mapRangeVal * 2;
-    const scalePx = canvasSize / worldSpan;
+      const minWorldX = isZoomed ? hud.playerX - radarHalfRange : -mapRangeVal;
+      const minWorldZ = isZoomed ? hud.playerZ - radarHalfRange : -mapRangeVal;
+      const worldSpan = isZoomed ? radarHalfRange * 2 : mapRangeVal * 2;
+      const scalePx = canvasSize / worldSpan;
 
-    const toPx = (wx: number, wz: number) => ({
-      x: (wx - minWorldX) * scalePx,
-      y: (wz - minWorldZ) * scalePx,
-    });
+      const toPx = (wx: number, wz: number) => ({
+        x: (wx - minWorldX) * scalePx,
+        y: (wz - minWorldZ) * scalePx,
+      });
 
-    if (isZoomed) {
-      ctx.fillStyle = isBermudaMap ? '#0d3650' : '#14496e';
-      ctx.fillRect(0, 0, canvasSize, canvasSize);
+      if (isZoomed) {
+        ctx.fillStyle = '#0d3650';
+        ctx.fillRect(0, 0, canvasSize, canvasSize);
 
-      const bgPerWorld = bgSize / (mapRangeVal * 2);
-      const srcX = (minWorldX + mapRangeVal) * bgPerWorld;
-      const srcY = (minWorldZ + mapRangeVal) * bgPerWorld;
-      const srcW = worldSpan * bgPerWorld;
-      const srcH = worldSpan * bgPerWorld;
+        const bgPerWorld = bgSize / (mapRangeVal * 2);
+        const srcX = (minWorldX + mapRangeVal) * bgPerWorld;
+        const srcY = (minWorldZ + mapRangeVal) * bgPerWorld;
+        const srcW = worldSpan * bgPerWorld;
+        const srcH = worldSpan * bgPerWorld;
 
-      const clipL = Math.max(0, srcX);
-      const clipT = Math.max(0, srcY);
-      const clipR = Math.min(bgSize, srcX + srcW);
-      const clipB = Math.min(bgSize, srcY + srcH);
+        const clipL = Math.max(0, srcX);
+        const clipT = Math.max(0, srcY);
+        const clipR = Math.min(bgSize, srcX + srcW);
+        const clipB = Math.min(bgSize, srcY + srcH);
 
-      if (clipR > clipL && clipB > clipT) {
-        const dstX = ((clipL - srcX) / srcW) * canvasSize;
-        const dstY = ((clipT - srcY) / srcH) * canvasSize;
-        const dstW = ((clipR - clipL) / srcW) * canvasSize;
-        const dstH = ((clipB - clipT) / srcH) * canvasSize;
-        ctx.drawImage(
-          bg,
-          clipL,
-          clipT,
-          clipR - clipL,
-          clipB - clipT,
-          dstX,
-          dstY,
-          dstW,
-          dstH,
-        );
+        if (clipR > clipL && clipB > clipT) {
+          const dstX = ((clipL - srcX) / srcW) * canvasSize;
+          const dstY = ((clipT - srcY) / srcH) * canvasSize;
+          const dstW = ((clipR - clipL) / srcW) * canvasSize;
+          const dstH = ((clipB - clipT) / srcH) * canvasSize;
+          ctx.drawImage(
+            bg,
+            clipL,
+            clipT,
+            clipR - clipL,
+            clipB - clipT,
+            dstX,
+            dstY,
+            dstW,
+            dstH,
+          );
+        }
+      } else {
+        ctx.drawImage(bg, 0, 0, canvasSize, canvasSize);
       }
-    } else {
-      ctx.drawImage(bg, 0, 0, canvasSize, canvasSize);
-    }
 
-    if (gameState === GameState.PLAYING) {
-      const sz = hud.safeZone;
-      const nextP = toPx(sz.nextX, sz.nextZ);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.88)';
-      ctx.lineWidth = 2.0;
-      ctx.beginPath();
-      ctx.arc(nextP.x, nextP.y, Math.max(4, sz.nextRadius * scalePx), 0, Math.PI * 2);
-      ctx.stroke();
+      if (
+        gameState === GameState.PLAYING ||
+        gameState === GameState.AIRPLANE ||
+        gameState === GameState.DROPPING
+      ) {
+        const sz = hud.safeZone;
+        const curP = toPx(sz.currentX, sz.currentZ);
+        const curRpx = Math.max(0, sz.currentRadius * scalePx);
+        const nextP = toPx(sz.nextX, sz.nextZ);
 
-      const curP = toPx(sz.currentX, sz.currentZ);
-      ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = 2.8;
-      ctx.beginPath();
-      ctx.arc(curP.x, curP.y, Math.max(4, sz.currentRadius * scalePx), 0, Math.PI * 2);
-      ctx.stroke();
-
-      if (sz.playerOutside) {
-        const plP = toPx(hud.playerX, hud.playerZ);
+        // Darken everything outside the shrinking safe zone circle
         ctx.save();
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
-        ctx.setLineDash([6, 4]);
+        ctx.fillStyle = 'rgba(7, 15, 30, 0.58)';
+        ctx.beginPath();
+        ctx.rect(0, 0, canvasSize, canvasSize);
+        if (curRpx > 0.5) {
+          ctx.arc(curP.x, curP.y, curRpx, 0, Math.PI * 2);
+        }
+        ctx.fill('evenodd');
+        ctx.restore();
+
+        // Outer shrinking storm edge ring
+        if (curRpx > 0.5) {
+          ctx.save();
+          ctx.strokeStyle = sz.isShrinking ? '#38bdf8' : 'rgba(186, 230, 253, 0.9)';
+          ctx.lineWidth = canvasSize > 300 ? 2.8 : 2.2;
+          ctx.shadowColor = 'rgba(56, 189, 248, 0.65)';
+          ctx.shadowBlur = canvasSize > 300 ? 8 : 4;
+          ctx.beginPath();
+          ctx.arc(curP.x, curP.y, Math.max(1.5, curRpx), 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        // Inner white next safe zone circle
+        if (sz.nextRadius > 0.2) {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
+          ctx.lineWidth = canvasSize > 300 ? 2.2 : 1.7;
+          ctx.beginPath();
+          ctx.arc(nextP.x, nextP.y, Math.max(1.5, sz.nextRadius * scalePx), 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        if (sz.playerOutside) {
+          const plP = toPx(hud.playerX, hud.playerZ);
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.88)';
+          ctx.setLineDash([6, 4]);
+          ctx.lineWidth = 2.0;
+          ctx.beginPath();
+          ctx.moveTo(plP.x, plP.y);
+          ctx.lineTo(nextP.x, nextP.y);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      const plPx = toPx(hud.playerX, hud.playerZ);
+      const rad = (hud.yawDeg * Math.PI) / 180;
+      const iconScale = canvasSize > 300 ? 1.25 : 1.0;
+      ctx.save();
+      ctx.translate(plPx.x, plPx.y);
+      ctx.rotate(rad);
+      ctx.scale(iconScale, iconScale);
+
+      ctx.fillStyle = 'rgba(45, 212, 191, 0.34)';
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(-18, -38);
+      ctx.lineTo(18, -38);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = '#5eead4';
+      ctx.strokeStyle = '#042f2e';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(0, -9);
+      ctx.lineTo(7, 7);
+      ctx.lineTo(0, 3.6);
+      ctx.lineTo(-7, 7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      for (let i = 0; i < hud.teamMembers.length; i++) {
+        const m = hud.teamMembers[i];
+        if (m.id === 'player' || m.eliminated || m.worldX === undefined || m.worldZ === undefined) {
+          continue;
+        }
+        const mp = toPx(m.worldX, m.worldZ);
+        const col = getSlotColor(m.slotNumber, m.isDowned);
+        ctx.fillStyle = col;
+        ctx.strokeStyle = '#000000';
         ctx.lineWidth = 2.0;
         ctx.beginPath();
-        ctx.moveTo(plP.x, plP.y);
-        ctx.lineTo(nextP.x, nextP.y);
+        ctx.arc(mp.x, mp.y, (m.isDowned ? 6.2 : 5.2) * iconScale, 0, Math.PI * 2);
+        ctx.fill();
         ctx.stroke();
-        ctx.restore();
       }
-    }
 
-    const plPx = toPx(hud.playerX, hud.playerZ);
-    const rad = (hud.yawDeg * Math.PI) / 180;
-    ctx.save();
-    ctx.translate(plPx.x, plPx.y);
-    ctx.rotate(rad);
-
-    ctx.fillStyle = 'rgba(45, 212, 191, 0.34)';
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(-18, -38);
-    ctx.lineTo(18, -38);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.fillStyle = '#5eead4';
-    ctx.strokeStyle = '#042f2e';
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.moveTo(0, -9);
-    ctx.lineTo(7, 7);
-    ctx.lineTo(0, 3.6);
-    ctx.lineTo(-7, 7);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
-
-    // Draw Duo / Squad teammate dots on Minimap
-    for (let i = 0; i < hud.teamMembers.length; i++) {
-      const m = hud.teamMembers[i];
-      if (m.id === 'player' || m.eliminated || m.worldX === undefined || m.worldZ === undefined) {
-        continue;
+      for (let i = 0; i < hud.vendingLocations.length; i++) {
+        const vm = hud.vendingLocations[i];
+        const vp = toPx(vm.x, vm.z);
+        if (vp.x < -10 || vp.x > canvasSize + 10 || vp.y < -10 || vp.y > canvasSize + 10) continue;
+        ctx.fillStyle = '#22d3ee';
+        ctx.strokeStyle = '#083344';
+        ctx.lineWidth = 1.6;
+        ctx.fillRect(vp.x - 3.6, vp.y - 3.6, 7.2, 7.2);
+        ctx.strokeRect(vp.x - 3.6, vp.y - 3.6, 7.2, 7.2);
       }
-      const mp = toPx(m.worldX, m.worldZ);
-      const col = getSlotColor(m.slotNumber, m.isDowned);
-      ctx.fillStyle = col;
-      ctx.strokeStyle = '#000000';
-      ctx.lineWidth = 2.0;
-      ctx.beginPath();
-      ctx.arc(mp.x, mp.y, m.isDowned ? 6.2 : 5.2, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    }
 
-    // Draw Vending Machines (Lojinhas) as cyan squares on Minimap
-    for (let i = 0; i < hud.vendingLocations.length; i++) {
-      const vm = hud.vendingLocations[i];
-      const vp = toPx(vm.x, vm.z);
-      if (vp.x < -10 || vp.x > canvasSize + 10 || vp.y < -10 || vp.y > canvasSize + 10) continue;
-      ctx.fillStyle = '#22d3ee';
-      ctx.strokeStyle = '#083344';
-      ctx.lineWidth = 1.6;
-      ctx.fillRect(vp.x - 3.6, vp.y - 3.6, 7.2, 7.2);
-      ctx.strokeRect(vp.x - 3.6, vp.y - 3.6, 7.2, 7.2);
-    }
-
-    // Draw Drivable Vehicles on Minimap
-    for (let i = 0; i < hud.vehicleLocations.length; i++) {
-      const veh = hud.vehicleLocations[i];
-      if (veh.destroyed) continue;
-      const vp = toPx(veh.x, veh.z);
-      if (vp.x < -10 || vp.x > canvasSize + 10 || vp.y < -10 || vp.y > canvasSize + 10) continue;
-      ctx.fillStyle = veh.kind === 'sport' ? '#f43f5e' : '#f97316';
-      ctx.strokeStyle = '#000000';
-      ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      ctx.arc(vp.x, vp.y, 4.4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    }
-
-    // Draw AirDrop crates on Minimap (gold crate icon)
-    for (let i = 0; i < hud.airDrops.length; i++) {
-      const ad = hud.airDrops[i];
-      if (ad.state === 'looted') continue;
-      const ap = toPx(ad.x, ad.z);
-      if (ap.x < -14 || ap.x > canvasSize + 14 || ap.y < -14 || ap.y > canvasSize + 14) continue;
-      if (ad.state === 'falling') {
-        ctx.strokeStyle = '#fde047';
-        ctx.lineWidth = 2.2;
+      for (let i = 0; i < hud.vehicleLocations.length; i++) {
+        const veh = hud.vehicleLocations[i];
+        if (veh.destroyed) continue;
+        const vp = toPx(veh.x, veh.z);
+        if (vp.x < -10 || vp.x > canvasSize + 10 || vp.y < -10 || vp.y > canvasSize + 10) continue;
+        ctx.fillStyle = veh.kind === 'sport' ? '#f43f5e' : '#f97316';
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 1.6;
         ctx.beginPath();
-        ctx.arc(ap.x, ap.y, 9.0, 0, Math.PI * 2);
+        ctx.arc(vp.x, vp.y, 4.4, 0, Math.PI * 2);
+        ctx.fill();
         ctx.stroke();
       }
-      ctx.fillStyle = '#facc15';
-      ctx.strokeStyle = '#000000';
-      ctx.lineWidth = 1.8;
-      ctx.fillRect(ap.x - 5.0, ap.y - 5.0, 10.0, 10.0);
-      ctx.strokeRect(ap.x - 5.0, ap.y - 5.0, 10.0, 10.0);
+
+      for (let i = 0; i < hud.airDrops.length; i++) {
+        const ad = hud.airDrops[i];
+        if (ad.state === 'looted') continue;
+        const ap = toPx(ad.x, ad.z);
+        if (ap.x < -14 || ap.x > canvasSize + 14 || ap.y < -14 || ap.y > canvasSize + 14) continue;
+        if (ad.state === 'falling') {
+          ctx.strokeStyle = '#fde047';
+          ctx.lineWidth = 2.2;
+          ctx.beginPath();
+          ctx.arc(ap.x, ap.y, 9.0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.fillStyle = '#facc15';
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 1.8;
+        ctx.fillRect(ap.x - 5.0, ap.y - 5.0, 10.0, 10.0);
+        ctx.strokeRect(ap.x - 5.0, ap.y - 5.0, 10.0, 10.0);
+      }
+    };
+
+    const isGround = gameState === GameState.PLAYING;
+    drawTacticalMap(ctx, canvasSize, minimapZoomed && isGround);
+
+    if (fullMapOpen && fullMapCanvasRef.current) {
+      const fCanvas = fullMapCanvasRef.current;
+      const fCtx = fCanvas.getContext('2d');
+      if (fCtx) {
+        drawTacticalMap(fCtx, fCanvas.width, false);
+      }
     }
   }, [
     hud.playerX,
@@ -929,6 +770,7 @@ export const GameHud: React.FC<GameHudProps> = ({
     bermudaMinimapCanvas,
     gameState,
     minimapZoomed,
+    fullMapOpen,
     buildings,
     roads,
     pois,
@@ -1012,6 +854,7 @@ export const GameHud: React.FC<GameHudProps> = ({
 
   // Right Touch Look Area Handlers
   const handleLookStart = (e: React.TouchEvent) => {
+    if (e.target !== e.currentTarget) return;
     const t = e.changedTouches[0];
     lookTouchRef.current = { id: t.identifier, lx: t.clientX, ly: t.clientY };
   };
@@ -1048,49 +891,36 @@ export const GameHud: React.FC<GameHudProps> = ({
   ) => {
     e.stopPropagation();
     e.preventDefault();
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      // ignore if unsupported
+    if (e.pointerType === 'mouse') {
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore if unsupported
+      }
     }
-    fireDragRef.current = {
-      id: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      lx: e.clientX,
-      ly: e.clientY,
-      showKnob,
-    };
     if (showKnob) {
+      fireDragRef.current = {
+        id: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        lx: e.clientX,
+        ly: e.clientY,
+        showKnob: true,
+      };
       setFireKnob({ x: 0, y: 0 });
       setIsFirePressed(true);
+    } else {
+      leftFireIdsRef.current.add(e.pointerId);
     }
-    input.setTouchFire(true);
+    input.setTouchFire(true, true);
   };
 
-  const moveFirePointer = (e: React.PointerEvent<HTMLElement>) => {
-    const drag = fireDragRef.current;
-    if (!drag || drag.id !== e.pointerId) return;
+  const endFirePointer = (
+    e: React.PointerEvent<HTMLElement>,
+    isRightBtn: boolean,
+  ) => {
     e.stopPropagation();
-    const dx = e.clientX - drag.lx;
-    const dy = e.clientY - drag.ly;
-    drag.lx = e.clientX;
-    drag.ly = e.clientY;
-    // Exact same camera look sensitivity (2.0x) as right-half camera drag
-    input.addTouchLook(dx * 2.0, dy * 2.0);
-    if (drag.showKnob) {
-      const ox = e.clientX - drag.startX;
-      const oy = e.clientY - drag.startY;
-      const maxR = 26;
-      const dist = Math.hypot(ox, oy);
-      const scale = dist > maxR ? maxR / dist : 1;
-      setFireKnob({ x: ox * scale, y: oy * scale });
-    }
-  };
-
-  const endFirePointer = (e: React.PointerEvent<HTMLElement>) => {
-    if (fireDragRef.current?.id === e.pointerId) {
-      e.stopPropagation();
+    if (e.pointerType === 'mouse') {
       try {
         if (e.currentTarget.hasPointerCapture(e.pointerId)) {
           e.currentTarget.releasePointerCapture(e.pointerId);
@@ -1098,11 +928,17 @@ export const GameHud: React.FC<GameHudProps> = ({
       } catch {
         // ignore
       }
-      fireDragRef.current = null;
-      setFireKnob({ x: 0, y: 0 });
-      setIsFirePressed(false);
-      input.setTouchFire(false);
     }
+    if (isRightBtn) {
+      if (fireDragRef.current?.id === e.pointerId) {
+        fireDragRef.current = null;
+        setFireKnob({ x: 0, y: 0 });
+        setIsFirePressed(false);
+      }
+    } else {
+      leftFireIdsRef.current.delete(e.pointerId);
+    }
+    input.setTouchFire(Boolean(fireDragRef.current) || leftFireIdsRef.current.size > 0);
   };
 
   const showOpticalOverlay =
@@ -1128,6 +964,16 @@ export const GameHud: React.FC<GameHudProps> = ({
           aimLockedTarget={hud.aimLockedTarget}
           aimAssistActive={hud.aimAssistActive}
           headshotFlashActive={hud.headshotFlashActive}
+        />
+      )}
+
+      {/* Outside Safe Zone Blue Storm Edge Vignette */}
+      {isGroundCombat && hud.safeZone.playerOutside && !hud.isDead && (
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            boxShadow: 'inset 0 0 85px 22px rgba(14, 48, 102, 0.56)',
+          }}
         />
       )}
 
@@ -1157,26 +1003,41 @@ export const GameHud: React.FC<GameHudProps> = ({
         style={layoutStyle(hudLayout.minimap)}
         className="pointer-events-auto absolute z-20 flex flex-col gap-0.5"
       >
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            setMinimapZoomed((v) => !v);
-          }}
-          title="Alternar Zoom do Mapa (M)"
-          className="relative w-[104px] h-[104px] sm:w-[124px] sm:h-[124px] border border-white/65 bg-[#14181e] overflow-hidden shadow-lg cursor-pointer p-0 block"
-        >
-          <canvas
-            ref={minimapCanvasRef}
-            width={256}
-            height={256}
-            className="w-full h-full block"
-          />
-          <span className="absolute bottom-0.5 right-0.5 bg-black/75 px-1 py-[1px] text-[7.5px] font-mono font-bold tracking-wider text-amber-200 border border-white/20">
+        <div className="relative w-[104px] h-[104px] sm:w-[124px] sm:h-[124px] border border-white/65 bg-[#14181e] overflow-hidden shadow-lg">
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (hud.gameVariant === 'gladiadores' || gameState === GameState.WAITING) {
+                setMinimapZoomed((v) => !v);
+              } else {
+                setFullMapOpen(true);
+              }
+            }}
+            title="Abrir Mapa Completo (M)"
+            className="w-full h-full cursor-pointer p-0 block"
+          >
+            <canvas
+              ref={minimapCanvasRef}
+              width={256}
+              height={256}
+              className="w-full h-full block"
+            />
+          </button>
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              setMinimapZoomed((v) => !v);
+            }}
+            title="Alternar Zoom do Minimapa"
+            className="absolute bottom-0.5 right-0.5 bg-black/80 hover:bg-black px-1 py-[1px] text-[7.5px] font-mono font-bold tracking-wider text-amber-200 border border-white/25 cursor-pointer"
+          >
             {minimapZoomed && isGroundCombat ? 'RADAR · M' : 'ILHA · M'}
-          </span>
-        </button>
+          </button>
+        </div>
         {hud.currentPoi && (
           <div
             className="pointer-events-none text-[9px] font-bold tracking-wide uppercase text-amber-200 px-1 w-fit"
@@ -1186,6 +1047,58 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
         )}
       </div>
+
+      {/* Full Island Tactical Map Overlay (M or tap minimap) */}
+      {fullMapOpen && hud.gameVariant !== 'gladiadores' && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => setFullMapOpen(false)}
+          className="fixed inset-0 z-50 bg-black/78 backdrop-blur-sm flex flex-col items-center justify-center p-3 pointer-events-auto"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative flex flex-col items-center gap-2"
+          >
+            <div className="flex items-center gap-3 px-3 py-1 bg-black/85 border border-white/25 text-[11px] font-mono uppercase">
+              <span className="text-sky-300 font-bold">
+                ZONA {hud.safeZone.phase}/{hud.safeZone.totalPhases}
+              </span>
+              <span className="text-white">
+                {hud.safeZone.isShrinking
+                  ? `FECHANDO (${hud.safeZone.timerSec}s)`
+                  : hud.safeZone.currentRadius <= 0.2
+                    ? 'FECHADA'
+                    : `FECHA EM ${hud.safeZone.timerSec}s`}
+              </span>
+              {hud.safeZone.playerOutside && (
+                <span className="text-red-400 font-bold">
+                  -{hud.safeZone.damagePerSec} HP/s
+                </span>
+              )}
+            </div>
+
+            <div className="relative w-[min(80vh,90vw)] h-[min(80vh,90vw)] border-2 border-white/45 bg-[#0d3650] shadow-2xl overflow-hidden">
+              <canvas
+                ref={fullMapCanvasRef}
+                width={512}
+                height={512}
+                className="w-full h-full block"
+              />
+            </div>
+
+            <div className="w-full flex items-center justify-between text-[10px] font-mono text-neutral-300">
+              <span>Área escura = fora da safe · Círculo branco = próxima safe</span>
+              <button
+                type="button"
+                onClick={() => setFullMapOpen(false)}
+                className="px-5 py-1.5 bg-neutral-900/95 hover:bg-neutral-800 border border-white/40 text-white font-black text-xs uppercase tracking-wider cursor-pointer"
+              >
+                VOLTAR ({formatKeyCodeLabel(kb.minimap || 'KeyM')})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* OVERHEAD 3D-PROJECTED TEAMMATE TAGS (#2 JOGADOR + ▼) & OFF-SCREEN DIRECTIONAL ARROWS */}
       {!isPaused &&
@@ -1534,21 +1447,23 @@ export const GameHud: React.FC<GameHudProps> = ({
 
         {gameState === GameState.WAITING && (
           <div className="pointer-events-auto flex items-center gap-2 bg-black/75 border border-amber-400/70 px-3 py-1 text-xs font-mono mt-0.5">
-            <span>ILHA DE ESPERA:</span>
+            <span>{hud.isOnlineMatch ? 'ILHA DE ESPERA · EMBARQUE:' : 'ILHA DE ESPERA:'}</span>
             <strong className="text-amber-400 tabular-nums">
               00:{String(hud.waitingTimerSec).padStart(2, '0')}
             </strong>
-            <button
-              type="button"
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                onSkipWaiting();
-              }}
-              className="touch-none ml-1 px-2 py-0.5 bg-amber-500 hover:bg-amber-400 text-black font-black text-[10px] uppercase cursor-pointer"
-            >
-              EMBARCAR
-            </button>
+            {!hud.isOnlineMatch && (
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onSkipWaiting();
+                }}
+                className="touch-none ml-1 px-2 py-0.5 bg-amber-500 hover:bg-amber-400 text-black font-black text-[10px] uppercase cursor-pointer"
+              >
+                EMBARCAR
+              </button>
+            )}
           </div>
         )}
 
@@ -1567,7 +1482,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                   GLADIADORES {hud.gladiadores.format.toUpperCase()}
                 </div>
                 <div className="text-[10px] font-mono text-neutral-200">
-                  RODADA {hud.gladiadores.round} · META {hud.gladiadores.targetRounds}
+                  RODADA {hud.gladiadores.round}/5 · META 3
                 </div>
               </div>
 
@@ -1601,7 +1516,10 @@ export const GameHud: React.FC<GameHudProps> = ({
                 <span className="text-white/95">
                   {hud.safeZone.isShrinking
                     ? `Zona segura ${hud.safeZone.phase}/${hud.safeZone.totalPhases} fechando`
-                    : 'Zona segura aparecerá em'}
+                    : hud.safeZone.phase >= hud.safeZone.totalPhases &&
+                        hud.safeZone.currentRadius <= 0.2
+                      ? `Zona segura ${hud.safeZone.phase}/${hud.safeZone.totalPhases} fechada`
+                      : `Zona segura ${hud.safeZone.phase}/${hud.safeZone.totalPhases} fechará em`}
                 </span>
               </div>
 
@@ -1706,6 +1624,44 @@ export const GameHud: React.FC<GameHudProps> = ({
                   <span className="text-cyan-200 font-black">{targetNick}</span>{' '}
                   <span className="text-neutral-200">redesdobrado</span>{' '}
                   <span className="text-amber-300 font-mono">({kf.killerName})</span>
+                </div>
+              );
+            }
+
+            if (kf.weaponShort === 'ELIM_ENV') {
+              return (
+                <div
+                  key={kf.id}
+                  style={{
+                    opacity,
+                    transform: `translateY(${(enterLift + driftUp).toFixed(1)}px)`,
+                    background:
+                      'linear-gradient(90deg, transparent 0%, rgba(0,0,0,0.62) 16%, rgba(0,0,0,0.62) 84%, transparent 100%)',
+                    textShadow: '0 1px 3px rgba(0,0,0,0.98)',
+                  }}
+                  className="px-4 py-0.5 text-[11px] sm:text-xs font-bold tracking-wide whitespace-nowrap"
+                >
+                  <span className="text-white">{kf.victimName}</span>{' '}
+                  <span className="text-neutral-300 font-semibold">eliminado</span>
+                </div>
+              );
+            }
+
+            if (kf.weaponShort === 'KNOCK_ENV') {
+              return (
+                <div
+                  key={kf.id}
+                  style={{
+                    opacity,
+                    transform: `translateY(${(enterLift + driftUp).toFixed(1)}px)`,
+                    background:
+                      'linear-gradient(90deg, transparent 0%, rgba(0,0,0,0.62) 16%, rgba(0,0,0,0.62) 84%, transparent 100%)',
+                    textShadow: '0 1px 3px rgba(0,0,0,0.98)',
+                  }}
+                  className="px-4 py-0.5 text-[11px] sm:text-xs font-bold tracking-wide whitespace-nowrap"
+                >
+                  <span className="text-white">{kf.victimName}</span>{' '}
+                  <span className="text-orange-300 font-extrabold">derrubado</span>
                 </div>
               );
             }
@@ -2750,7 +2706,11 @@ export const GameHud: React.FC<GameHudProps> = ({
           onPointerDown={(e) => {
             e.stopPropagation();
             e.preventDefault();
-            input.triggerGloo();
+            if (ggMousePro?.instantQuickGloo !== false) {
+              input.triggerQuickGlooInstant();
+            } else {
+              input.triggerGloo();
+            }
           }}
           disabled={hud.glooCount <= 0}
           style={layoutStyle(hudLayout.quickGlooBtn)}
@@ -3095,27 +3055,31 @@ export const GameHud: React.FC<GameHudProps> = ({
               {/* Combat Controls: disabled only while free-swimming; fully enabled on ground & surfboard */}
               {!hud.isSwimming && (
                 <>
-                  {/* Left Fire Button (customizable) */}
-                  <button
-                    type="button"
-                    onContextMenu={(e) => e.preventDefault()}
-                    onTouchStart={(e) => e.stopPropagation()}
-                    onPointerDown={(e) => beginFirePointer(e, false)}
-                    onPointerMove={moveFirePointer}
-                    onPointerUp={endFirePointer}
-                    onPointerCancel={endFirePointer}
-                    onLostPointerCapture={() => {
-                      fireDragRef.current = null;
-                      setFireKnob({ x: 0, y: 0 });
-                      setIsFirePressed(false);
-                      input.setTouchFire(false);
-                    }}
-                    style={layoutStyle(hudLayout.leftFireBtn)}
-                    className="pointer-events-auto touch-none absolute z-20 w-12 h-12 rounded-full bg-black/45 active:bg-white/30 border-[1.5px] border-white/60 flex items-center justify-center text-white shadow-lg cursor-pointer"
-                    title="Atirar Esquerdo"
-                  >
-                    <IconFireBurstSvg className="w-7 h-7 text-white" />
-                  </button>
+                  {/* Left Fire Button (hidden only when prone with fists & no grenade/gloo) */}
+                  {!(
+                    hud.stance === 'prone' &&
+                    hud.activeSlot === 4 &&
+                    !hud.isPlacingGloo &&
+                    !hud.isHoldingGrenade
+                  ) && (
+                    <button
+                      type="button"
+                      onContextMenu={(e) => e.preventDefault()}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      onTouchMove={(e) => e.stopPropagation()}
+                      onTouchEnd={(e) => e.stopPropagation()}
+                      onTouchCancel={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => beginFirePointer(e, false)}
+                      onPointerUp={(e) => endFirePointer(e, false)}
+                      onPointerCancel={(e) => endFirePointer(e, false)}
+                      style={layoutStyle(hudLayout.leftFireBtn)}
+                      className="pointer-events-auto touch-none absolute z-[25] w-12 h-12 rounded-full bg-black/45 active:bg-white/30 border-[1.5px] border-white/60 flex items-center justify-center text-white shadow-lg cursor-pointer"
+                      title="Atirar Esquerdo"
+                    >
+                      <IconFireBurstSvg className="w-7 h-7 text-white" />
+                    </button>
+                  )}
 
                   {/* Prone Button */}
                   <button
@@ -3187,48 +3151,171 @@ export const GameHud: React.FC<GameHudProps> = ({
                     </button>
                   )}
 
-                  {/* Primary Right Fire Button: Analog-style Containment Ring + Smooth Movable Subir Capa Ball */}
-                  <div
-                    role="button"
-                    aria-label="Atirar e Subir Capa"
-                    onContextMenu={(e) => e.preventDefault()}
-                    onTouchStart={(e) => e.stopPropagation()}
-                    onPointerDown={(e) => beginFirePointer(e, true)}
-                    onPointerMove={moveFirePointer}
-                    onPointerUp={endFirePointer}
-                    onPointerCancel={endFirePointer}
-                    onLostPointerCapture={() => {
-                      fireDragRef.current = null;
-                      setFireKnob({ x: 0, y: 0 });
-                      setIsFirePressed(false);
-                      input.setTouchFire(false);
-                    }}
-                    style={layoutStyle(hudLayout.fireBtn)}
-                    className={`pointer-events-auto touch-none absolute z-20 w-28 h-28 rounded-full border-2 flex items-center justify-center cursor-pointer transition-colors ${
-                      isFirePressed
-                        ? 'border-amber-300/80 bg-amber-400/10'
-                        : 'border-white/25 bg-black/15'
-                    }`}
-                  >
+                  {/* Primary Right Fire Button (hidden only when prone with fists & no grenade/gloo) */}
+                  {!(
+                    hud.stance === 'prone' &&
+                    hud.activeSlot === 4 &&
+                    !hud.isPlacingGloo &&
+                    !hud.isHoldingGrenade
+                  ) && (
                     <div
-                      className={`w-16 h-16 rounded-full border-2 flex items-center justify-center text-white shadow-xl pointer-events-none ${
+                      role="button"
+                      aria-label="Atirar e Subir Capa"
+                      onContextMenu={(e) => e.preventDefault()}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      onTouchMove={(e) => e.stopPropagation()}
+                      onTouchEnd={(e) => e.stopPropagation()}
+                      onTouchCancel={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => beginFirePointer(e, true)}
+                      onPointerUp={(e) => endFirePointer(e, true)}
+                      onPointerCancel={(e) => endFirePointer(e, true)}
+                      style={layoutStyle(hudLayout.fireBtn)}
+                      className={`pointer-events-auto touch-none absolute z-[25] w-28 h-28 rounded-full border-2 flex items-center justify-center cursor-pointer ${
                         isFirePressed
-                          ? 'bg-white/30 border-amber-200 ring-4 ring-amber-400/35'
-                          : 'bg-black/50 border-white/80 ring-4 ring-white/10'
+                          ? 'border-amber-300/80 bg-amber-400/10'
+                          : 'border-white/25 bg-black/15'
                       }`}
-                      style={{
-                        transform: `translate(${fireKnob.x}px, ${fireKnob.y}px)`,
-                      }}
                     >
-                      <IconFireBurstSvg className="w-9 h-9 text-white drop-shadow" />
+                      <div
+                        className={`w-16 h-16 rounded-full border-2 flex items-center justify-center text-white shadow-xl pointer-events-none ${
+                          isFirePressed
+                            ? 'bg-white/30 border-amber-200 ring-4 ring-amber-400/35'
+                            : 'bg-black/50 border-white/80 ring-4 ring-white/10'
+                        }`}
+                        style={{
+                          transform: `translate(${fireKnob.x}px, ${fireKnob.y}px)`,
+                        }}
+                      >
+                        <IconFireBurstSvg className="w-9 h-9 text-white drop-shadow" />
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </>
               )}
             </>
           )}
         </>
       )}
+
+      {/* FLOATING EMOJI MACRO BUTTONS (Android / Touch / Clickable HUD buttons) */}
+      {isGroundCombat &&
+        !hideGameplayHud &&
+        !isPaused &&
+        !hud.isPlayerDowned &&
+        !hud.isSwimming &&
+        !hud.inVehicle &&
+        macros
+          .filter((m) => m.enabled && m.showFloatingBtn)
+          .map((macro) => (
+            <button
+              key={macro.id}
+              type="button"
+              onContextMenu={(e) => e.preventDefault()}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                input.executeMacro(macro.id);
+              }}
+              style={{
+                left: `${macro.xPct}%`,
+                top: `${macro.yPct}%`,
+                opacity: macro.opacity,
+                transform: `translate(-50%, -50%) scale(${macro.scale})`,
+              }}
+              title={macro.name}
+              className="pointer-events-auto touch-none select-none absolute z-20 w-12 h-12 rounded-full bg-black/60 active:bg-amber-400/85 active:scale-90 border-2 border-amber-400/85 flex items-center justify-center shadow-lg cursor-pointer"
+            >
+              <span className="text-xl leading-none pointer-events-none">{macro.emoji}</span>
+              {macro.triggerKey && (
+                <span className="absolute -bottom-1.5 px-1 bg-black/90 border border-amber-400/60 text-amber-300 text-[8px] font-mono font-black rounded-sm pointer-events-none">
+                  {formatKeyCodeLabel(macro.triggerKey)}
+                </span>
+              )}
+            </button>
+          ))}
+
+      {/* GG MOUSE PRO ON-SCREEN KEY BADGES (Non-blocking pointer-events-none overlay) */}
+      {ggMousePro?.enabled &&
+        ggMousePro.showKeyBadges &&
+        isGroundCombat &&
+        !hideGameplayHud &&
+        !isPaused &&
+        !hud.isPlayerDowned && (
+          <div className="pointer-events-none select-none fixed inset-0 z-20">
+            {(Object.keys(GG_PIN_META) as GgKeyPinId[]).map((pinId) => {
+              const meta = GG_PIN_META[pinId];
+              const pin = ggMousePro.pins?.[pinId] ?? DEFAULT_GG_MOUSE_PRO.pins[pinId];
+              if (!pin || !pin.visible) return null;
+
+              if (meta.kind === 'wasd') {
+                return (
+                  <div
+                    key={pinId}
+                    style={{
+                      left: `${pin.xPct}%`,
+                      top: `${pin.yPct}%`,
+                      opacity: ggMousePro.badgeOpacity,
+                      transform: `translate(-50%, -50%) scale(${pin.scale})`,
+                    }}
+                    className="absolute w-24 h-24 rounded-full border border-cyan-400/50 bg-black/25 flex items-center justify-center"
+                  >
+                    <span className="absolute top-1 text-[9px] font-mono font-black text-cyan-200 bg-black/75 px-1 rounded-sm">
+                      {formatKeyCodeLabel(kb.moveForward)}
+                    </span>
+                    <span className="absolute bottom-1 text-[9px] font-mono font-black text-cyan-200 bg-black/75 px-1 rounded-sm">
+                      {formatKeyCodeLabel(kb.moveBackward)}
+                    </span>
+                    <span className="absolute left-1 text-[9px] font-mono font-black text-cyan-200 bg-black/75 px-1 rounded-sm">
+                      {formatKeyCodeLabel(kb.moveLeft)}
+                    </span>
+                    <span className="absolute right-1 text-[9px] font-mono font-black text-cyan-200 bg-black/75 px-1 rounded-sm">
+                      {formatKeyCodeLabel(kb.moveRight)}
+                    </span>
+                  </div>
+                );
+              }
+
+              if (meta.kind === 'look') {
+                return (
+                  <div
+                    key={pinId}
+                    style={{
+                      left: `${pin.xPct}%`,
+                      top: `${pin.yPct}%`,
+                      opacity: ggMousePro.badgeOpacity,
+                      transform: `translate(-50%, -50%) scale(${pin.scale})`,
+                    }}
+                    className="absolute w-10 h-10 rounded-full border border-cyan-400/65 bg-cyan-950/40 flex flex-col items-center justify-center"
+                  >
+                    <Crosshair className="w-4 h-4 text-cyan-300" />
+                    <span className="text-[7px] font-mono font-black text-amber-300 leading-none">
+                      {kToggleMouse}
+                    </span>
+                  </div>
+                );
+              }
+
+              const code = meta.action ? kb[meta.action] : '';
+              if (!code) return null;
+
+              return (
+                <div
+                  key={pinId}
+                  style={{
+                    left: `${pin.xPct}%`,
+                    top: `${pin.yPct}%`,
+                    opacity: ggMousePro.badgeOpacity,
+                    transform: `translate(-50%, -50%) scale(${pin.scale})`,
+                  }}
+                  className="absolute px-1.5 py-0.5 rounded-full bg-black/75 border border-cyan-400/75 text-[9px] font-mono font-black text-cyan-200 shadow"
+                >
+                  {formatKeyCodeLabel(code)}
+                </div>
+              );
+            })}
+          </div>
+        )}
 
       {/* PAUSE / TEST MODAL */}
       {isPaused && (
@@ -3264,6 +3351,17 @@ export const GameHud: React.FC<GameHudProps> = ({
               <Move className="w-4 h-4" />
               <span>PERSONALIZAR HUD</span>
             </button>
+
+            {onOpenGgMacroModal && (
+              <button
+                type="button"
+                onClick={onOpenGgMacroModal}
+                className="w-full py-2.5 bg-[#15222e] hover:bg-[#1d3042] border border-cyan-400/60 text-cyan-300 text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <MousePointerClick className="w-4 h-4" />
+                <span>GG MOUSE PRO & MACROS</span>
+              </button>
+            )}
 
             <div className="border-t border-neutral-700 pt-2.5 space-y-2">
               <div className="text-[10px] font-mono text-neutral-400 uppercase text-center">
@@ -3381,6 +3479,8 @@ export const GameHud: React.FC<GameHudProps> = ({
                         <RankEmblemSvg
                           color={rk.color}
                           accent={rk.accent}
+                          iconUrl={rk.iconUrl}
+                          alt={rk.name}
                           className="w-4 h-4 shrink-0"
                         />
                         <span className="truncate">{rk.name}</span>

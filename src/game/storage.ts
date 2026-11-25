@@ -1,17 +1,27 @@
 import {
   CHARACTER_PRESETS,
   CharacterConfig,
+  DEFAULT_GG_MOUSE_PRO,
   DEFAULT_HUD_LAYOUT,
   DEFAULT_HUD_LAYOUT_SLOT_2,
   DEFAULT_KEY_BINDINGS,
+  DEFAULT_MACROS,
   GameSettings,
   getCharacterPresetByModelId,
+  GgKeyPinId,
+  GgMouseProConfig,
+  GgOverlayPinConfig,
   GraphicsQuality,
   HudElementId,
   HudLayoutConfig,
   HudSlotId,
   KeyBindAction,
   KeyBindingsConfig,
+  MACRO_ACTION_META,
+  MacroConfig,
+  MacroStep,
+  MacroStepAction,
+  NetworkSyncPreset,
   normalizeCharacterModelId,
   PlayerProfile,
   ShadowQuality,
@@ -25,11 +35,114 @@ export function normalizeKeyBindings(
   if (!src) return out;
   (Object.keys(DEFAULT_KEY_BINDINGS) as KeyBindAction[]).forEach((action) => {
     const val = src[action];
+    if (action === 'quickGlooInstant') {
+      out[action] = typeof val === 'string' && val !== 'Escape' ? val.trim() : '';
+      return;
+    }
     if (typeof val === 'string' && val.trim().length > 0 && val !== 'Escape') {
       out[action] = val;
     }
   });
   return out;
+}
+
+export function normalizeMacros(src?: MacroConfig[] | null): MacroConfig[] {
+  if (!Array.isArray(src)) {
+    return DEFAULT_MACROS.map((m) => ({
+      ...m,
+      steps: m.steps.map((s) => ({ ...s })),
+    }));
+  }
+  return src
+    .filter((m) => m && typeof m.id === 'string')
+    .slice(0, 24)
+    .map((m, idx) => {
+      const steps: MacroStep[] = Array.isArray(m.steps)
+        ? m.steps
+            .filter((s) => s && typeof s.action === 'string' && s.action in MACRO_ACTION_META)
+            .slice(0, 24)
+            .map((s, sIdx) => ({
+              id: typeof s.id === 'string' && s.id ? s.id : `step_${idx}_${sIdx}`,
+              action: s.action as MacroStepAction,
+              delayMs:
+                typeof s.delayMs === 'number' && Number.isFinite(s.delayMs)
+                  ? Math.max(0, Math.min(2000, Math.round(s.delayMs)))
+                  : 30,
+            }))
+        : [];
+      return {
+        id: m.id,
+        name: typeof m.name === 'string' && m.name.trim() ? m.name.trim().slice(0, 40) : `Macro ${idx + 1}`,
+        emoji: typeof m.emoji === 'string' && m.emoji.trim() ? m.emoji.trim().slice(0, 6) : '⚡',
+        triggerKey: typeof m.triggerKey === 'string' && m.triggerKey !== 'Escape' ? m.triggerKey.trim() : '',
+        showFloatingBtn: Boolean(m.showFloatingBtn),
+        enabled: m.enabled !== false,
+        xPct:
+          typeof m.xPct === 'number' && Number.isFinite(m.xPct)
+            ? Math.max(3, Math.min(97, m.xPct))
+            : 62,
+        yPct:
+          typeof m.yPct === 'number' && Number.isFinite(m.yPct)
+            ? Math.max(4, Math.min(96, m.yPct))
+            : 72,
+        scale:
+          typeof m.scale === 'number' && Number.isFinite(m.scale)
+            ? Math.max(0.5, Math.min(2.0, m.scale))
+            : 1.0,
+        opacity:
+          typeof m.opacity === 'number' && Number.isFinite(m.opacity)
+            ? Math.max(0.15, Math.min(1.0, m.opacity))
+            : 0.92,
+        steps,
+      };
+    });
+}
+
+export function normalizeGgMousePro(
+  src?: Partial<GgMouseProConfig> | null,
+): GgMouseProConfig {
+  const pins = {} as Record<GgKeyPinId, GgOverlayPinConfig>;
+  (Object.keys(DEFAULT_GG_MOUSE_PRO.pins) as GgKeyPinId[]).forEach((pinId) => {
+    const base = DEFAULT_GG_MOUSE_PRO.pins[pinId];
+    const item = src?.pins?.[pinId];
+    pins[pinId] = {
+      xPct:
+        typeof item?.xPct === 'number' && Number.isFinite(item.xPct)
+          ? Math.max(2, Math.min(98, item.xPct))
+          : base.xPct,
+      yPct:
+        typeof item?.yPct === 'number' && Number.isFinite(item.yPct)
+          ? Math.max(3, Math.min(97, item.yPct))
+          : base.yPct,
+      scale:
+        typeof item?.scale === 'number' && Number.isFinite(item.scale)
+          ? Math.max(0.5, Math.min(1.8, item.scale))
+          : base.scale,
+      visible: typeof item?.visible === 'boolean' ? item.visible : base.visible,
+    };
+  });
+  return {
+    enabled: typeof src?.enabled === 'boolean' ? src.enabled : DEFAULT_GG_MOUSE_PRO.enabled,
+    showKeyBadges:
+      typeof src?.showKeyBadges === 'boolean'
+        ? src.showKeyBadges
+        : DEFAULT_GG_MOUSE_PRO.showKeyBadges,
+    badgeOpacity:
+      typeof src?.badgeOpacity === 'number' && Number.isFinite(src.badgeOpacity)
+        ? Math.max(0.2, Math.min(1.0, src.badgeOpacity))
+        : DEFAULT_GG_MOUSE_PRO.badgeOpacity,
+    aimDragBoost:
+      typeof src?.aimDragBoost === 'number' && Number.isFinite(src.aimDragBoost)
+        ? Math.max(0.5, Math.min(2.5, src.aimDragBoost))
+        : DEFAULT_GG_MOUSE_PRO.aimDragBoost,
+    turboTouch:
+      typeof src?.turboTouch === 'boolean' ? src.turboTouch : DEFAULT_GG_MOUSE_PRO.turboTouch,
+    instantQuickGloo:
+      typeof src?.instantQuickGloo === 'boolean'
+        ? src.instantQuickGloo
+        : DEFAULT_GG_MOUSE_PRO.instantQuickGloo,
+    pins,
+  };
 }
 
 export function defaultTextureForQuality(q: GraphicsQuality): TextureQuality {
@@ -88,7 +201,12 @@ export const DEFAULT_SETTINGS: GameSettings = {
   autoLootSpeed: 'fast',
   emulatorMode: false,
   aimToggleMode: false,
+  networkSyncPreset: 'fast',
+  networkLowLatency: true,
+  networkHighPingSmoothing: true,
   keyBindings: { ...DEFAULT_KEY_BINDINGS },
+  macros: normalizeMacros(null),
+  ggMousePro: normalizeGgMousePro(null),
   hudLayout: structuredCloneLayout(DEFAULT_HUD_LAYOUT),
   activeHudSlot: 1,
   hudSlots: {
@@ -304,7 +422,21 @@ export function loadSettings(): GameSettings {
         parsed.shadowQuality ?? defaultShadowForQuality(parsed.quality ?? resolvedQuality),
       emulatorMode: Boolean(parsed.emulatorMode),
       aimToggleMode: Boolean(parsed.aimToggleMode),
+      networkSyncPreset:
+        parsed.networkSyncPreset === 'ultra' ||
+        parsed.networkSyncPreset === 'economy' ||
+        parsed.networkSyncPreset === 'fast'
+          ? (parsed.networkSyncPreset as NetworkSyncPreset)
+          : 'fast',
+      networkLowLatency:
+        typeof parsed.networkLowLatency === 'boolean' ? parsed.networkLowLatency : true,
+      networkHighPingSmoothing:
+        typeof parsed.networkHighPingSmoothing === 'boolean'
+          ? parsed.networkHighPingSmoothing
+          : true,
       keyBindings: normalizeKeyBindings(parsed.keyBindings),
+      macros: normalizeMacros(parsed.macros),
+      ggMousePro: normalizeGgMousePro(parsed.ggMousePro),
       activeHudSlot,
       hudSlots: { 1: migrated.slot1, 2: migrated.slot2 },
       hudLayout: migrated.active,
@@ -363,10 +495,19 @@ export function loadCharacterConfig(): CharacterConfig {
       backpackEnabled: parsed.backpackEnabled ?? true,
       vestEnabled: false,
       modelId,
+      avatarId:
+        parsed.avatarId === 'adam' ||
+        parsed.avatarId === 'eva' ||
+        parsed.avatarId === 'maxim' ||
+        parsed.avatarId === 'kelly' ||
+        parsed.avatarId === 'angelic' ||
+        parsed.avatarId === 'eagle_eye'
+          ? parsed.avatarId
+          : 'default',
       glooSkin,
     };
   } catch {
-    return { ...CHARACTER_PRESETS[0] };
+    return { ...CHARACTER_PRESETS[0], avatarId: 'default' };
   }
 }
 
@@ -383,7 +524,39 @@ export function loadProfile(): PlayerProfile {
     const raw = localStorage.getItem(PROFILE_KEY);
     if (!raw) return { ...DEFAULT_PROFILE };
     const parsed = JSON.parse(raw) as Partial<PlayerProfile>;
-    return { ...DEFAULT_PROFILE, ...parsed };
+    if (parsed.seasonId !== 'S1') {
+      const migrated: PlayerProfile = {
+        ...DEFAULT_PROFILE,
+        nickname: parsed.nickname || DEFAULT_PROFILE.nickname,
+        level: parsed.level ?? DEFAULT_PROFILE.level,
+        gold: parsed.gold ?? DEFAULT_PROFILE.gold,
+        gems: parsed.gems ?? DEFAULT_PROFILE.gems,
+        matchesPlayed: parsed.matchesPlayed ?? 0,
+        wins: parsed.wins ?? 0,
+        totalKills: parsed.totalKills ?? 0,
+        rankPoints: 0,
+        rankedMatches: 0,
+        rankedWins: 0,
+        avatarId: parsed.avatarId ?? 'default',
+        unlockedAvatars: ['default', 'adam', 'eva', 'maxim', 'kelly'],
+        seasonId: 'S1',
+        s1PeakRankPoints: 0,
+        s1ClaimedRewards: [],
+      };
+      saveProfile(migrated);
+      return migrated;
+    }
+    return {
+      ...DEFAULT_PROFILE,
+      ...parsed,
+      avatarId: parsed.avatarId ?? 'default',
+      unlockedAvatars:
+        Array.isArray(parsed.unlockedAvatars) && parsed.unlockedAvatars.length > 0
+          ? parsed.unlockedAvatars
+          : [...DEFAULT_PROFILE.unlockedAvatars!],
+      s1PeakRankPoints: parsed.s1PeakRankPoints ?? parsed.rankPoints ?? 0,
+      s1ClaimedRewards: Array.isArray(parsed.s1ClaimedRewards) ? parsed.s1ClaimedRewards : [],
+    };
   } catch {
     return { ...DEFAULT_PROFILE };
   }
@@ -404,8 +577,13 @@ export const DEFAULT_PROFILE: PlayerProfile = {
   gems: 100,
   matchesPlayed: 0,
   wins: 0,
-  rankPoints: 1000,
+  rankPoints: 0,
   rankedMatches: 0,
   rankedWins: 0,
   totalKills: 0,
+  avatarId: 'default',
+  unlockedAvatars: ['default', 'adam', 'eva', 'maxim', 'kelly'],
+  seasonId: 'S1',
+  s1PeakRankPoints: 0,
+  s1ClaimedRewards: [],
 };

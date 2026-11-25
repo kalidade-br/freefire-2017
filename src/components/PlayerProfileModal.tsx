@@ -14,11 +14,17 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
-import { getCharacterAvatar } from '../game/avatars';
+import {
+  getAvatarMeta,
+  getPlayerAvatar,
+  normalizePlayerAvatarId,
+} from '../game/avatars';
 import { soundEngine } from '../game/audio';
 import {
+  CURRENT_RANKED_SEASON_LABEL,
   CharacterConfig,
   CharacterModelId,
+  PlayerAvatarId,
   PlayerProfile,
   getCharacterPresetByModelId,
   getRankInfo,
@@ -42,6 +48,7 @@ export interface ProfileModalSubject {
   rankedWins: number;
   totalKills: number;
   modelId: CharacterModelId;
+  avatarId?: PlayerAvatarId;
   presence?: PresenceStatus;
   isFriend?: boolean;
 }
@@ -51,6 +58,7 @@ interface PlayerProfileModalProps {
   onClose: () => void;
   onChangeNickname?: (nextName: string) => void;
   onOpenCharacter?: () => void;
+  onOpenAvatars?: () => void;
   onOpenAuth?: () => void;
   onInviteToParty?: (accountId: number) => void;
   onAddFriend?: (publicId: string) => void;
@@ -70,6 +78,9 @@ export function profileFromLocal(
   account: PublicPlayerAccount | null,
 ): ProfileModalSubject {
   const modelId = normalizeCharacterModelId(account?.character?.modelId ?? character.modelId);
+  const avatarId = normalizePlayerAvatarId(
+    account?.avatarId ?? profile.avatarId ?? character.avatarId,
+  );
   return {
     isOwn: true,
     accountId: account?.id,
@@ -85,6 +96,7 @@ export function profileFromLocal(
     rankedWins: account?.rankedWins ?? profile.rankedWins,
     totalKills: account?.totalKills ?? profile.totalKills,
     modelId,
+    avatarId,
     presence: account ? 'lobby' : undefined,
   };
 }
@@ -108,6 +120,7 @@ export function profileFromAccount(
     rankedWins: acc.rankedWins,
     totalKills: acc.totalKills,
     modelId: normalizeCharacterModelId(acc.character?.modelId),
+    avatarId: normalizePlayerAvatarId(acc.avatarId ?? acc.character?.avatarId),
     presence: acc.presence,
     isFriend: options?.isFriend,
   };
@@ -118,6 +131,7 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
   onClose,
   onChangeNickname,
   onOpenCharacter,
+  onOpenAvatars,
   onOpenAuth,
   onInviteToParty,
   onAddFriend,
@@ -129,7 +143,8 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
   const [likedBonus, setLikedBonus] = useState(0);
 
   const rk = getRankInfo(subject.rankPoints);
-  const avatarSrc = getCharacterAvatar(subject.modelId);
+  const avatarSrc = getPlayerAvatar(subject.avatarId, subject.modelId);
+  const avatarMeta = getAvatarMeta(subject.avatarId);
   const charLabel = getCharacterPresetByModelId(subject.modelId).name;
 
   const matches = modeTab === 'br_ranked' ? subject.rankedMatches : subject.matchesPlayed;
@@ -239,19 +254,35 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
               <span className="text-xs font-black tabular-nums">{displayLikes}</span>
             </button>
 
-            {subject.isOwn && onOpenCharacter && (
-              <button
-                type="button"
-                onClick={() => {
-                  soundEngine.playUiClick();
-                  onClose();
-                  onOpenCharacter();
-                }}
-                className="px-2.5 py-1.5 bg-amber-500/20 hover:bg-amber-500 hover:text-black border border-amber-400/60 text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors"
-              >
-                TROCAR PERSONAGEM
-              </button>
-            )}
+            <div className="flex items-center gap-1.5 flex-wrap justify-end">
+              {subject.isOwn && onOpenAvatars && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiClick();
+                    onClose();
+                    onOpenAvatars();
+                  }}
+                  className="px-2.5 py-1.5 bg-purple-600/30 hover:bg-purple-500 hover:text-white border border-purple-400/70 text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors"
+                  title={`Avatar atual: ${avatarMeta.name}`}
+                >
+                  TROCAR AVATAR
+                </button>
+              )}
+              {subject.isOwn && onOpenCharacter && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiClick();
+                    onClose();
+                    onOpenCharacter();
+                  }}
+                  className="px-2.5 py-1.5 bg-amber-500/20 hover:bg-amber-500 hover:text-black border border-amber-400/60 text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors"
+                >
+                  TROCAR PERSONAGEM
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -412,7 +443,7 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
           <div className="bg-[#121622] border border-white/10 px-3 py-2.5 flex items-center justify-between gap-2">
             <div className="text-left">
               <div className="text-[10px] font-bold uppercase text-neutral-400">
-                TEMPORADA 54
+                {CURRENT_RANKED_SEASON_LABEL}
               </div>
               <div className="text-sm font-black text-white tabular-nums">
                 {subject.rankPoints} PTS
@@ -423,6 +454,8 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
               <RankEmblemSvg
                 color={rk.color}
                 accent={rk.accent}
+                iconUrl={rk.iconUrl}
+                alt={rk.name}
                 className="w-11 h-11 shrink-0 drop-shadow-[0_0_10px_rgba(251,191,36,0.4)]"
               />
               <div className="leading-tight">

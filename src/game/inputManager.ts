@@ -1,7 +1,11 @@
 import {
+  DEFAULT_GG_MOUSE_PRO,
   DEFAULT_KEY_BINDINGS,
+  GgMouseProConfig,
   KeyBindAction,
   KeyBindingsConfig,
+  MacroConfig,
+  MacroStepAction,
 } from './types';
 
 function mouseButtonToCode(button: number): string | null {
@@ -14,6 +18,7 @@ function mouseButtonToCode(button: number): string | null {
 }
 
 function codesMatch(bound: string, incoming: string): boolean {
+  if (!bound || !incoming) return false;
   if (bound === incoming) return true;
   if (
     (bound === 'ShiftLeft' || bound === 'ShiftRight') &&
@@ -64,6 +69,7 @@ export class InputManager {
   public medkitPressed = false;
   public smallMedkitPressed = false;
   public glooPressed = false;
+  public quickGlooInstantPressed = false;
   public grenadePressed = false;
   public fireTapPressed = false;
   public revivePressed = false;
@@ -77,6 +83,11 @@ export class InputManager {
   public keyBindings: KeyBindingsConfig = { ...DEFAULT_KEY_BINDINGS };
   public emulatorMode = false;
   public aimToggleMode = false;
+  public macros: MacroConfig[] = [];
+  public ggMousePro: GgMouseProConfig = {
+    ...DEFAULT_GG_MOUSE_PRO,
+    pins: { ...DEFAULT_GG_MOUSE_PRO.pins },
+  };
   public mouseSuspended = false;
   public mouseResetTimestamp = 0;
   public isRebinding = false;
@@ -85,11 +96,9 @@ export class InputManager {
   private pendingResetCamera = false;
   private pendingRelockAfterReset = false;
   private resetRelockTimer: number | null = null;
+  private macroTimers = new Set<number>();
   private lastFreeMoveX: number | null = null;
   private lastFreeMoveY: number | null = null;
-
-  private lastCrouchMs = 0;
-  private lastProneMs = 0;
 
   private keys = new Set<string>();
   private activeCodes = new Set<string>();
@@ -117,6 +126,8 @@ export class InputManager {
     keyBindings?: Partial<KeyBindingsConfig>;
     emulatorMode?: boolean;
     aimToggleMode?: boolean;
+    macros?: MacroConfig[];
+    ggMousePro?: GgMouseProConfig;
   }): void {
     if (opts.keyBindings) {
       this.keyBindings = { ...DEFAULT_KEY_BINDINGS, ...opts.keyBindings };
@@ -130,6 +141,12 @@ export class InputManager {
         this.isAimToggled = false;
       }
     }
+    if (Array.isArray(opts.macros)) {
+      this.macros = opts.macros;
+    }
+    if (opts.ggMousePro) {
+      this.ggMousePro = opts.ggMousePro;
+    }
   }
 
   public setRebinding(active: boolean): void {
@@ -138,6 +155,8 @@ export class InputManager {
       this.keys.clear();
       this.activeCodes.clear();
       this.isFiring = false;
+      this.touchFire = false;
+      this.fireTapPressed = false;
       this.isAiming = false;
       this.isDraggingMouse = false;
     }
@@ -168,6 +187,7 @@ export class InputManager {
   public setGameplayActive(active: boolean): void {
     this.allowPointerLock = active;
     if (!active) {
+      this.cancelAllMacros();
       this.isFiring = false;
       this.touchFire = false;
       this.isAiming = false;
@@ -233,7 +253,7 @@ export class InputManager {
       this.resumeCameraFromCursor();
       return;
     }
-    if (this.pointerLocked || this.emulatorMode) {
+    if (this.pointerLocked || this.emulatorMode || this.ggMousePro.enabled) {
       this.suspendMouseCursor();
     } else {
       // Not locked yet in normal PC mode: lock camera directly; pressing again suspends
@@ -293,12 +313,13 @@ export class InputManager {
   }
 
   public addTouchLook(dx: number, dy: number): void {
-    this.lookDeltaX += dx;
-    this.lookDeltaY += dy;
+    const boost = this.ggMousePro.enabled ? this.ggMousePro.aimDragBoost : 1;
+    this.lookDeltaX += dx * boost;
+    this.lookDeltaY += dy * boost;
   }
 
-  public setTouchFire(active: boolean): void {
-    if (active && !this.touchFire) {
+  public setTouchFire(active: boolean, forceTap = false): void {
+    if (active && (!this.touchFire || forceTap)) {
       this.fireTapPressed = true;
     }
     this.touchFire = active;
@@ -309,6 +330,10 @@ export class InputManager {
     if (!active) {
       this.isAimToggled = false;
     }
+  }
+
+  public toggleTouchAim(): void {
+    this.setTouchAim(!this.getAimActive());
   }
 
   public setTouchSprint(active: boolean): void {
@@ -332,16 +357,10 @@ export class InputManager {
   }
 
   public triggerCrouch(): void {
-    const now = performance.now();
-    if (now - this.lastCrouchMs < 30) return;
-    this.lastCrouchMs = now;
     this.crouchPressed = true;
   }
 
   public triggerProne(): void {
-    const now = performance.now();
-    if (now - this.lastProneMs < 65) return;
-    this.lastProneMs = now;
     this.pronePressed = true;
   }
 
@@ -373,6 +392,10 @@ export class InputManager {
     this.glooPressed = true;
   }
 
+  public triggerQuickGlooInstant(): void {
+    this.quickGlooInstantPressed = true;
+  }
+
   public triggerGrenade(): void {
     this.grenadePressed = true;
   }
@@ -395,6 +418,129 @@ export class InputManager {
 
   public triggerSlot(slot: 1 | 2 | 3 | 4): void {
     this.switchSlot = slot;
+  }
+
+  public cancelAllMacros(): void {
+    for (const id of this.macroTimers) {
+      window.clearTimeout(id);
+    }
+    this.macroTimers.clear();
+  }
+
+  public executeMacroAction(action: MacroStepAction): void {
+    switch (action) {
+      case 'crouch':
+        this.triggerCrouch();
+        break;
+      case 'prone':
+        this.triggerProne();
+        break;
+      case 'jump':
+        this.triggerJump();
+        break;
+      case 'vault':
+        this.triggerVault();
+        break;
+      case 'aimToggle':
+        this.toggleTouchAim();
+        break;
+      case 'aimOn':
+        this.setTouchAim(true);
+        break;
+      case 'aimOff':
+        this.setTouchAim(false);
+        break;
+      case 'fireTap':
+        this.triggerFireTap();
+        break;
+      case 'fireHoldStart':
+        this.setTouchFire(true);
+        break;
+      case 'fireHoldEnd':
+        this.setTouchFire(false);
+        break;
+      case 'gloo':
+        this.triggerGloo();
+        break;
+      case 'quickGlooInstant':
+        this.triggerQuickGlooInstant();
+        break;
+      case 'grenade':
+        this.triggerGrenade();
+        break;
+      case 'reload':
+        this.triggerReload();
+        break;
+      case 'quickSwap':
+        this.triggerQuickSwap();
+        break;
+      case 'cycleScope':
+        this.triggerCycleScope();
+        break;
+      case 'slot1':
+        this.triggerSlot(1);
+        break;
+      case 'slot2':
+        this.triggerSlot(2);
+        break;
+      case 'slot3':
+        this.triggerSlot(3);
+        break;
+      case 'slot4':
+        this.triggerSlot(4);
+        break;
+      case 'interact':
+        this.triggerInteract();
+        break;
+      case 'medkit':
+        this.triggerMedkit();
+        break;
+      case 'smallMedkit':
+        this.triggerSmallMedkit();
+        break;
+      case 'sprintOn':
+        this.setTouchAutoSprint(true);
+        break;
+      case 'sprintOff':
+        this.setTouchAutoSprint(false);
+        break;
+      case 'wait':
+      default:
+        break;
+    }
+  }
+
+  public executeMacro(macroId: string): void {
+    const macro = this.macros.find((m) => m.id === macroId && m.enabled);
+    if (!macro || macro.steps.length === 0) return;
+
+    const runStep = (idx: number, actionsThisFrame: Set<MacroStepAction>) => {
+      if (idx >= macro.steps.length) return;
+      const step = macro.steps[idx];
+      if (step.action !== 'wait') {
+        this.executeMacroAction(step.action);
+        actionsThisFrame.add(step.action);
+      }
+      if (idx + 1 >= macro.steps.length) return;
+      const nextStep = macro.steps[idx + 1];
+      const sameToggleSameFrame =
+        nextStep.action !== 'wait' &&
+        (actionsThisFrame.has(nextStep.action) ||
+          (nextStep.action === 'aimToggle' && (actionsThisFrame.has('aimOn') || actionsThisFrame.has('aimOff'))));
+
+      if (step.delayMs <= 0 && !sameToggleSameFrame) {
+        runStep(idx + 1, actionsThisFrame);
+        return;
+      }
+      const waitMs = Math.max(sameToggleSameFrame ? 18 : 0, step.delayMs);
+      const tId = window.setTimeout(() => {
+        this.macroTimers.delete(tId);
+        runStep(idx + 1, new Set<MacroStepAction>());
+      }, waitMs);
+      this.macroTimers.add(tId);
+    };
+
+    runStep(0, new Set<MacroStepAction>());
   }
 
   private hasActiveBinding(action: KeyBindAction): boolean {
@@ -472,6 +618,7 @@ export class InputManager {
     medkit: boolean;
     smallMedkit: boolean;
     gloo: boolean;
+    quickGlooInstant: boolean;
     grenade: boolean;
     fireTap: boolean;
     revive: boolean;
@@ -495,6 +642,7 @@ export class InputManager {
       medkit: this.medkitPressed,
       smallMedkit: this.smallMedkitPressed,
       gloo: this.glooPressed,
+      quickGlooInstant: this.quickGlooInstantPressed,
       grenade: this.grenadePressed,
       fireTap: this.fireTapPressed,
       revive: this.revivePressed,
@@ -517,6 +665,7 @@ export class InputManager {
     this.medkitPressed = false;
     this.smallMedkitPressed = false;
     this.glooPressed = false;
+    this.quickGlooInstantPressed = false;
     this.grenadePressed = false;
     this.fireTapPressed = false;
     this.revivePressed = false;
@@ -571,6 +720,7 @@ export class InputManager {
     if (this.isCodeForAction('medkit', code)) this.medkitPressed = true;
     if (this.isCodeForAction('smallMedkit', code)) this.smallMedkitPressed = true;
     if (this.isCodeForAction('gloo', code)) this.glooPressed = true;
+    if (this.isCodeForAction('quickGlooInstant', code)) this.quickGlooInstantPressed = true;
     if (this.isCodeForAction('grenade', code)) this.grenadePressed = true;
     if (this.isCodeForAction('revive', code)) this.revivePressed = true;
     if (this.isCodeForAction('surfboard', code)) this.surfboardPressed = true;
@@ -579,6 +729,15 @@ export class InputManager {
     if (this.isCodeForAction('slot2', code)) this.switchSlot = 2;
     if (this.isCodeForAction('slot3', code)) this.switchSlot = 3;
     if (this.isCodeForAction('slot4', code)) this.switchSlot = 4;
+
+    if (this.allowPointerLock) {
+      for (let i = 0; i < this.macros.length; i++) {
+        const m = this.macros[i];
+        if (m.enabled && m.triggerKey && codesMatch(m.triggerKey, code)) {
+          this.executeMacro(m.id);
+        }
+      }
+    }
   }
 
   private triggerReleaseForCode(code: string): void {
@@ -633,6 +792,7 @@ export class InputManager {
     this.lastFreeMoveX = null;
     this.lastFreeMoveY = null;
     this.touchFire = false;
+    this.fireTapPressed = false;
     this.touchAim = false;
     this.touchSprint = false;
     this.touchMoveX = 0;
@@ -680,11 +840,13 @@ export class InputManager {
   private handleMouseMove = (e: MouseEvent): void => {
     if (this.isRebinding || this.mouseSuspended) return;
 
+    const lookScale = this.ggMousePro.enabled ? this.ggMousePro.aimDragBoost : 1;
+
     if (this.pointerLocked) {
       // Filter sudden browser pointer-lock warp jumps (> 320px in a single event)
       if (Math.abs(e.movementX) > 320 || Math.abs(e.movementY) > 320) return;
-      this.lookDeltaX += e.movementX;
-      this.lookDeltaY += e.movementY;
+      this.lookDeltaX += e.movementX * lookScale;
+      this.lookDeltaY += e.movementY * lookScale;
       return;
     }
 
@@ -692,21 +854,30 @@ export class InputManager {
       this.requestLock();
     }
 
+    if (!this.pointerLocked && (e.buttons & 1) === 0) {
+      if (this.isDraggingMouse) {
+        this.isDraggingMouse = false;
+      }
+      if (this.isFiring && this.isCodeForAction('fire', 'MouseLeft')) {
+        this.triggerReleaseForCode('MouseLeft');
+      }
+    }
+
     if (this.isDraggingMouse) {
-      this.lookDeltaX += e.clientX - this.lastMouseX;
-      this.lookDeltaY += e.clientY - this.lastMouseY;
+      this.lookDeltaX += (e.clientX - this.lastMouseX) * lookScale;
+      this.lookDeltaY += (e.clientY - this.lastMouseY) * lookScale;
       this.lastMouseX = e.clientX;
       this.lastMouseY = e.clientY;
       return;
     }
 
-    if (this.emulatorMode && this.allowPointerLock && e.target === this.canvas) {
+    if ((this.emulatorMode || this.ggMousePro.enabled) && this.allowPointerLock && e.target === this.canvas) {
       if (this.lastFreeMoveX !== null && this.lastFreeMoveY !== null) {
         const dx = e.clientX - this.lastFreeMoveX;
         const dy = e.clientY - this.lastFreeMoveY;
         if (Math.abs(dx) < 240 && Math.abs(dy) < 240) {
-          this.lookDeltaX += dx;
-          this.lookDeltaY += dy;
+          this.lookDeltaX += dx * lookScale;
+          this.lookDeltaY += dy * lookScale;
         }
       }
       this.lastFreeMoveX = e.clientX;
@@ -721,9 +892,11 @@ export class InputManager {
     if (!this.allowPointerLock || this.isRebinding) return;
     if (Math.abs(e.deltaY) < 4) return;
     const wheelCode = e.deltaY < 0 ? 'WheelUp' : 'WheelDown';
-    const anyBoundToWheel = (Object.keys(this.keyBindings) as KeyBindAction[]).some((act) =>
-      this.isCodeForAction(act, wheelCode),
-    );
+    const anyBoundToWheel =
+      (Object.keys(this.keyBindings) as KeyBindAction[]).some((act) =>
+        this.isCodeForAction(act, wheelCode),
+      ) ||
+      this.macros.some((m) => m.enabled && m.triggerKey && codesMatch(m.triggerKey, wheelCode));
     if (anyBoundToWheel) {
       this.triggerPressForCode(wheelCode);
       this.triggerReleaseForCode(wheelCode);
@@ -737,6 +910,7 @@ export class InputManager {
   };
 
   public dispose(): void {
+    this.cancelAllMacros();
     if (this.resetRelockTimer !== null) {
       window.clearTimeout(this.resetRelockTimer);
       this.resetRelockTimer = null;

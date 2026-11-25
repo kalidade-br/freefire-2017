@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, GripHorizontal, LogOut, MicOff, RotateCcw, Save, Settings, Users, Volume2, Wifi } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, GripHorizontal, LogOut, MicOff, MousePointerClick, RotateCcw, Save, Settings, Users, Volume2, Wifi } from 'lucide-react';
 import {
   DEFAULT_HUD_LAYOUT,
   DEFAULT_HUD_LAYOUT_SLOT_2,
@@ -36,6 +36,7 @@ interface HudEditorModalProps {
     nextSlot: HudSlotId,
     nextSlots: Record<HudSlotId, HudLayoutConfig>,
   ) => void;
+  onOpenGgMacroModal?: () => void;
   onClose: () => void;
 }
 
@@ -474,6 +475,7 @@ export const HudEditorModal: React.FC<HudEditorModalProps> = ({
   activeSlot: initialSlot = 1,
   hudSlots: initialSlots,
   onSave,
+  onOpenGgMacroModal,
   onClose,
 }) => {
   const [slot, setSlot] = useState<HudSlotId>(initialSlot === 2 ? 2 : 1);
@@ -722,6 +724,19 @@ export const HudEditorModal: React.FC<HudEditorModalProps> = ({
               <span>SALVAR</span>
             </button>
           </div>
+
+          {onOpenGgMacroModal && (
+            <div className="px-1.5 pb-1.5 bg-black/60 border-b border-white/15">
+              <button
+                type="button"
+                onClick={onOpenGgMacroModal}
+                className="w-full h-7 bg-gradient-to-r from-cyan-500 to-amber-400 hover:brightness-110 text-black font-black text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <MousePointerClick className="w-3.5 h-3.5" />
+                <span>GG MOUSE PRO & MACROS (EMOJI / PC)</span>
+              </button>
+            </div>
+          )}
 
           {/* Collapsible Sliders: Selector + Transparência & Tamanho */}
           {panelExpanded && (

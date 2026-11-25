@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   BERMUDA_GLB_MAP_RANGE,
   BERMUDA_GLB_WATER_Y,
@@ -17,16 +16,6 @@ import {
   isAdamAssetsLoaded,
   UPPER_AIM_BONE_NAMES,
 } from './adamAssets';
-import {
-  BuildingLootPoint,
-  BuildingMaterials,
-  createCasaGod,
-  createCasaL,
-  createCeleiro,
-  createEnterableHouse,
-  createGuarita,
-  createSobradoHouse,
-} from './buildingPrefabs';
 import { CharacterAnimator } from './characterAnimator';
 import {
   CharacterRig,
@@ -36,19 +25,6 @@ import {
   createWeaponModel,
 } from './characterBuilder';
 import { ProceduralTextureSet } from './textures';
-import {
-  createAltiplanoSkyscraper,
-  createCoastalQuiosque,
-  createEstacaoCaboBranco,
-  createFarolCaboBranco,
-  createHotelTambau,
-  createIgrejaSaoFrancisco,
-  createInstancedJoaoPessoaFoliage,
-  createLetreiroJoaoPessoa,
-  createParqueLagoa,
-  createWoodenPier,
-  JpLandmarkMaterials,
-} from './jpLandmarks';
 import {
   AttachmentKind,
   BrMapId,
@@ -87,6 +63,18 @@ export interface TargetDummy {
   lastSyncX?: number;
   lastSyncZ?: number;
   netAnimSpeed?: number;
+  shotSeq?: number;
+  lastShotAtElapsed?: number;
+  netIsSprinting?: boolean;
+  netIsAiming?: boolean;
+  netIsFiring?: boolean;
+  netIsReloading?: boolean;
+  netIsHealing?: boolean;
+  netIsReviving?: boolean;
+  netIsDying?: boolean;
+  netLastShotSeq?: number;
+  netTurnDeltaRad?: number;
+  netPrevYaw?: number;
   upperAimBones?: Array<{ name: string; bone: THREE.Object3D }>;
   bodyMat?: THREE.MeshStandardMaterial;
   torsoGroup?: THREE.Group;
@@ -323,7 +311,6 @@ export interface WorldHandle {
 
 export const BERMUDA_HALF = 660;
 export const BERMUDA_MAP_RANGE = 690;
-export const HAS_SENTOSA = true;
 export const WAIT_LOBBY_ORIGIN = { x: 2600, y: 18, z: 2600 } as const;
 export const WAIT_SPAWN = {
   x: WAIT_LOBBY_ORIGIN.x - 2.0,
@@ -337,505 +324,6 @@ export const GLADIADORES_BOUNDS = {
   minZ: GLADIADORES_ORIGIN.z - 19.0,
   maxZ: GLADIADORES_ORIGIN.z + 19.0,
 } as const;
-export const SENTOSA_CENTER = { x: 475, z: -265 } as const;
-
-export const POIS: PoiMarker[] = [
-  { name: 'TAMBAÚ', x: 300, z: 12, radius: 58 },
-  { name: 'CABO BRANCO', x: 265, z: 185, radius: 54 },
-  { name: 'FAROL DO SEIXAS', x: 265, z: 320, radius: 52 },
-  { name: 'ALTIPLANO', x: 142, z: 45, radius: 58 },
-  { name: 'MANAÍRA', x: 255, z: -135, radius: 54 },
-  { name: 'BESSA', x: 210, z: -325, radius: 52 },
-  { name: 'AREIA VERMELHA', x: 475, z: -265, radius: 52 },
-  { name: 'MATA BURAQUINHO', x: 10, z: 58, radius: 60 },
-  { name: 'A LAGOA', x: -175, z: -15, radius: 62 },
-  { name: 'CENTRO HISTÓRICO', x: -290, z: 160, radius: 58 },
-  { name: 'PRAIA DO JACARÉ', x: -225, z: -185, radius: 50 },
-  { name: 'PORTO SANHAUÁ', x: -155, z: 295, radius: 54 },
-  { name: 'AEROCLUBE', x: -20, z: -372, radius: 56 },
-  { name: 'PONTE SANHAUÁ', x: -215, z: riverCenterZ(-215), radius: 28 },
-  { name: 'PONTE DO JACARÉ', x: -20, z: riverCenterZ(-20), radius: 28 },
-  { name: 'PONTE CABEDELO', x: 195, z: riverCenterZ(195), radius: 28 },
-];
-
-export function riverCenterZ(x: number): number {
-  return -248 + Math.sin(x * 0.0068) * 24;
-}
-
-export function sampleMainIslandEdgeRadius(angle: number): number {
-  const c = Math.cos(angle);
-  const s = Math.sin(angle);
-  // Sweeping Atlantic crescent coastline on the East (+X) with Ponta do Seixas headland to SE
-  const eastCoast =
-    c > 0
-      ? -95 * Math.pow(c, 1.45) + 46 * Math.exp(-Math.pow(angle - 0.84, 2) / 0.16)
-      : 0;
-  const northExtend = s < -0.35 ? 28 * Math.pow(-s, 2) : 0;
-  const naturalVar = Math.sin(angle * 3) * 14 + Math.cos(angle * 5) * 9;
-  return 486 + eastCoast + northExtend + naturalVar;
-}
-
-export function sampleSentosaEdgeRadius(relAngle: number): number {
-  // Ilha de Areia Vermelha tidal reef sandbar
-  return 72 + Math.sin(relAngle * 3) * 7 + Math.cos(relAngle * 2) * 5;
-}
-
-const RIVER_BRIDGES = [
-  { x: -215, z: riverCenterZ(-215), deckHalfX: 4.6, deckHalfZ: 25.0, targetH: 3.4 },
-  { x: -20, z: riverCenterZ(-20), deckHalfX: 5.0, deckHalfZ: 25.0, targetH: 3.6 },
-  { x: 195, z: riverCenterZ(195), deckHalfX: 4.8, deckHalfZ: 25.0, targetH: 3.4 },
-];
-
-const AREIA_BRIDGE_ROT = Math.atan2(76, -18);
-const AREIA_BRIDGE = { x: 386, z: -246, deckHalfX: 4.6, deckHalfZ: 42.5, targetH: 2.35 };
-
-const BRIDGE_ABUTMENTS = [
-  { x: -215, z: riverCenterZ(-215) - 25, r: 14, targetH: 3.25 },
-  { x: -215, z: riverCenterZ(-215) + 25, r: 14, targetH: 3.25 },
-  { x: -20, z: riverCenterZ(-20) - 25, r: 14, targetH: 3.45 },
-  { x: -20, z: riverCenterZ(-20) + 25, r: 14, targetH: 3.45 },
-  { x: 195, z: riverCenterZ(195) - 25, r: 14, targetH: 3.25 },
-  { x: 195, z: riverCenterZ(195) + 25, r: 14, targetH: 3.25 },
-  { x: 344, z: -236, r: 12, targetH: 2.2 },
-  { x: 426, z: -255, r: 12, targetH: 2.2 },
-];
-
-export function nearestBridgePos(
-  x: number,
-  z = -248,
-  mode: 'river' | 'sentosa' = 'river',
-): { x: number; z: number } {
-  if (mode === 'sentosa') {
-    return { x: AREIA_BRIDGE.x, z: AREIA_BRIDGE.z };
-  }
-  let best = RIVER_BRIDGES[0];
-  let bestDist = Math.hypot(x - best.x, z - best.z);
-  for (let i = 1; i < RIVER_BRIDGES.length; i++) {
-    const d = Math.hypot(x - RIVER_BRIDGES[i].x, z - RIVER_BRIDGES[i].z);
-    if (d < bestDist) {
-      bestDist = d;
-      best = RIVER_BRIDGES[i];
-    }
-  }
-  return { x: best.x, z: best.z };
-}
-
-export function botSurfaceHeightAt(
-  x: number,
-  z: number,
-): { y: number; inWater: boolean; onBridge: boolean } {
-  for (let i = 0; i < RIVER_BRIDGES.length; i++) {
-    const b = RIVER_BRIDGES[i];
-    if (Math.abs(x - b.x) <= b.deckHalfX && Math.abs(z - b.z) <= b.deckHalfZ) {
-      return { y: b.targetH + 0.14, inWater: false, onBridge: true };
-    }
-  }
-  // Check wooden reef bridge to Areia Vermelha
-  {
-    const dx = x - AREIA_BRIDGE.x;
-    const dz = z - AREIA_BRIDGE.z;
-    const cos = Math.cos(AREIA_BRIDGE_ROT);
-    const sin = Math.sin(AREIA_BRIDGE_ROT);
-    const lx = dx * cos - dz * sin;
-    const lz = dx * sin + dz * cos;
-    if (Math.abs(lx) <= AREIA_BRIDGE.deckHalfX && Math.abs(lz) <= AREIA_BRIDGE.deckHalfZ) {
-      return { y: AREIA_BRIDGE.targetH + 0.12, inWater: false, onBridge: true };
-    }
-  }
-  const h = sampleGroundHeight(x, z);
-  return { y: h, inWater: h < 0.42, onBridge: false };
-}
-
-const COMPOUNDS = [
-  { x: 300, z: 12, r: 50, targetH: 2.0 }, // Tambaú Orla & Letreiro
-  { x: 265, z: 185, r: 46, targetH: 2.6 }, // Cabo Branco Orla
-  { x: 245, z: 305, r: 52, targetH: 11.2 }, // Falésia / Farol / Estação Cabo Branco plateau
-  { x: 142, z: 45, r: 52, targetH: 9.0 }, // Altiplano Cabo Branco ridge
-  { x: 255, z: -135, r: 48, targetH: 2.2 }, // Manaíra
-  { x: 210, z: -325, r: 46, targetH: 2.1 }, // Bessa
-  { x: 475, z: -265, r: 46, targetH: 1.65 }, // Ilha de Areia Vermelha
-  { x: 10, z: 58, r: 54, targetH: 9.6 }, // Mata do Buraquinho
-  { x: -175, z: -15, r: 62, targetH: 2.4 }, // Parque Solon de Lucena (A Lagoa)
-  { x: -290, z: 160, r: 52, targetH: 4.2 }, // Centro Histórico & São Francisco
-  { x: -225, z: -185, r: 44, targetH: 2.5 }, // Praia do Jacaré
-  { x: -155, z: 295, r: 48, targetH: 3.4 }, // Porto / Distrito Sul
-  { x: -20, z: -372, r: 52, targetH: 2.6 }, // Aeroclube / Wait Lobby
-];
-
-export function sampleGroundHeight(x: number, z: number): number {
-  const angle = Math.atan2(z, x);
-  const distFromCenter = Math.hypot(x, z);
-  const effectiveEdge = sampleMainIslandEdgeRadius(angle);
-  const mainlandMask = THREE.MathUtils.smoothstep(effectiveEdge - distFromCenter, 0, 56);
-
-  // Offshore Ilha de Areia Vermelha sandbar height
-  const avDx = x - SENTOSA_CENTER.x;
-  const avDz = z - SENTOSA_CENTER.z;
-  const avDist = Math.hypot(avDx, avDz);
-  const avEdge = sampleSentosaEdgeRadius(Math.atan2(avDz, avDx));
-  const avMask = THREE.MathUtils.smoothstep(avEdge - avDist, 0, 26);
-
-  // Altiplano & Mata do Buraquinho central highland plateau + Falésia cliff at SE
-  const altiplanoRidge =
-    Math.exp(-((x - 125) * (x - 125) / 14000 + (z - 45) * (z - 45) / 26000)) * 7.2;
-  const mataHighland =
-    Math.exp(-((x - 5) * (x - 5) / 16000 + (z - 60) * (z - 60) / 24000)) * 7.8;
-  const falesiaCliff =
-    Math.exp(-((x - 245) * (x - 245) / 9500 + (z - 310) * (z - 310) / 8500)) * 9.8;
-
-  const gentleWave =
-    Math.sin(x * 0.011) * Math.cos(z * 0.011) * 1.45 +
-    Math.sin(x * 0.028 + z * 0.022) * 0.55;
-
-  // Slope smoothly down to shallow sandy beaches along East Coast (+X > 275)
-  const beachTaper =
-    x > 265 ? 1 - THREE.MathUtils.smoothstep(x, 275, 345) * 0.72 : 1.0;
-
-  let h =
-    (2.8 + (altiplanoRidge + mataHighland + falesiaCliff + gentleWave) * beachTaper) *
-      mainlandMask -
-    (1 - mainlandMask) * 5.2;
-
-  if (avMask > 0.01) {
-    const avHeight = (1.65 + Math.sin(x * 0.04) * 0.22) * avMask - (1 - avMask) * 3.2;
-    h = Math.max(h, avHeight);
-  }
-
-  // Rio Paraíba / Sanhauá channel cutting across the North
-  const rz = riverCenterZ(x);
-  const distRiver = Math.abs(z - rz);
-  if (distRiver < 22 && distFromCenter < 480) {
-    const carve = (1 - THREE.MathUtils.smoothstep(distRiver, 4.5, 22)) * 6.0;
-    h -= carve;
-  }
-
-  // Gentle circular basin dip under Parque da Lagoa (-175, -15)
-  const lagoaDist = Math.hypot(x + 175, z + 15);
-  if (lagoaDist < 48) {
-    const basin = (1 - THREE.MathUtils.smoothstep(lagoaDist, 38, 48)) * 0.65;
-    h = THREE.MathUtils.lerp(h, 2.0 - basin, 0.85);
-  }
-
-  for (let i = 0; i < BRIDGE_ABUTMENTS.length; i++) {
-    const ab = BRIDGE_ABUTMENTS[i];
-    const d = Math.hypot(x - ab.x, z - ab.z);
-    if (d < ab.r + 12) {
-      const blend = 1 - THREE.MathUtils.smoothstep(d, ab.r * 0.45, ab.r + 12);
-      h = THREE.MathUtils.lerp(h, ab.targetH, blend);
-    }
-  }
-
-  for (let i = 0; i < COMPOUNDS.length; i++) {
-    const c = COMPOUNDS[i];
-    const d = Math.hypot(x - c.x, z - c.z);
-    if (d < c.r + 24) {
-      const blend = 1 - THREE.MathUtils.smoothstep(d, c.r * 0.68, c.r + 24);
-      h = THREE.MathUtils.lerp(h, c.targetH, blend);
-    }
-  }
-
-  return h;
-}
-
-function addLocalObb(
-  colliders: WorldObbCollider[],
-  parentX: number,
-  parentY: number,
-  parentZ: number,
-  parentRotY: number,
-  localX: number,
-  localZ: number,
-  w: number,
-  d: number,
-  minYOffset: number,
-  maxYOffset: number,
-  tag: string,
-): void {
-  const cos = Math.cos(parentRotY);
-  const sin = Math.sin(parentRotY);
-  const wx = parentX + localX * cos + localZ * sin;
-  const wz = parentZ - localX * sin + localZ * cos;
-  colliders.push({
-    cx: wx,
-    cz: wz,
-    halfW: w * 0.5,
-    halfD: d * 0.5,
-    rotY: parentRotY,
-    minY: parentY + minYOffset,
-    maxY: parentY + maxYOffset,
-    tag,
-  });
-}
-
-
-function createIndustrialShed(
-  x: number,
-  z: number,
-  w: number,
-  d: number,
-  h: number,
-  rotY: number,
-  metalMat: THREE.Material,
-  roofMat: THREE.Material,
-  concreteMat: THREE.Material,
-  steelMat: THREE.Material,
-  colliders: WorldObbCollider[],
-  platforms: WalkablePlatform[],
-  obstacleMeshes: THREE.Object3D[],
-): THREE.Group {
-  const group = new THREE.Group();
-  const y = sampleGroundHeight(x, z);
-  group.position.set(x, y, z);
-  group.rotation.y = rotY;
-
-  const slabH = 0.22;
-  const slab = new THREE.Mesh(new THREE.BoxGeometry(w + 0.4, slabH, d + 0.4), concreteMat);
-  slab.position.y = slabH * 0.5;
-  slab.receiveShadow = true;
-  group.add(slab);
-  platforms.push({
-    cx: x,
-    cz: z,
-    halfW: (w + 0.4) * 0.5,
-    halfD: (d + 0.4) * 0.5,
-    rotY,
-    topY: y + slabH,
-    minY: y - 0.5,
-  });
-
-  const wallT = 0.26;
-  const addShedWall = (lx: number, lz: number, ww: number, wd: number) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(ww, h, wd), metalMat);
-    m.position.set(lx, slabH + h * 0.5, lz);
-    m.castShadow = true;
-    m.receiveShadow = true;
-    m.userData.cullRoot = group;
-    group.add(m);
-    obstacleMeshes.push(m);
-    addLocalObb(colliders, x, y, z, rotY, lx, lz, ww, wd, slabH, slabH + h, 'shed-wall');
-  };
-
-  // Left and right full walls, open front & back bays for walkthrough combat
-  addShedWall(-w * 0.5 + wallT * 0.5, 0, wallT, d);
-  addShedWall(w * 0.5 - wallT * 0.5, 0, wallT, d);
-
-  // Corner steel I-beams
-  [-w * 0.5 + 0.2, w * 0.5 - 0.2].forEach((bx) => {
-    [-d * 0.48, 0, d * 0.48].forEach((bz) => {
-      const col = new THREE.Mesh(new THREE.BoxGeometry(0.32, h + 0.3, 0.32), steelMat);
-      col.position.set(bx, slabH + h * 0.5, bz);
-      col.castShadow = true;
-      group.add(col);
-    });
-  });
-
-  // Curved / angled hangar roof
-  const pitch = 0.28;
-  const slopeW = (w * 0.5 + 0.5) / Math.cos(pitch);
-  const rL = new THREE.Mesh(new THREE.BoxGeometry(slopeW, 0.16, d + 0.6), roofMat);
-  rL.position.set(-w * 0.25, slabH + h + 0.35, 0);
-  rL.rotation.z = pitch;
-  rL.castShadow = true;
-  rL.receiveShadow = true;
-  rL.userData.cullRoot = group;
-
-  const rR = new THREE.Mesh(new THREE.BoxGeometry(slopeW, 0.16, d + 0.6), roofMat);
-  rR.position.set(w * 0.25, slabH + h + 0.35, 0);
-  rR.rotation.z = -pitch;
-  rR.castShadow = true;
-  rR.receiveShadow = true;
-  rR.userData.cullRoot = group;
-  group.add(rL, rR);
-  obstacleMeshes.push(rL, rR);
-
-  return group;
-}
-
-function createContainer(
-  x: number,
-  z: number,
-  rotY: number,
-  mat: THREE.Material,
-  colliders: WorldObbCollider[],
-  platforms: WalkablePlatform[],
-  obstacleMeshes: THREE.Object3D[],
-  yOffset = 0,
-): THREE.Group {
-  const w = 2.6;
-  const h = 2.7;
-  const d = 6.2;
-  const group = new THREE.Group();
-  const baseY = sampleGroundHeight(x, z) + yOffset;
-  group.position.set(x, baseY, z);
-  group.rotation.y = rotY;
-
-  const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-  box.position.y = h / 2;
-  box.castShadow = true;
-  box.receiveShadow = true;
-  box.userData.cullRoot = group;
-  group.add(box);
-  obstacleMeshes.push(box);
-
-  const ribMat = new THREE.MeshStandardMaterial({
-    color: 0x262a2e,
-    roughness: 0.45,
-    metalness: 0.75,
-  });
-  const endBar = new THREE.Mesh(
-    new THREE.BoxGeometry(w + 0.08, 0.16, d + 0.08),
-    ribMat,
-  );
-  endBar.position.y = h - 0.08;
-  group.add(endBar);
-
-  colliders.push({
-    cx: x,
-    cz: z,
-    halfW: w * 0.5,
-    halfD: d * 0.5,
-    rotY,
-    minY: baseY,
-    maxY: baseY + h,
-    tag: 'container',
-  });
-  platforms.push({
-    cx: x,
-    cz: z,
-    halfW: w * 0.5,
-    halfD: d * 0.5,
-    rotY,
-    topY: baseY + h,
-    minY: baseY,
-  });
-
-  return group;
-}
-
-function createBridge(
-  x: number,
-  z: number,
-  width: number,
-  length: number,
-  deckY: number,
-  rotY: number,
-  deckMat: THREE.Material,
-  railMat: THREE.Material,
-  colliders: WorldObbCollider[],
-  platforms: WalkablePlatform[],
-  obstacleMeshes: THREE.Object3D[],
-): THREE.Group {
-  const group = new THREE.Group();
-  group.position.set(x, deckY, z);
-  group.rotation.y = rotY;
-
-  // Main deck
-  const deck = new THREE.Mesh(new THREE.BoxGeometry(width, 0.7, length), deckMat);
-  deck.position.y = -0.35;
-  deck.castShadow = true;
-  deck.receiveShadow = true;
-  group.add(deck);
-  obstacleMeshes.push(deck);
-
-  platforms.push({
-    cx: x,
-    cz: z,
-    halfW: width * 0.5,
-    halfD: length * 0.5,
-    rotY,
-    topY: deckY,
-    minY: deckY - 2,
-  });
-
-  // Guard rails along both sides
-  const railGeo = new THREE.BoxGeometry(0.4, 1.05, length);
-  const railL = new THREE.Mesh(railGeo, railMat);
-  railL.position.set(-width * 0.5 + 0.2, 0.52, 0);
-  railL.castShadow = true;
-  const railR = new THREE.Mesh(railGeo, railMat);
-  railR.position.set(width * 0.5 - 0.2, 0.52, 0);
-  railR.castShadow = true;
-  group.add(railL, railR);
-  obstacleMeshes.push(railL, railR);
-
-  addLocalObb(colliders, x, deckY, z, rotY, -width * 0.5 + 0.2, 0, 0.4, length, 0, 1.3, 'bridge-rail');
-  addLocalObb(colliders, x, deckY, z, rotY, width * 0.5 - 0.2, 0, 0.4, length, 0, 1.3, 'bridge-rail');
-
-  // Support pillars dipping into riverbed
-  [-length * 0.3, 0, length * 0.3].forEach((pz) => {
-    [-width * 0.38, width * 0.38].forEach((px) => {
-      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.55, 6.5, 8), railMat);
-      pillar.position.set(px, -3.5, pz);
-      pillar.castShadow = true;
-      group.add(pillar);
-    });
-  });
-
-  return group;
-}
-
-function createWatchTowerLOD(
-  x: number,
-  z: number,
-  concreteMat: THREE.Material,
-  metalMat: THREE.Material,
-  colliders: WorldObbCollider[],
-  obstacleMeshes: THREE.Object3D[],
-): THREE.LOD {
-  const lod = new THREE.LOD();
-  const y = sampleGroundHeight(x, z);
-  lod.position.set(x, y, z);
-
-  // High detail (0..120m)
-  const high = new THREE.Group();
-  const base = new THREE.Mesh(new THREE.BoxGeometry(6.0, 1.5, 6.0), concreteMat);
-  base.position.y = 0.75;
-  base.castShadow = true;
-  base.receiveShadow = true;
-  base.userData.cullRoot = lod;
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.8, 12.5, 10), concreteMat);
-  shaft.position.y = 7.75;
-  shaft.castShadow = true;
-  shaft.userData.cullRoot = lod;
-  const deck = new THREE.Mesh(new THREE.BoxGeometry(7.2, 0.55, 7.2), concreteMat);
-  deck.position.y = 14.2;
-  deck.castShadow = true;
-  const railN = new THREE.Mesh(new THREE.BoxGeometry(7.3, 0.9, 0.2), metalMat);
-  railN.position.set(0, 14.9, -3.5);
-  const railS = railN.clone();
-  railS.position.set(0, 14.9, 3.5);
-  const cap = new THREE.Mesh(new THREE.ConeGeometry(3.2, 2.2, 6), metalMat);
-  cap.position.y = 18.2;
-  const radar = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 0.2, 0.8, 8), metalMat);
-  radar.position.set(0, 20.0, 0);
-  radar.rotation.x = 0.65;
-  high.add(base, shaft, deck, railN, railS, cap, radar);
-  obstacleMeshes.push(base, shaft);
-
-  // Low detail (>120m)
-  const low = new THREE.Group();
-  const lowCol = new THREE.Mesh(new THREE.CylinderGeometry(1.7, 2.2, 16, 6), concreteMat);
-  lowCol.position.y = 8;
-  const lowCap = new THREE.Mesh(new THREE.ConeGeometry(3.2, 2.4, 5), metalMat);
-  lowCap.position.y = 17.5;
-  low.add(lowCol, lowCap);
-
-  lod.addLevel(high, 0);
-  lod.addLevel(low, 120);
-
-  colliders.push({
-    cx: x,
-    cz: z,
-    halfW: 3.0,
-    halfD: 3.0,
-    rotY: 0,
-    minY: y,
-    maxY: y + 15,
-    tag: 'watchtower',
-  });
-
-  return lod;
-}
 
 function createVendingMachineProp(
   id: string,
@@ -848,7 +336,7 @@ function createVendingMachineProp(
   groundYOverride?: number,
 ): { group: THREE.Group; data: VendingMachineProp } {
   const group = new THREE.Group();
-  const y = groundYOverride !== undefined ? groundYOverride : sampleGroundHeight(x, z);
+  const y = groundYOverride !== undefined ? groundYOverride : BERMUDA_GLB_WATER_Y;
   group.position.set(x, y, z);
   group.rotation.y = rotY;
 
@@ -924,7 +412,7 @@ function createDrivableVehicle(
 ): VehicleEntity {
   const isSports = kind === 'sport';
   const maxHp = isSports ? 420 : 620;
-  const y = groundYOverride !== undefined ? groundYOverride : sampleGroundHeight(x, z);
+  const y = groundYOverride !== undefined ? groundYOverride : BERMUDA_GLB_WATER_Y;
 
   const group = new THREE.Group();
   group.position.set(x, y, z);
@@ -1169,7 +657,7 @@ function createBotEntity(
   helmetLevel: 0 | 1 | 2 | 3 = 0,
 ): TargetDummy {
   const group = new THREE.Group();
-  const y = sampleGroundHeight(x, z);
+  const y = WAIT_LOBBY_ORIGIN.y;
   group.position.set(x, y, z);
   group.rotation.y = rotY;
 
@@ -1524,7 +1012,7 @@ export function setBotWeaponVisual(
       if (!mesh) {
         mesh = createWeaponModel(activeWeaponId);
         if (bot.isAdam) {
-          mesh.position.set(0, -0.02, 0.05);
+          mesh.position.set(0.004, 0.016, 0.062);
         } else {
           mesh.position.set(0, 0, 0.02);
         }
@@ -1534,6 +1022,9 @@ export function setBotWeaponVisual(
       mesh.visible = true;
     }
     bot.activeHandWeaponId = activeWeaponId;
+    if (bot.rig) {
+      bot.rig.activeWeaponId = activeWeaponId ?? undefined;
+    }
   }
 
   if (bot.backGunMesh) {
@@ -1644,14 +1135,18 @@ export function upgradeBotsToAdam(
     });
 
     const adamPelvisBone = cloned.getObjectByName('mixamorigHips') ?? null;
-    const adamSpineBone = cloned.getObjectByName('mixamorigSpine1') ?? adamPelvisBone;
-    const spineBone = cloned.getObjectByName('mixamorigSpine2') ?? adamSpineBone ?? cloned;
+    const adamSpineBaseBone = cloned.getObjectByName('mixamorigSpine') ?? adamPelvisBone;
+    const adamSpineBone = cloned.getObjectByName('mixamorigSpine1') ?? adamSpineBaseBone;
+    const adamSpine2Bone = cloned.getObjectByName('mixamorigSpine2') ?? adamSpineBone;
+    const spineBone = adamSpine2Bone ?? adamSpineBone ?? cloned;
     const headBone = cloned.getObjectByName('mixamorigHead') ?? spineBone;
     const handRBone = cloned.getObjectByName('mixamorigRightHand') ?? spineBone;
     const adamThighLBone = cloned.getObjectByName('mixamorigLeftUpLeg') ?? null;
     const adamThighRBone = cloned.getObjectByName('mixamorigRightUpLeg') ?? null;
     const adamShinLBone = cloned.getObjectByName('mixamorigLeftLeg') ?? null;
     const adamShinRBone = cloned.getObjectByName('mixamorigRightLeg') ?? null;
+    const adamLeftShoulderBone = cloned.getObjectByName('mixamorigLeftShoulder') ?? null;
+    const adamRightShoulderBone = cloned.getObjectByName('mixamorigRightShoulder') ?? null;
     const adamUpperArmLBone = cloned.getObjectByName('mixamorigLeftArm') ?? null;
     const adamUpperArmRBone = cloned.getObjectByName('mixamorigRightArm') ?? null;
     const adamLowerArmLBone = cloned.getObjectByName('mixamorigLeftForeArm') ?? null;
@@ -1799,18 +1294,24 @@ export function upgradeBotsToAdam(
       actions,
       activeClipName: bot.activeClipName,
       adamPelvisBone,
+      adamSpineBaseBone,
       adamSpineBone,
+      adamSpine2Bone,
       adamHeadBone: headBone,
       adamHandRBone: handRBone,
       adamThighLBone,
       adamThighRBone,
       adamShinLBone,
       adamShinRBone,
+      adamLeftShoulderBone,
+      adamRightShoulderBone,
       adamUpperArmLBone,
       adamUpperArmRBone,
       adamLowerArmLBone,
+      adamHandLBone,
       adamLowerArmRBone,
       adamUpperBones: upperAimBones,
+      activeWeaponId: bot.weaponId,
       pelvis: dummyGroup,
       torso: dummyGroup,
       headGroup: dummyGroup,
@@ -1831,7 +1332,9 @@ export function upgradeBotsToAdam(
       contactShadow,
       weaponMeshes: BOT_EMPTY_WEAPON_RECORD,
       bodyMeshes: [],
-      setWeapon: () => {},
+      setWeapon: (weaponId: WeaponId | null) => {
+        rig.activeWeaponId = weaponId ?? undefined;
+      },
       setBackWeapons: () => {},
       setParachuteVisible: (visible: boolean) => {
         parachuteGroup.visible = visible;
@@ -2130,24 +1633,15 @@ export function createIslandWorld(
   scene.add(sunLight);
   scene.add(sunLight.target);
 
-  const joaoPessoaGroup = new THREE.Group();
-  joaoPessoaGroup.visible = false;
-  scene.add(joaoPessoaGroup);
-
   const bermudaGroup = new THREE.Group();
   bermudaGroup.visible = true;
   scene.add(bermudaGroup);
 
   const colliders: WorldObbCollider[] = [];
   const platforms: WalkablePlatform[] = [];
+  const buildingNavZones: BuildingNavZone[] = [];
   const obstacleMeshes: THREE.Object3D[] = [];
   const buildings: MinimapBuilding[] = [];
-  const cullableStructures: Array<{
-    obj: THREE.Object3D;
-    x: number;
-    z: number;
-    radiusScale: number;
-  }> = [];
   const bermudaCullables: Array<{
     obj: THREE.Object3D;
     x: number;
@@ -2155,137 +1649,7 @@ export function createIslandWorld(
     radius: number;
   }> = [];
 
-  const roads: MinimapRoad[] = [
-    // Av. Cabo Branco / Tambaú / Manaíra / Bessa — Main Eastern Orla Boulevard
-    { x1: 210, z1: -325, x2: 195, z2: riverCenterZ(195) - 25, width: 8.2, kind: 'asphalt' },
-    { x1: 195, z1: riverCenterZ(195) + 25, x2: 265, z2: -135, width: 8.4, kind: 'asphalt' },
-    { x1: 265, z1: -135, x2: 298, z2: 12, width: 8.8, kind: 'asphalt' },
-    { x1: 298, z1: 12, x2: 274, z2: 185, width: 8.6, kind: 'asphalt' },
-    { x1: 274, z1: 185, x2: 252, z2: 300, width: 7.8, kind: 'asphalt' },
-    // Av. Epitácio Pessoa — Grand Straight Axis from Tambaú -> Altiplano -> Lagoa!
-    { x1: 298, z1: 12, x2: 142, z2: 10, width: 9.2, kind: 'asphalt' },
-    { x1: 142, z1: 10, x2: -115, z2: -15, width: 9.2, kind: 'asphalt' },
-    // Northern Highway & River Bridges (Ponte Sanhauá, Ponte Jacaré, Ponte Cabedelo)
-    { x1: -20, z1: -372, x2: 210, z2: -325, width: 7.8, kind: 'asphalt' },
-    { x1: -20, z1: -372, x2: -215, z2: riverCenterZ(-215) - 25, width: 7.4, kind: 'asphalt' },
-    { x1: -20, z1: -372, x2: -20, z2: riverCenterZ(-20) - 25, width: 8.0, kind: 'asphalt' },
-    { x1: -20, z1: riverCenterZ(-20) + 25, x2: -115, z2: -15, width: 7.8, kind: 'asphalt' },
-    { x1: -215, z1: riverCenterZ(-215) + 25, x2: -225, z2: -185, width: 7.4, kind: 'asphalt' },
-    { x1: -225, z1: -185, x2: -175, z2: -82, width: 7.6, kind: 'asphalt' },
-    // Altiplano -> Estação Cabo Branco -> Cabo Branco Panoramic Spine
-    { x1: 142, z1: 10, x2: 142, z2: 45, width: 8.0, kind: 'asphalt' },
-    { x1: 142, z1: 45, x2: 192, z2: 286, width: 7.4, kind: 'asphalt' },
-    { x1: 192, z1: 286, x2: 265, z2: 320, width: 7.6, kind: 'asphalt' },
-    // Centro Histórico, Lagoa, Porto Sanhauá & Mata do Buraquinho Eco-Trails
-    { x1: -235, z1: -15, x2: -290, z2: 160, width: 7.8, kind: 'asphalt' },
-    { x1: -290, z1: 160, x2: -155, z2: 295, width: 7.6, kind: 'asphalt' },
-    { x1: -155, z1: 295, x2: 192, z2: 286, width: 7.2, kind: 'dirt' },
-    { x1: -115, z1: -15, x2: 10, z2: 58, width: 6.6, kind: 'dirt' },
-    { x1: 10, z1: 58, x2: 142, z2: 45, width: 6.6, kind: 'dirt' },
-    { x1: 10, z1: 58, x2: -155, z2: 295, width: 6.4, kind: 'dirt' },
-  ];
-
-  // 1. João Pessoa 1480m x 1480m Coastal Terrain Mesh (92x92 crisp relief + Biome Vertex Colors!)
-  const terrainGeo = new THREE.PlaneGeometry(1480, 1480, 92, 92);
-  terrainGeo.rotateX(-Math.PI / 2);
-  const posAttr = terrainGeo.attributes.position;
-  const colors = new Float32Array(posAttr.count * 3);
-  const cParkGrass = new THREE.Color(0x638e3d);
-  const cMataForest = new THREE.Color(0x3f6b2c);
-  const cSandGold = new THREE.Color(0xe6cf9e);
-  const cAreiaVermelha = new THREE.Color(0xd99b66);
-  const cFalesiaClay = new THREE.Color(0xb8603c);
-  const cUrbanGrey = new THREE.Color(0x7c838a);
-  const tmpColor = new THREE.Color();
-
-  for (let i = 0; i < posAttr.count; i++) {
-    const vx = posAttr.getX(i);
-    const vz = posAttr.getZ(i);
-    const vy = sampleGroundHeight(vx, vz);
-    posAttr.setY(i, vy);
-
-    const distAreia = Math.hypot(vx - SENTOSA_CENTER.x, vz - SENTOSA_CENTER.z);
-    const distMata = Math.hypot(vx - 10, vz - 58);
-    const distCentro = Math.hypot(vx + 240, vz - 90);
-    const distAltiplano = Math.hypot(vx - 142, vz - 45);
-    const isFalesiaSlope = vx > 215 && vz > 240 && vy > 3.2 && vy < 10.6;
-    const isEastBeach = vx > 300 && vy < 2.35 && vz < 260;
-
-    if (distAreia < 95) {
-      tmpColor.copy(cAreiaVermelha);
-    } else if (isFalesiaSlope) {
-      tmpColor.copy(cFalesiaClay);
-    } else if (isEastBeach || vy < 1.35) {
-      tmpColor.copy(cSandGold);
-    } else if (distMata < 110 && vy > 5.0) {
-      tmpColor.copy(cMataForest);
-    } else if (distCentro < 95 || distAltiplano < 56 || Math.hypot(vx + 20, vz + 372) < 52) {
-      tmpColor.copy(cUrbanGrey).lerp(cParkGrass, 0.35);
-    } else if (vy > 6.8) {
-      tmpColor.copy(cMataForest).lerp(cParkGrass, 0.45);
-    } else {
-      tmpColor.copy(cParkGrass);
-    }
-    colors[i * 3] = tmpColor.r;
-    colors[i * 3 + 1] = tmpColor.g;
-    colors[i * 3 + 2] = tmpColor.b;
-  }
-  terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  terrainGeo.computeVertexNormals();
-
-  const terrainMat = new THREE.MeshStandardMaterial({
-    map: textures.grass,
-    vertexColors: true,
-    roughness: 0.92,
-    metalness: 0.0,
-  });
-  applyDistanceTextureLod(terrainMat, [0.58, 0.68, 0.45]);
-  const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
-  terrainMesh.name = 'terrain-mesh';
-  terrainMesh.receiveShadow = true;
-  joaoPessoaGroup.add(terrainMesh);
-  obstacleMeshes.push(terrainMesh);
-
-  // 2. Tropical Atlantic Ocean & Turquoise Coastal Reefs (44x44 lightweight mesh)
-  const waterGeo = new THREE.PlaneGeometry(2200, 2200, 44, 44);
-  waterGeo.rotateX(-Math.PI / 2);
-  const waterPos = waterGeo.attributes.position;
-  const waterColors = new Float32Array(waterPos.count * 3);
-  const cReefShallow = new THREE.Color(0x2ce3d0);
-  const cLagoon = new THREE.Color(0x1697c9);
-  const cDeepOcean = new THREE.Color(0x114873);
-
-  for (let i = 0; i < waterPos.count; i++) {
-    const wx = waterPos.getX(i);
-    const wz = waterPos.getZ(i);
-    const gh = sampleGroundHeight(wx, wz);
-    if (gh > -2.4) {
-      const t = THREE.MathUtils.clamp((gh + 2.4) / 2.7, 0, 1);
-      tmpColor.copy(cLagoon).lerp(cReefShallow, t);
-    } else if (gh > -5.0) {
-      const t = THREE.MathUtils.clamp((gh + 5.0) / 2.6, 0, 1);
-      tmpColor.copy(cDeepOcean).lerp(cLagoon, t);
-    } else {
-      tmpColor.copy(cDeepOcean);
-    }
-    waterColors[i * 3] = tmpColor.r;
-    waterColors[i * 3 + 1] = tmpColor.g;
-    waterColors[i * 3 + 2] = tmpColor.b;
-  }
-  waterGeo.setAttribute('color', new THREE.BufferAttribute(waterColors, 3));
-
-  const waterMat = new THREE.MeshStandardMaterial({
-    map: textures.waterWave,
-    vertexColors: true,
-    color: 0xffffff,
-    roughness: 0.22,
-    metalness: 0.22,
-  });
-  applyDistanceTextureLod(waterMat, [0.78, 0.94, 0.98]);
-  const water = new THREE.Mesh(waterGeo, waterMat);
-  water.position.y = -0.35;
-  water.receiveShadow = false;
-  joaoPessoaGroup.add(water);
+  const roads: MinimapRoad[] = [];
 
   // Seamless surrounding tropical ocean skirt for Bermuda 3D map
   const bermudaOceanSkirtMat = new THREE.MeshStandardMaterial({
@@ -2303,947 +1667,7 @@ export function createIslandWorld(
   bermudaOceanSkirt.position.y = BERMUDA_GLB_WATER_Y - 0.18;
   bermudaGroup.add(bermudaOceanSkirt);
 
-  // 3. Distant Horizon Coastal Headlands (12 low-cost islands/dunes)
-  const mountainMat = new THREE.MeshStandardMaterial({
-    color: 0x4f7582,
-    roughness: 0.95,
-  });
-  const mountainGeo = new THREE.SphereGeometry(90, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.5);
-  const mountainCount = 12;
-  const mountains = new THREE.InstancedMesh(mountainGeo, mountainMat, mountainCount);
   const dummy = new THREE.Object3D();
-  for (let i = 0; i < mountainCount; i++) {
-    const angle = (i / mountainCount) * Math.PI * 2;
-    const rad = 840 + (i % 3) * 65;
-    dummy.position.set(Math.cos(angle) * rad, -8, Math.sin(angle) * rad);
-    dummy.rotation.y = i * 0.63;
-    const sc = 0.8 + (i % 4) * 0.2;
-    dummy.scale.set(sc * 1.4, sc * 0.65, sc * 1.1);
-    dummy.updateMatrix();
-    mountains.setMatrixAt(i, dummy.matrix);
-  }
-  mountains.computeBoundingSphere();
-  joaoPessoaGroup.add(mountains);
-
-  // 4. Terrain-Conforming Continuous Asphalt Highways, Dirt Eco-Trails & Calçadão de Pedra Portuguesa!
-  const dirtRoadMat = new THREE.MeshStandardMaterial({
-    map: textures.dirtRoad,
-    roughness: 0.92,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
-  });
-  applyDistanceTextureLod(dirtRoadMat, [0.54, 0.44, 0.32]);
-  const asphaltRoadMat = new THREE.MeshStandardMaterial({
-    map: textures.asphaltRoad,
-    roughness: 0.84,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
-  });
-  applyDistanceTextureLod(asphaltRoadMat, [0.3, 0.32, 0.35]);
-  const calcadaoMat = new THREE.MeshStandardMaterial({
-    map: textures.calcadaoWave,
-    roughness: 0.78,
-    polygonOffset: true,
-    polygonOffsetFactor: -2,
-    polygonOffsetUnits: -2,
-  });
-  applyDistanceTextureLod(calcadaoMat, [0.76, 0.75, 0.72]);
-
-  const buildRoadStripGeo = (r: MinimapRoad): THREE.BufferGeometry | null => {
-    const dx = r.x2 - r.x1;
-    const dz = r.z2 - r.z1;
-    const len = Math.hypot(dx, dz);
-    if (len < 1) return null;
-    const steps = Math.max(4, Math.ceil(len / 7.5));
-    const nx = -dz / len;
-    const nz = dx / len;
-    const hw = r.width * 0.5;
-
-    const verts: number[] = [];
-    const uvs: number[] = [];
-    const indices: number[] = [];
-    let prevValid = false;
-
-    for (let s = 0; s <= steps; s++) {
-      const t = s / steps;
-      const cx = r.x1 + dx * t;
-      const cz = r.z1 + dz * t;
-      const lx = cx - nx * hw;
-      const lz = cz - nz * hw;
-      const rx = cx + nx * hw;
-      const rz = cz + nz * hw;
-      const hC = sampleGroundHeight(cx, cz);
-      const hL = sampleGroundHeight(lx, lz);
-      const hR = sampleGroundHeight(rx, rz);
-
-      if (hC < 0.25) {
-        prevValid = false;
-        continue;
-      }
-
-      const vBase = verts.length / 3;
-      verts.push(lx, Math.max(hL, hC) + 0.08, lz);
-      verts.push(rx, Math.max(hR, hC) + 0.08, rz);
-      const vCoord = (t * len) / 6;
-      uvs.push(0, vCoord, 1, vCoord);
-
-      if (prevValid) {
-        const p0 = vBase - 2;
-        const p1 = vBase - 1;
-        const p2 = vBase;
-        const p3 = vBase + 1;
-        indices.push(p0, p2, p1, p1, p2, p3);
-      }
-      prevValid = true;
-    }
-
-    if (indices.length === 0) return null;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geo.setIndex(indices);
-    geo.computeVertexNormals();
-    return geo;
-  };
-
-  const asphaltGeos: THREE.BufferGeometry[] = [];
-  const dirtGeos: THREE.BufferGeometry[] = [];
-  roads.forEach((r) => {
-    const g = buildRoadStripGeo(r);
-    if (!g) return;
-    if (r.kind === 'asphalt') asphaltGeos.push(g);
-    else dirtGeos.push(g);
-  });
-  if (asphaltGeos.length > 0) {
-    const mAsphalt = new THREE.Mesh(mergeGeometries(asphaltGeos, false), asphaltRoadMat);
-    mAsphalt.receiveShadow = true;
-    joaoPessoaGroup.add(mAsphalt);
-    asphaltGeos.forEach((g) => g.dispose());
-  }
-  if (dirtGeos.length > 0) {
-    const mDirt = new THREE.Mesh(mergeGeometries(dirtGeos, false), dirtRoadMat);
-    mDirt.receiveShadow = true;
-    joaoPessoaGroup.add(mDirt);
-    dirtGeos.forEach((g) => g.dispose());
-  }
-
-  // Calçadão de Pedra Portuguesa along Manaíra -> Tambaú -> Cabo Branco beachfront!
-  const calcadaoSegments: MinimapRoad[] = [
-    { x1: 278, z1: -145, x2: 312, z2: 12, width: 6.2 },
-    { x1: 312, z1: 12, x2: 288, z2: 185, width: 6.2 },
-  ];
-  const calcGeos: THREE.BufferGeometry[] = [];
-  calcadaoSegments.forEach((seg) => {
-    const cg = buildRoadStripGeo(seg);
-    if (cg) calcGeos.push(cg);
-  });
-  if (calcGeos.length > 0) {
-    const calcMesh = new THREE.Mesh(mergeGeometries(calcGeos, false), calcadaoMat);
-    calcMesh.receiveShadow = true;
-    joaoPessoaGroup.add(calcMesh);
-    calcGeos.forEach((g) => g.dispose());
-  }
-
-  // Shared Architectural & João Pessoa Landmark Materials
-  const stuccoWallMat = new THREE.MeshStandardMaterial({
-    map: textures.stuccoWall,
-    roughness: 0.84,
-  });
-  applyDistanceTextureLod(stuccoWallMat, [0.9, 0.87, 0.82]);
-  const colonialPastelMat = new THREE.MeshStandardMaterial({
-    map: textures.colonialPastel,
-    roughness: 0.86,
-  });
-  applyDistanceTextureLod(colonialPastelMat, [0.92, 0.84, 0.65]);
-  const modernGlassMat = new THREE.MeshStandardMaterial({
-    map: textures.modernGlass,
-    roughness: 0.24,
-    metalness: 0.45,
-  });
-  applyDistanceTextureLod(modernGlassMat, [0.22, 0.52, 0.72]);
-  const plazaStoneMat = new THREE.MeshStandardMaterial({
-    map: textures.plazaStone,
-    roughness: 0.86,
-  });
-  applyDistanceTextureLod(plazaStoneMat, [0.62, 0.64, 0.67]);
-  const whiteModernMat = new THREE.MeshStandardMaterial({
-    color: 0xf4f7fb,
-    roughness: 0.58,
-    metalness: 0.08,
-  });
-  const accentBlueMat = new THREE.MeshStandardMaterial({
-    color: 0x0284c7,
-    roughness: 0.46,
-    metalness: 0.14,
-  });
-  const trimGoldMat = new THREE.MeshStandardMaterial({
-    color: 0xeab308,
-    roughness: 0.36,
-    metalness: 0.5,
-  });
-  const brickWallMat = new THREE.MeshStandardMaterial({
-    map: textures.brickWall,
-    roughness: 0.87,
-  });
-  applyDistanceTextureLod(brickWallMat, [0.76, 0.45, 0.34]);
-  const woodWallMat = new THREE.MeshStandardMaterial({
-    map: textures.woodPlank,
-    roughness: 0.86,
-  });
-  applyDistanceTextureLod(woodWallMat, [0.64, 0.49, 0.34]);
-  const barnWoodMat = new THREE.MeshStandardMaterial({
-    map: textures.barnWood,
-    roughness: 0.86,
-  });
-  applyDistanceTextureLod(barnWoodMat, [0.62, 0.25, 0.2]);
-  const interiorFloorMat = new THREE.MeshStandardMaterial({
-    map: textures.interiorFloor,
-    roughness: 0.84,
-  });
-  applyDistanceTextureLod(interiorFloorMat, [0.76, 0.73, 0.67]);
-  const stairConcreteMat = new THREE.MeshStandardMaterial({
-    map: textures.stairConcrete,
-    roughness: 0.88,
-  });
-  applyDistanceTextureLod(stairConcreteMat, [0.68, 0.67, 0.65]);
-  const shedMetalMat = new THREE.MeshStandardMaterial({
-    map: textures.shedMetal,
-    roughness: 0.56,
-    metalness: 0.4,
-  });
-  applyDistanceTextureLod(shedMetalMat, [0.46, 0.49, 0.52]);
-  const roofMat = new THREE.MeshStandardMaterial({
-    map: textures.roofTile,
-    roughness: 0.78,
-  });
-  applyDistanceTextureLod(roofMat, [0.68, 0.32, 0.24]);
-  const trimMat = new THREE.MeshStandardMaterial({
-    color: 0x453e37,
-    roughness: 0.82,
-  });
-  const concreteMat = new THREE.MeshStandardMaterial({
-    map: textures.concrete,
-    color: 0xaab0b6,
-    roughness: 0.84,
-  });
-  applyDistanceTextureLod(concreteMat, [0.66, 0.68, 0.7]);
-  const steelMat = new THREE.MeshStandardMaterial({
-    color: 0x393f45,
-    roughness: 0.45,
-    metalness: 0.7,
-  });
-  const blueContainerMat = new THREE.MeshStandardMaterial({
-    map: textures.containerBlue,
-    roughness: 0.54,
-    metalness: 0.42,
-  });
-  applyDistanceTextureLod(blueContainerMat, [0.22, 0.42, 0.55]);
-  const rustContainerMat = new THREE.MeshStandardMaterial({
-    map: textures.containerRust,
-    roughness: 0.66,
-    metalness: 0.32,
-  });
-  applyDistanceTextureLod(rustContainerMat, [0.58, 0.32, 0.22]);
-
-  const buildingMats: BuildingMaterials = {
-    stuccoWall: stuccoWallMat,
-    brickWall: brickWallMat,
-    woodWall: woodWallMat,
-    barnWood: barnWoodMat,
-    concrete: concreteMat,
-    interiorFloor: interiorFloorMat,
-    stairConcrete: stairConcreteMat,
-    roofTile: roofMat,
-    trim: trimMat,
-  };
-
-  const jpMats: JpLandmarkMaterials = {
-    concrete: concreteMat,
-    calcadaoWave: calcadaoMat,
-    modernGlass: modernGlassMat,
-    colonialPastel: colonialPastelMat,
-    plazaStone: plazaStoneMat,
-    interiorFloor: interiorFloorMat,
-    stairConcrete: stairConcreteMat,
-    roofTile: roofMat,
-    woodPlank: woodWallMat,
-    whiteModern: whiteModernMat,
-    accentBlue: accentBlueMat,
-    trimGold: trimGoldMat,
-  };
-
-  // 5. Bridges over Rio Paraíba / Sanhauá + Wooden Reef Bridge to Ilha de Areia Vermelha
-  const ponteSanhauaZ = riverCenterZ(-215);
-  joaoPessoaGroup.add(
-    createBridge(-215, ponteSanhauaZ, 9.2, 50, 3.4, 0, concreteMat, steelMat, colliders, platforms, obstacleMeshes),
-  );
-  buildings.push({ x: -215, z: ponteSanhauaZ, w: 9.2, d: 50, rotY: 0, kind: 'bridge' });
-
-  const ponteJacareZ = riverCenterZ(-20);
-  joaoPessoaGroup.add(
-    createBridge(-20, ponteJacareZ, 10.0, 50, 3.6, 0, concreteMat, whiteModernMat, colliders, platforms, obstacleMeshes),
-  );
-  buildings.push({ x: -20, z: ponteJacareZ, w: 10.0, d: 50, rotY: 0, kind: 'bridge' });
-
-  const ponteCabedeloZ = riverCenterZ(195);
-  joaoPessoaGroup.add(
-    createBridge(195, ponteCabedeloZ, 9.6, 50, 3.4, 0, concreteMat, steelMat, colliders, platforms, obstacleMeshes),
-  );
-  buildings.push({ x: 195, z: ponteCabedeloZ, w: 9.6, d: 50, rotY: 0, kind: 'bridge' });
-
-  // Wooden Reef Walkway to Ilha de Areia Vermelha
-  joaoPessoaGroup.add(
-    createBridge(AREIA_BRIDGE.x, AREIA_BRIDGE.z, 8.2, 84, AREIA_BRIDGE.targetH, AREIA_BRIDGE_ROT, woodWallMat, steelMat, colliders, platforms, obstacleMeshes),
-  );
-  buildings.push({ x: AREIA_BRIDGE.x, z: AREIA_BRIDGE.z, w: 8.2, d: 84, rotY: AREIA_BRIDGE_ROT, kind: 'bridge' });
-
-  // 5b. ICONIC JOÃO PESSOA LANDMARKS!
-  const buildingNavZones: BuildingNavZone[] = [];
-  const prefabLootPoints: BuildingLootPoint[] = [];
-
-  // A. Letreiro "JOÃO [Sol] PESSOA" — Busto de Tamandaré / Tambaú
-  {
-    const lx = 324;
-    const lz = 16;
-    const ly = sampleGroundHeight(lx, lz);
-    const letreiro = createLetreiroJoaoPessoa(
-      lx,
-      ly,
-      lz,
-      -Math.PI / 2,
-      jpMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(letreiro);
-    cullableStructures.push({ obj: letreiro, x: lx, z: lz, radiusScale: 1.2 });
-    buildings.push({ x: lx, z: lz, w: 4, d: 20, rotY: 0, kind: 'letreiro' });
-  }
-
-  // B. Hotel Tambaú (Circular Beachfront Resort)
-  {
-    const hx = 334;
-    const hz = -54;
-    const hy = sampleGroundHeight(hx, hz);
-    const hotel = createHotelTambau(
-      hx,
-      hy,
-      hz,
-      jpMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(hotel.group);
-    cullableStructures.push({ obj: hotel.group, x: hx, z: hz, radiusScale: 1.4 });
-    buildings.push({ x: hx, z: hz, w: 42, d: 42, rotY: 0, kind: 'hotelTambau' });
-    buildingNavZones.push(...hotel.navZones);
-    prefabLootPoints.push(...hotel.lootPoints);
-  }
-
-  // C. Farol do Cabo Branco (Ponta do Seixas Cliff Lighthouse)
-  {
-    const fx = 282;
-    const fz = 326;
-    const fy = sampleGroundHeight(fx, fz);
-    const farol = createFarolCaboBranco(
-      fx,
-      fy,
-      fz,
-      jpMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(farol);
-    cullableStructures.push({ obj: farol, x: fx, z: fz, radiusScale: 1.35 });
-    buildings.push({ x: fx, z: fz, w: 14, d: 14, rotY: 0, kind: 'farol' });
-  }
-
-  // D. Estação Cabo Branco (Niemeyer Flying-Disc Pavilion + Ramp)
-  {
-    const ex = 202;
-    const ez = 292;
-    const ey = sampleGroundHeight(ex, ez);
-    const estacao = createEstacaoCaboBranco(
-      ex,
-      ey,
-      ez,
-      jpMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(estacao.group);
-    cullableStructures.push({ obj: estacao.group, x: ex, z: ez, radiusScale: 1.45 });
-    buildings.push({ x: ex, z: ez, w: 30, d: 30, rotY: 0, kind: 'estacao' });
-    buildingNavZones.push(...estacao.navZones);
-    prefabLootPoints.push(...estacao.lootPoints);
-  }
-
-  // E. Altiplano Cabo Branco High-Rise Skyscrapers (4 Modern Glass Towers!)
-  const skyscraperSpecs: Array<[number, number, number, number, number, number, number]> = [
-    [142, 24, 14.0, 12.0, 42.0, 0.0, 0xf8fafc], // Tour Geneve inspired flagship tower
-    [166, 56, 12.5, 11.5, 35.0, 0.25, 0x0ea5e9],
-    [118, 62, 12.0, 11.5, 32.0, -0.2, 0xe2e8f0],
-    [146, 88, 11.5, 11.0, 29.0, 1.57, 0x38bdf8],
-  ];
-  skyscraperSpecs.forEach(([sx, sz, sw, sd, sh, srot, accent]) => {
-    const sy = sampleGroundHeight(sx, sz);
-    const res = createAltiplanoSkyscraper(
-      sx,
-      sy,
-      sz,
-      sw,
-      sd,
-      sh,
-      srot,
-      accent,
-      jpMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(res.group);
-    cullableStructures.push({ obj: res.group, x: sx, z: sz, radiusScale: 1.55 });
-    buildings.push({ x: sx, z: sz, w: sw, d: sd, rotY: srot, kind: 'skyscraper' });
-    buildingNavZones.push(...res.navZones);
-    prefabLootPoints.push(...res.lootPoints);
-  });
-
-  // F. Igreja & Convento de São Francisco (Centro Histórico)
-  {
-    const ix = -302;
-    const iz = 158;
-    const iy = sampleGroundHeight(ix, iz);
-    const igreja = createIgrejaSaoFrancisco(
-      ix,
-      iy,
-      iz,
-      Math.PI / 2,
-      jpMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(igreja.group);
-    cullableStructures.push({ obj: igreja.group, x: ix, z: iz, radiusScale: 1.4 });
-    buildings.push({ x: ix, z: iz, w: 14, d: 20, rotY: Math.PI / 2, kind: 'igreja' });
-    buildingNavZones.push(...igreja.navZones);
-    prefabLootPoints.push(...igreja.lootPoints);
-  }
-
-  // G. Parque Solon de Lucena — A Lagoa (Central Lagoon + Fountain + Footbridges)
-  {
-    const lx = -175;
-    const lz = -15;
-    const ly = sampleGroundHeight(lx, lz);
-    const lagoa = createParqueLagoa(
-      lx,
-      ly,
-      lz,
-      jpMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(lagoa);
-    cullableStructures.push({ obj: lagoa, x: lx, z: lz, radiusScale: 1.8 });
-    buildings.push({ x: lx, z: lz, w: 94, d: 94, rotY: 0, kind: 'lagoa' });
-  }
-
-  // H. Feirinha de Tambaú, Quiosques da Orla & Piers da Praia do Jacaré
-  const quiosqueSpecs: Array<[number, number, number, number]> = [
-    [258, 12, 0.0, 0xdc2626], // Feirinha de Tambaú
-    [258, 26, 0.0, 0xf59e0b],
-    [244, 12, 0.0, 0x0284c7],
-    [244, 26, 0.0, 0x16a34a],
-    [292, 160, -1.57, 0x0ea5e9], // Cabo Branco Quiosque 1
-    [282, 212, -1.57, 0xf97316], // Cabo Branco Quiosque 2
-    [282, -125, -1.57, 0x22c55e], // Manaíra Quiosque
-    [232, -312, -1.57, 0xef4444], // Bessa Quiosque
-    [468, -264, 0.3, 0xeab308], // Areia Vermelha Tenda 1
-    [486, -252, -0.5, 0x0284c7], // Areia Vermelha Tenda 2
-    [-228, -196, 0.0, 0xd97706], // Praia do Jacaré Quiosque
-  ];
-  quiosqueSpecs.forEach(([qx, qz, qrot, qcol]) => {
-    const q = createCoastalQuiosque(
-      qx,
-      sampleGroundHeight(qx, qz),
-      qz,
-      qrot,
-      qcol,
-      jpMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(q);
-    cullableStructures.push({ obj: q, x: qx, z: qz, radiusScale: 0.8 });
-    buildings.push({ x: qx, z: qz, w: 7, d: 7, rotY: qrot, kind: 'quiosque' });
-  });
-
-  // Praia do Jacaré Wooden Sunset Piers over Rio Paraíba
-  [
-    [-242, -230, 0.12],
-    [-202, -228, -0.08],
-  ].forEach(([px, pz, prot]) => {
-    const py = 1.95;
-    const pier = createWoodenPier(
-      px,
-      py,
-      pz,
-      5.2,
-      28,
-      prot,
-      jpMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(pier);
-    cullableStructures.push({ obj: pier, x: px, z: pz, radiusScale: 1.1 });
-    buildings.push({ x: px, z: pz, w: 5.2, d: 28, rotY: prot, kind: 'pier' });
-  });
-
-  // 6. 26 Enterable João Pessoa Coastal & Colonial Houses
-  const houseSpecs: Array<[number, number, number, number, number, number, boolean]> = [
-    // Tambaú & Manaíra Beachfront Neighborhood
-    [270, -18, 8.8, 7.0, 3.5, 1.57, false],
-    [274, -84, 8.6, 6.8, 3.4, -1.57, false],
-    [232, -118, 8.6, 6.8, 3.4, 0.1, false],
-    [274, -162, 8.8, 7.0, 3.5, -1.57, false],
-    [234, -168, 8.4, 6.6, 3.4, 0.2, true],
-    // Cabo Branco & Ponta do Seixas
-    [244, 152, 8.8, 7.0, 3.4, 1.57, false],
-    [244, 218, 8.6, 6.8, 3.4, -1.57, false],
-    [242, 336, 8.4, 6.8, 3.4, 0.1, false],
-    // Bessa & Caribessa
-    [188, -342, 8.6, 6.8, 3.4, 0.0, false],
-    [232, -346, 8.4, 6.6, 3.4, -0.2, true],
-    [194, -296, 8.4, 6.6, 3.4, 3.1, false],
-    // Altiplano Residential Edge
-    [116, 18, 8.8, 7.0, 3.5, 0.0, false],
-    [168, 12, 8.6, 6.8, 3.4, -0.1, false],
-    // Centro Histórico & Lagoa (Pastel Colonial Style!)
-    [-256, 134, 8.8, 7.0, 3.6, 1.57, false],
-    [-258, 186, 8.8, 7.0, 3.6, 1.57, false],
-    [-332, 132, 8.6, 6.8, 3.5, 0.0, false],
-    [-332, 196, 8.6, 6.8, 3.5, 3.1, false],
-    [-112, -52, 8.6, 6.8, 3.4, 0.0, false],
-    [-242, -58, 8.4, 6.8, 3.4, 1.57, false],
-    [-242, 32, 8.4, 6.8, 3.4, -1.57, false],
-    // Praia do Jacaré & Porto Sanhauá & Aeroclube
-    [-250, -172, 8.4, 6.6, 3.4, 0.2, true],
-    [-198, -176, 8.2, 6.4, 3.3, -0.2, true],
-    [-182, 276, 8.6, 6.8, 3.4, 0.0, false],
-    [-130, 314, 8.4, 6.6, 3.4, 3.1, true],
-    [16, -348, 8.4, 6.6, 3.4, 0.1, false],
-    [-58, -348, 8.4, 6.6, 3.4, -0.1, true],
-  ];
-
-  houseSpecs.forEach(([hx, hz, hw, hd, hh, hrot, isWood]) => {
-    const isCentro = hx < -220 && hz > 80;
-    const houseRes = createEnterableHouse(
-      hx,
-      hz,
-      hw,
-      hd,
-      hh,
-      hrot,
-      sampleGroundHeight(hx, hz),
-      isWood ? woodWallMat : isCentro ? colonialPastelMat : stuccoWallMat,
-      buildingMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(houseRes.group);
-    cullableStructures.push({ obj: houseRes.group, x: hx, z: hz, radiusScale: 1.0 });
-    buildingNavZones.push(houseRes.navZone);
-    buildings.push({
-      x: hx,
-      z: hz,
-      w: hw,
-      d: hd,
-      rotY: hrot,
-      kind: isWood ? 'shed' : 'house',
-    });
-  });
-
-  // 6b. Multi-Story Buildings ("Primeiro Andar") across João Pessoa Neighborhoods
-  // 8 Casas L (2-Story Balcony Apartments)
-  const casaLSpecs: Array<[number, number, number]> = [
-    [272, 54, -1.57], // Tambaú South
-    [238, 192, -1.57], // Cabo Branco
-    [232, -142, 1.57], // Manaíra
-    [175, -315, 0.0], // Bessa
-    [98, 42, -1.57], // Altiplano West
-    [-175, -88, 0.0], // Lagoa North
-    [-286, 108, 0.0], // Centro Histórico North
-    [-125, 272, 1.57], // Porto Sanhauá East
-  ];
-  casaLSpecs.forEach(([bx, bz, brot]) => {
-    const res = createCasaL(
-      bx,
-      bz,
-      brot,
-      sampleGroundHeight(bx, bz),
-      buildingMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(res.group);
-    cullableStructures.push({ obj: res.group, x: bx, z: bz, radiusScale: 1.25 });
-    buildings.push({ x: bx, z: bz, w: 10.8, d: 10.6, rotY: brot, kind: 'casaL' });
-    buildingNavZones.push(res.navZone);
-    prefabLootPoints.push(...res.lootPoints);
-  });
-
-  // 7 Casas God (2-Story Tactical Strongholds)
-  const casaGodSpecs: Array<[number, number, number]> = [
-    [244, -22, 1.57], // Tambaú Inland
-    [280, 126, -1.57], // Tambaú <-> Cabo Branco Orla
-    [172, 24, 0.0], // Altiplano North-East
-    [-175, 58, 3.14], // Lagoa South
-    [-258, 212, 0.0], // Centro Histórico South
-    [242, -198, -1.57], // Manaíra North
-    [12, -402, 0.0], // Aeroclube North
-  ];
-  casaGodSpecs.forEach(([bx, bz, brot]) => {
-    const res = createCasaGod(
-      bx,
-      bz,
-      brot,
-      sampleGroundHeight(bx, bz),
-      buildingMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(res.group);
-    cullableStructures.push({ obj: res.group, x: bx, z: bz, radiusScale: 1.22 });
-    buildings.push({ x: bx, z: bz, w: 9.8, d: 9.8, rotY: brot, kind: 'casaGod' });
-    buildingNavZones.push(res.navZone);
-    prefabLootPoints.push(...res.lootPoints);
-  });
-
-  // 5 Celeiros / Rustic Atlantic Forest Barns & River Depot
-  const celeiroSpecs: Array<[number, number, number]> = [
-    [-8, 42, -0.6], // Mata do Buraquinho North
-    [32, 92, 1.1], // Mata do Buraquinho South-East
-    [-226, -148, 0.0], // Praia do Jacaré South
-    [-186, 326, 1.57], // Porto Sanhauá South
-    [144, 272, 0.3], // Falésia West Slope
-  ];
-  celeiroSpecs.forEach(([bx, bz, brot]) => {
-    const res = createCeleiro(
-      bx,
-      bz,
-      brot,
-      sampleGroundHeight(bx, bz),
-      buildingMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(res.group);
-    cullableStructures.push({ obj: res.group, x: bx, z: bz, radiusScale: 1.3 });
-    buildings.push({ x: bx, z: bz, w: 10.6, d: 14.0, rotY: brot, kind: 'celeiro' });
-    buildingNavZones.push(res.navZone);
-    prefabLootPoints.push(...res.lootPoints);
-  });
-
-  // 9 Sobrados (2-Story Urban & Colonial Houses)
-  const sobradoSpecs: Array<[number, number, number]> = [
-    [276, -42, -1.57], // Tambaú
-    [264, -108, -1.57], // Manaíra
-    [244, 242, -1.57], // Cabo Branco South
-    [226, -304, -1.57], // Bessa
-    [98, 86, 1.57], // Altiplano South-West
-    [-108, 12, 1.57], // Lagoa East Entrance (Epitácio Pessoa)
-    [-246, -12, -1.57], // Lagoa West
-    [-294, 212, 3.14], // Centro Histórico
-    [-156, 254, 0.0], // Porto Sanhauá North
-  ];
-  sobradoSpecs.forEach(([bx, bz, brot]) => {
-    const res = createSobradoHouse(
-      bx,
-      bz,
-      brot,
-      sampleGroundHeight(bx, bz),
-      buildingMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(res.group);
-    cullableStructures.push({ obj: res.group, x: bx, z: bz, radiusScale: 1.15 });
-    buildings.push({ x: bx, z: bz, w: 8.8, d: 7.8, rotY: brot, kind: 'sobrado' });
-    buildingNavZones.push(res.navZone);
-    prefabLootPoints.push(...res.lootPoints);
-  });
-
-  // 10 Guaritas (Coastal & Bridge Checkpoints)
-  const guaritaSpecs: Array<[number, number, number]> = [
-    [296, -14, 1.57], // Tambaú Boardwalk North
-    [282, 82, 1.57], // Tambaú <-> Cabo Branco
-    [258, 294, 0.4], // Mirante Farol Cabo Branco
-    [138, 118, 0.0], // Altiplano South
-    [206, -278, 3.14], // Ponte Cabedelo South Guard
-    [454, -274, 1.2], // Areia Vermelha Guard
-    [-20, riverCenterZ(-20) - 34, 0.0], // Ponte Jacaré North Guard
-    [-102, -38, 0.8], // Lagoa NE
-    [-264, 158, -1.57], // Centro Histórico Plaza
-    [-42, -334, 0.0], // Aeroclube South Gate
-  ];
-  guaritaSpecs.forEach(([bx, bz, brot]) => {
-    const res = createGuarita(
-      bx,
-      bz,
-      brot,
-      sampleGroundHeight(bx, bz),
-      buildingMats,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(res.group);
-    cullableStructures.push({ obj: res.group, x: bx, z: bz, radiusScale: 0.78 });
-    buildings.push({ x: bx, z: bz, w: 3.4, d: 3.4, rotY: brot, kind: 'guarita' });
-    buildingNavZones.push(res.navZone);
-    prefabLootPoints.push(...res.lootPoints);
-  });
-
-  // 7. 5 Industrial Hangars & Porto Warehouses (Aeroclube + Porto Sanhauá)
-  const shedSpecs: Array<[number, number, number, number, number, number]> = [
-    [-46, -372, 11.5, 16.0, 4.6, 0.0], // Aeroclube Main Hangar
-    [-46, -396, 10.5, 14.0, 4.4, 0.0], // Aeroclube Hangar 2
-    [-156, 296, 13.0, 18.0, 5.0, 0.0], // Porto Sanhauá Warehouse 1
-    [-178, 298, 10.4, 14.5, 4.5, 0.0], // Porto Sanhauá Warehouse 2
-    [6, 74, 9.6, 12.5, 4.2, 0.8], // Mata Buraquinho Research Shed
-  ];
-  shedSpecs.forEach(([sx, sz, sw, sd, sh, srot]) => {
-    const shedObj = createIndustrialShed(
-      sx,
-      sz,
-      sw,
-      sd,
-      sh,
-      srot,
-      shedMetalMat,
-      roofMat,
-      concreteMat,
-      steelMat,
-      colliders,
-      platforms,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(shedObj);
-    cullableStructures.push({ obj: shedObj, x: sx, z: sz, radiusScale: 1.08 });
-    buildings.push({ x: sx, z: sz, w: sw, d: sd, rotY: srot, kind: 'shed' });
-    const cos = Math.cos(srot);
-    const sin = Math.sin(srot);
-    const toW = (lx: number, lz: number) => ({
-      x: sx + lx * cos + lz * sin,
-      z: sz - lx * sin + lz * cos,
-    });
-    const fIn = toW(0, sd * 0.5 - 1.6);
-    const fOut = toW(0, sd * 0.5 + 2.0);
-    const bIn = toW(0, -sd * 0.5 + 1.6);
-    const bOut = toW(0, -sd * 0.5 - 2.0);
-    buildingNavZones.push({
-      cx: sx,
-      cz: sz,
-      halfW: sw * 0.5,
-      halfD: sd * 0.5,
-      rotY: srot,
-      baseY: sampleGroundHeight(sx, sz),
-      doors: [
-        { inX: fIn.x, inZ: fIn.z, outX: fOut.x, outZ: fOut.z },
-        { inX: bIn.x, inZ: bIn.z, outX: bOut.x, outZ: bOut.z },
-      ],
-    });
-  });
-
-  // Aeroclube Airstrip Runway at WAIT_SPAWN (-20, -372)
-  const runwayY = sampleGroundHeight(-20, -372);
-  const runway = new THREE.Mesh(new THREE.BoxGeometry(12, 0.16, 60), concreteMat);
-  runway.position.set(-20, runwayY + 0.04, -376);
-  runway.receiveShadow = true;
-  joaoPessoaGroup.add(runway);
-  platforms.push({
-    cx: -20,
-    cz: -376,
-    halfW: 6,
-    halfD: 30,
-    rotY: 0,
-    topY: runwayY + 0.12,
-    minY: runwayY - 1,
-  });
-
-  // 8. Shipping Containers (Porto Sanhauá, Aeroclube, Areia Vermelha)
-  const containerSpecs: Array<[number, number, number, boolean, number]> = [
-    [-142, 286, 0.15, true, 0],
-    [-142, 306, 1.57, false, 0],
-    [-142, 286, 0.15, false, 2.6],
-    [-4, -364, 0.0, true, 0],
-    [-4, -384, 0.1, false, 0],
-    [474, -282, 0.4, true, 0],
-    [486, -276, 1.57, false, 0],
-  ];
-  containerSpecs.forEach(([cx, cz, crot, isBlue, yOff]) => {
-    const cObj = createContainer(
-      cx,
-      cz,
-      crot,
-      isBlue ? blueContainerMat : rustContainerMat,
-      colliders,
-      platforms,
-      obstacleMeshes,
-      yOff,
-    );
-    joaoPessoaGroup.add(cObj);
-    cullableStructures.push({ obj: cObj, x: cx, z: cz, radiusScale: 0.85 });
-    buildings.push({ x: cx, z: cz, w: 2.6, d: 6.2, rotY: crot, kind: 'container' });
-  });
-
-  // 9. 4 Watchtowers (Mata do Buraquinho Eco-Tower, Aeroclube ATC, Porto, Jacaré)
-  const wtCoords: Array<[number, number]> = [
-    [14, 62], // Mata do Buraquinho Mirante
-    [12, -366], // Aeroclube Controle
-    [-162, 318], // Porto Sanhauá
-    [-216, -206], // Praia do Jacaré
-  ];
-  wtCoords.forEach(([wx, wz]) => {
-    const wt = createWatchTowerLOD(wx, wz, concreteMat, steelMat, colliders, obstacleMeshes);
-    joaoPessoaGroup.add(wt);
-    cullableStructures.push({ obj: wt, x: wx, z: wz, radiusScale: 1.25 });
-    buildings.push({ x: wx, z: wz, w: 7.2, d: 7.2, rotY: 0, kind: 'tower' });
-  });
-
-  // 10. 8 Vending Machines (Lojinhas de João Pessoa)
-  const vendingSpecs: Array<{ id: string; x: number; z: number; rotY: number; label: string }> = [
-    { id: 'vm_tambau', x: 288, z: 24, rotY: -1.57, label: 'Lojinha Tambaú' },
-    { id: 'vm_cabobranco', x: 272, z: 186, rotY: -1.4, label: 'Lojinha Cabo Branco' },
-    { id: 'vm_altiplano', x: 152, z: 16, rotY: 0.2, label: 'Lojinha Altiplano' },
-    { id: 'vm_manaira', x: 266, z: -135, rotY: -1.57, label: 'Lojinha Manaíra' },
-    { id: 'vm_lagoa', x: -116, z: -8, rotY: 1.57, label: 'Lojinha da Lagoa' },
-    { id: 'vm_centro', x: -278, z: 154, rotY: 0.9, label: 'Lojinha Centro Histórico' },
-    { id: 'vm_porto', x: -146, z: 294, rotY: -0.6, label: 'Lojinha Porto Sanhauá' },
-    { id: 'vm_bessa', x: 208, z: -322, rotY: 0.4, label: 'Lojinha Bessa' },
-  ];
-  const jpVendingMachines: VendingMachineProp[] = vendingSpecs.map((vs) => {
-    const vm = createVendingMachineProp(
-      vs.id,
-      vs.x,
-      vs.z,
-      vs.rotY,
-      vs.label,
-      colliders,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(vm.group);
-    cullableStructures.push({ obj: vm.group, x: vs.x, z: vs.z, radiusScale: 0.7 });
-    return vm.data;
-  });
-
-  // 11. Concrete Cover Barriers, Supply Crates, Explosive Red Barrels & Launch Pads
-  const barrierCoords: Array<[number, number, number]> = [
-    [306, 8, 1.57],
-    [306, 26, 1.57],
-    [142, 36, 0.3],
-    [252, 184, 0.2],
-    [244, 308, -0.3],
-    [464, -264, 0.5],
-    [-118, -22, 0.2],
-    [-280, 168, 0.9],
-    [-150, 280, 0.0],
-    [-20, riverCenterZ(-20) + 12, 0.1],
-    [195, riverCenterZ(195) - 12, -0.1],
-    [-10, -356, 0.2],
-  ];
-  const barrierGeo = new THREE.BoxGeometry(2.6, 1.15, 0.55);
-  const barrierInst = new THREE.InstancedMesh(barrierGeo, concreteMat, barrierCoords.length);
-  barrierInst.castShadow = false;
-  barrierInst.receiveShadow = true;
-  barrierCoords.forEach(([bx, bz, rot], idx) => {
-    const by = sampleGroundHeight(bx, bz);
-    dummy.position.set(bx, by + 0.57, bz);
-    dummy.rotation.set(0, rot, 0);
-    dummy.scale.set(1, 1, 1);
-    dummy.updateMatrix();
-    barrierInst.setMatrixAt(idx, dummy.matrix);
-    colliders.push({
-      cx: bx,
-      cz: bz,
-      halfW: 1.3,
-      halfD: 0.28,
-      rotY: rot,
-      minY: by,
-      maxY: by + 1.2,
-      tag: 'barrier',
-    });
-  });
-  barrierInst.computeBoundingSphere();
-  joaoPessoaGroup.add(barrierInst);
-  obstacleMeshes.push(barrierInst);
-
-  const crateCoords: Array<[number, number, number]> = [
-    [-16, -364, 0.2],
-    [290, -10, 0.1],
-    [154, 44, 0.5],
-    [270, 316, 0.4],
-    [474, -256, -0.4],
-    [-284, 146, 0.4],
-    [-164, 286, 0.2],
-    [14, 52, -0.3],
-  ];
-  const crateGeo = new THREE.BoxGeometry(1.4, 1.4, 1.4);
-  const crateInst = new THREE.InstancedMesh(crateGeo, woodWallMat, crateCoords.length);
-  crateInst.castShadow = false;
-  crateInst.receiveShadow = true;
-  crateCoords.forEach(([cx, cz, rot], idx) => {
-    const cy = sampleGroundHeight(cx, cz);
-    dummy.position.set(cx, cy + 0.7, cz);
-    dummy.rotation.set(0, rot, 0);
-    dummy.scale.set(1, 1, 1);
-    dummy.updateMatrix();
-    crateInst.setMatrixAt(idx, dummy.matrix);
-    colliders.push({
-      cx,
-      cz,
-      halfW: 0.72,
-      halfD: 0.72,
-      rotY: rot,
-      minY: cy,
-      maxY: cy + 1.45,
-      tag: 'crate',
-    });
-  });
-  crateInst.computeBoundingSphere();
-  joaoPessoaGroup.add(crateInst);
-  obstacleMeshes.push(crateInst);
-
-  const barrelCoords: Array<[number, number]> = [
-    [292, 4],
-    [304, -36],
-    [134, 38],
-    [262, 198],
-    [266, 314],
-    [470, -268],
-    [-124, -18],
-    [-272, 162],
-    [-152, 288],
-    [252, -142],
-    [206, -328],
-    [-222, -184],
-    [-18, -362],
-  ];
   const barrelGeo = new THREE.CylinderGeometry(0.45, 0.45, 1.25, 8);
   const barrelMat = new THREE.MeshStandardMaterial({
     color: 0xdc2626,
@@ -3252,184 +1676,10 @@ export function createIslandWorld(
     roughness: 0.45,
     metalness: 0.42,
   });
-  const barrelInst = new THREE.InstancedMesh(barrelGeo, barrelMat, barrelCoords.length);
-  barrelInst.castShadow = false;
-  barrelInst.receiveShadow = true;
-  barrelInst.userData.isExplosiveBarrelInst = true;
-
-  const jpExplosiveBarrels: ExplosiveBarrel[] = [];
-  const barrelColliders: WorldObbCollider[] = [];
-  barrelCoords.forEach(([bx, bz], idx) => {
-    const by = sampleGroundHeight(bx, bz);
-    dummy.position.set(bx, by + 0.625, bz);
-    dummy.rotation.set(0, idx * 0.5, 0);
-    dummy.scale.set(1, 1, 1);
-    dummy.updateMatrix();
-    barrelInst.setMatrixAt(idx, dummy.matrix);
-    jpExplosiveBarrels.push({
-      id: `barrel_${idx}`,
-      x: bx,
-      y: by + 0.625,
-      z: bz,
-      exploded: false,
-      instanceIdx: idx,
-    });
-    const col: WorldObbCollider = {
-      cx: bx,
-      cz: bz,
-      halfW: 0.48,
-      halfD: 0.48,
-      rotY: 0,
-      minY: by,
-      maxY: by + 1.28,
-      tag: 'barrel',
-    };
-    colliders.push(col);
-    barrelColliders.push(col);
-  });
-  barrelInst.computeBoundingSphere();
-  joaoPessoaGroup.add(barrelInst);
-  obstacleMeshes.push(barrelInst);
-
-  // 6 Tactical Launch Pads ("Lançadores" across João Pessoa!)
-  const launchPadSpecs: Array<[number, number, number, number, string]> = [
-    [290, 2, 142, 45, 'LANÇADOR -> ALTIPLANO'],
-    [154, 62, 265, 185, 'LANÇADOR -> CABO BRANCO'],
-    [262, 298, 10, 58, 'LANÇADOR -> MATA BURAQUINHO'],
-    [-115, -24, 142, 45, 'LANÇADOR -> ALTIPLANO'],
-    [452, -264, 255, -135, 'LANÇADOR -> MANAÍRA'],
-    [-10, -352, -175, -15, 'LANÇADOR -> A LAGOA'],
-  ];
-  const jpLaunchPads: LaunchPadProp[] = [];
   const padBaseGeo = new THREE.CylinderGeometry(1.15, 1.35, 0.25, 14);
   const padPlateGeo = new THREE.BoxGeometry(1.3, 0.14, 1.6);
   const padBaseMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5, metalness: 0.6 });
   const padGlowMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
-  launchPadSpecs.forEach(([lx, lz, tx, tz, label]) => {
-    const ly = sampleGroundHeight(lx, lz);
-    const dx = tx - lx;
-    const dz = tz - lz;
-    const horiz = Math.hypot(dx, dz) || 1;
-    const yaw = Math.atan2(dx, dz);
-    const padG = new THREE.Group();
-    padG.position.set(lx, ly + 0.12, lz);
-    padG.rotation.y = yaw;
-    const base = new THREE.Mesh(padBaseGeo, padBaseMat);
-    const plate = new THREE.Mesh(padPlateGeo, padGlowMat);
-    plate.position.set(0, 0.26, 0.15);
-    plate.rotation.x = -0.48;
-    padG.add(base, plate);
-    joaoPessoaGroup.add(padG);
-    cullableStructures.push({ obj: padG, x: lx, z: lz, radiusScale: 0.7 });
-    jpLaunchPads.push({
-      x: lx,
-      y: ly,
-      z: lz,
-      dirX: dx / horiz,
-      dirY: 0.72,
-      dirZ: dz / horiz,
-      label,
-    });
-  });
-
-  // 12. Roadside Cover & Authentic João Pessoa Instanced Vegetation + Beach Umbrellas!
-  const distToRoadSq = (px: number, pz: number): number => {
-    let best = 1e9;
-    for (let i = 0; i < roads.length; i++) {
-      const r = roads[i];
-      const dx = r.x2 - r.x1;
-      const dz = r.z2 - r.z1;
-      const lenSq = dx * dx + dz * dz;
-      if (lenSq < 1) continue;
-      const t = THREE.MathUtils.clamp(((px - r.x1) * dx + (pz - r.z1) * dz) / lenSq, 0, 1);
-      const qx = r.x1 + dx * t;
-      const qz = r.z1 + dz * t;
-      const dSq = (px - qx) * (px - qx) + (pz - qz) * (pz - qz);
-      if (dSq < best) best = dSq;
-    }
-    return best;
-  };
-
-  const isOnRoadCheck = (x: number, z: number) => distToRoadSq(x, z) < 100;
-  const isInsideBuildingFootprint = (x: number, z: number) => {
-    for (let i = 0; i < buildings.length; i++) {
-      const b = buildings[i];
-      if (b.kind === 'lagoa') continue;
-      const r = Math.max(b.w, b.d) * 0.56 + 2.4;
-      if (Math.abs(x - b.x) < r && Math.abs(z - b.z) < r) return true;
-    }
-    return false;
-  };
-
-  // Roadside Concrete Muretas (1 draw call)
-  const muretaList: Array<[number, number, number, number]> = [];
-  for (let i = 0; i < roads.length; i++) {
-    const r = roads[i];
-    const dx = r.x2 - r.x1;
-    const dz = r.z2 - r.z1;
-    const len = Math.hypot(dx, dz);
-    if (len < 36) continue;
-    const ang = Math.atan2(dx, dz);
-    const nx = -dz / len;
-    const nz = dx / len;
-    const countOnRoad = Math.min(2, Math.floor(len / 85));
-    for (let k = 1; k <= countOnRoad; k++) {
-      const t = k / (countOnRoad + 1);
-      const side = (i + k) % 2 === 0 ? 1 : -1;
-      const offset = r.width * 0.5 + 4.8;
-      const mx = r.x1 + dx * t + nx * side * offset;
-      const mz = r.z1 + dz * t + nz * side * offset;
-      const my = sampleGroundHeight(mx, mz);
-      if (my < 1.0 || Math.abs(mz - riverCenterZ(mx)) < 24 || isInsideBuildingFootprint(mx, mz)) continue;
-      muretaList.push([mx, my, mz, ang + Math.PI * 0.5]);
-    }
-  }
-  if (muretaList.length > 0) {
-    const muretaGeo = new THREE.BoxGeometry(3.0, 1.15, 0.36);
-    const muretaInst = new THREE.InstancedMesh(muretaGeo, concreteMat, muretaList.length);
-    muretaInst.castShadow = false;
-    muretaInst.receiveShadow = true;
-    muretaList.forEach(([mx, my, mz, rot], idx) => {
-      dummy.position.set(mx, my + 0.56, mz);
-      dummy.rotation.set(0, rot, 0);
-      dummy.scale.set(1, 1, 1);
-      dummy.updateMatrix();
-      muretaInst.setMatrixAt(idx, dummy.matrix);
-      colliders.push({
-        cx: mx,
-        cz: mz,
-        halfW: 1.5,
-        halfD: 0.2,
-        rotY: rot,
-        minY: my - 0.3,
-        maxY: my + 1.2,
-        tag: 'mureta',
-      });
-    });
-    muretaInst.computeBoundingSphere();
-    joaoPessoaGroup.add(muretaInst);
-    obstacleMeshes.push(muretaInst);
-  }
-
-  // Batched InstancedMesh Coqueiros, Mata Atlântica, Ipês Amarelos, Arbustos, Guarda-sóis & Postes!
-  const foliageCtrl = createInstancedJoaoPessoaFoliage(joaoPessoaGroup, {
-    sampleGroundHeight,
-    isOnRoad: isOnRoadCheck,
-    isInsideBuildingFootprint,
-    riverCenterZ,
-    textures,
-    colliders,
-    obstacleMeshes,
-  });
-
-  // Capture staticColliderCount BEFORE dynamic vehicles & runtime gloo walls!
-  const jpStaticColliders = [...colliders];
-  const jpPlatforms = [...platforms];
-  const jpBuildingNavZones = [...buildingNavZones];
-  const jpObstacleMeshes = [...obstacleMeshes];
-  const jpBuildings = [...buildings];
-  const jpRoads = [...roads];
-  const jpPois = [...POIS];
 
   let activeBrMap: BrMapId = 'bermuda';
   const bermudaCollisionGrid = new MeshCollisionGrid(8.0);
@@ -3464,58 +1714,11 @@ export function createIslandWorld(
   const bermudaVehicles: VehicleEntity[] = [];
 
   const groundHeightAt = (x: number, z: number): number => {
-    if (activeBrMap === 'bermuda' && bermudaAttached) {
+    if (bermudaAttached) {
       return bermudaCollisionGrid.sampleTerrainHeight(x, z, BERMUDA_GLB_WATER_Y);
     }
-    return sampleGroundHeight(x, z);
+    return BERMUDA_GLB_WATER_Y + 0.35;
   };
-
-  // Build 2D Spatial Hash Grid (32m x 32m cells covering -1024..+1024) for fast O(1) collision & platform queries
-  const GRID_HALF_SPAN = 1024;
-  const GRID_CELL_SIZE = 32;
-  const GRID_DIM = 64;
-  const colliderBuckets: number[][] = Array.from({ length: GRID_DIM * GRID_DIM }, () => []);
-  const platformBuckets: number[][] = Array.from({ length: GRID_DIM * GRID_DIM }, () => []);
-  const colStamp = new Uint32Array(Math.max(1, jpStaticColliders.length));
-  const platStamp = new Uint32Array(Math.max(1, jpPlatforms.length));
-  let colQuerySeq = 1;
-  let platQuerySeq = 1;
-
-  for (let i = 0; i < jpStaticColliders.length; i++) {
-    const c = jpStaticColliders[i];
-    const cos = Math.abs(Math.cos(c.rotY));
-    const sin = Math.abs(Math.sin(c.rotY));
-    const ex = cos * c.halfW + sin * c.halfD;
-    const ez = sin * c.halfW + cos * c.halfD;
-    const minGx = THREE.MathUtils.clamp(Math.floor((c.cx - ex + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const maxGx = THREE.MathUtils.clamp(Math.floor((c.cx + ex + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const minGz = THREE.MathUtils.clamp(Math.floor((c.cz - ez + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const maxGz = THREE.MathUtils.clamp(Math.floor((c.cz + ez + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    for (let gz = minGz; gz <= maxGz; gz++) {
-      const row = gz * GRID_DIM;
-      for (let gx = minGx; gx <= maxGx; gx++) {
-        colliderBuckets[row + gx].push(i);
-      }
-    }
-  }
-
-  for (let i = 0; i < jpPlatforms.length; i++) {
-    const p = jpPlatforms[i];
-    const cos = Math.abs(Math.cos(p.rotY));
-    const sin = Math.abs(Math.sin(p.rotY));
-    const ex = cos * p.halfW + sin * p.halfD + 0.5;
-    const ez = sin * p.halfW + cos * p.halfD + 0.5;
-    const minGx = THREE.MathUtils.clamp(Math.floor((p.cx - ex + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const maxGx = THREE.MathUtils.clamp(Math.floor((p.cx + ex + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const minGz = THREE.MathUtils.clamp(Math.floor((p.cz - ez + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const maxGz = THREE.MathUtils.clamp(Math.floor((p.cz + ez + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    for (let gz = minGz; gz <= maxGz; gz++) {
-      const row = gz * GRID_DIM;
-      for (let gx = minGx; gx <= maxGx; gx++) {
-        platformBuckets[row + gx].push(i);
-      }
-    }
-  }
 
   const queryStaticCollidersNear = (
     x: number,
@@ -3524,90 +1727,19 @@ export function createIslandWorld(
     out: WorldObbCollider[],
   ): void => {
     out.length = 0;
-    if (activeBrMap === 'bermuda') {
-      const pad = radius + 1.5;
-      for (let i = 0; i < bermudaStaticColliders.length; i++) {
-        const c = bermudaStaticColliders[i];
-        if (Math.abs(c.cx - x) <= pad && Math.abs(c.cz - z) <= pad) {
-          out.push(c);
-        }
-      }
-      return;
-    }
-    if (colQuerySeq >= 0xfffffffe) {
-      colStamp.fill(0);
-      colQuerySeq = 1;
-    }
-    const seq = ++colQuerySeq;
-    const minGx = THREE.MathUtils.clamp(Math.floor((x - radius + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const maxGx = THREE.MathUtils.clamp(Math.floor((x + radius + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const minGz = THREE.MathUtils.clamp(Math.floor((z - radius + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const maxGz = THREE.MathUtils.clamp(Math.floor((z + radius + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    for (let gz = minGz; gz <= maxGz; gz++) {
-      const row = gz * GRID_DIM;
-      for (let gx = minGx; gx <= maxGx; gx++) {
-        const bucket = colliderBuckets[row + gx];
-        for (let b = 0; b < bucket.length; b++) {
-          const idx = bucket[b];
-          if (colStamp[idx] !== seq) {
-            colStamp[idx] = seq;
-            out.push(jpStaticColliders[idx]);
-          }
-        }
+    const pad = radius + 1.5;
+    for (let i = 0; i < bermudaStaticColliders.length; i++) {
+      const c = bermudaStaticColliders[i];
+      if (Math.abs(c.cx - x) <= pad && Math.abs(c.cz - z) <= pad) {
+        out.push(c);
       }
     }
   };
 
-  const navBuckets: number[][] = Array.from({ length: GRID_DIM * GRID_DIM }, () => []);
-  for (let i = 0; i < jpBuildingNavZones.length; i++) {
-    const nz = jpBuildingNavZones[i];
-    const cos = Math.abs(Math.cos(nz.rotY));
-    const sin = Math.abs(Math.sin(nz.rotY));
-    const ex = cos * nz.halfW + sin * nz.halfD + 0.8;
-    const ez = sin * nz.halfW + cos * nz.halfD + 0.8;
-    const minGx = THREE.MathUtils.clamp(Math.floor((nz.cx - ex + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const maxGx = THREE.MathUtils.clamp(Math.floor((nz.cx + ex + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const minGz = THREE.MathUtils.clamp(Math.floor((nz.cz - ez + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const maxGz = THREE.MathUtils.clamp(Math.floor((nz.cz + ez + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    for (let gz = minGz; gz <= maxGz; gz++) {
-      const row = gz * GRID_DIM;
-      for (let gx = minGx; gx <= maxGx; gx++) {
-        navBuckets[row + gx].push(i);
-      }
-    }
-  }
-
   const findBuildingNavZoneAt = (x: number, z: number): BuildingNavZone | null => {
-    if (activeBrMap === 'bermuda') {
-      for (let i = 0; i < bermudaBuildingNavZones.length; i++) {
-        const nz = bermudaBuildingNavZones[i];
-        if (Math.abs(x - nz.cx) <= nz.halfW + 0.5 && Math.abs(z - nz.cz) <= nz.halfD + 0.5) {
-          return nz;
-        }
-      }
-      return null;
-    }
-    const gx = THREE.MathUtils.clamp(Math.floor((x + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const gz = THREE.MathUtils.clamp(Math.floor((z + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const bucket = navBuckets[gz * GRID_DIM + gx];
-    for (let b = 0; b < bucket.length; b++) {
-      const nz = jpBuildingNavZones[bucket[b]];
-      const dx = x - nz.cx;
-      const dz = z - nz.cz;
-      const maxE = nz.halfW + nz.halfD + 0.5;
-      if (Math.abs(dx) > maxE || Math.abs(dz) > maxE) continue;
-      const cos = Math.cos(nz.rotY);
-      const sin = Math.sin(nz.rotY);
-      const lx = dx * cos - dz * sin;
-      const lz = dx * sin + dz * cos;
-      if (nz.extraBoxes && nz.extraBoxes.length > 0) {
-        for (let k = 0; k < nz.extraBoxes.length; k++) {
-          const box = nz.extraBoxes[k];
-          if (Math.abs(lx - box.lx) <= box.halfW + 0.28 && Math.abs(lz - box.lz) <= box.halfD + 0.28) {
-            return nz;
-          }
-        }
-      } else if (Math.abs(lx) <= nz.halfW + 0.28 && Math.abs(lz) <= nz.halfD + 0.28) {
+    for (let i = 0; i < bermudaBuildingNavZones.length; i++) {
+      const nz = bermudaBuildingNavZones[i];
+      if (Math.abs(x - nz.cx) <= nz.halfW + 0.5 && Math.abs(z - nz.cz) <= nz.halfD + 0.5) {
         return nz;
       }
     }
@@ -3615,82 +1747,35 @@ export function createIslandWorld(
   };
 
   const queryStaticPlatformsNear = (
-    x: number,
-    z: number,
+    _x: number,
+    _z: number,
     out: WalkablePlatform[],
   ): void => {
     out.length = 0;
-    if (activeBrMap === 'bermuda') return;
-    if (platQuerySeq >= 0xfffffffe) {
-      platStamp.fill(0);
-      platQuerySeq = 1;
-    }
-    const seq = ++platQuerySeq;
-    const gx = THREE.MathUtils.clamp(Math.floor((x + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const gz = THREE.MathUtils.clamp(Math.floor((z + GRID_HALF_SPAN) / GRID_CELL_SIZE), 0, GRID_DIM - 1);
-    const bucket = platformBuckets[gz * GRID_DIM + gx];
-    for (let b = 0; b < bucket.length; b++) {
-      const idx = bucket[b];
-      if (platStamp[idx] !== seq) {
-        platStamp[idx] = seq;
-        out.push(jpPlatforms[idx]);
-      }
-    }
   };
 
-  // Spawn 8 Drivable Vehicles across João Pessoa avenues & beaches
-  const vehicleSpecs: Array<{ id: string; kind: VehicleKind; x: number; z: number; rotY: number }> = [
-    { id: 'veh_0', kind: 'sport', x: 298, z: 32, rotY: 0.0 }, // Av. Tambaú
-    { id: 'veh_1', kind: 'jeep', x: 150, z: 12, rotY: -1.57 }, // Epitácio Pessoa / Altiplano
-    { id: 'veh_2', kind: 'sport', x: -112, z: -12, rotY: 1.57 }, // Lagoa East
-    { id: 'veh_3', kind: 'jeep', x: 270, z: 190, rotY: -0.2 }, // Cabo Branco
-    { id: 'veh_4', kind: 'jeep', x: 266, z: -135, rotY: 0.1 }, // Manaíra
-    { id: 'veh_5', kind: 'sport', x: 214, z: -320, rotY: -0.4 }, // Bessa
-    { id: 'veh_6', kind: 'jeep', x: -272, z: 162, rotY: 0.8 }, // Centro Histórico
-    { id: 'veh_7', kind: 'sport', x: -14, z: -354, rotY: 0.2 }, // Aeroclube
-  ];
-  const jpVehicles: VehicleEntity[] = vehicleSpecs.map((spec) => {
-    const v = createDrivableVehicle(
-      spec.id,
-      spec.kind,
-      spec.x,
-      spec.z,
-      spec.rotY,
-      colliders,
-      obstacleMeshes,
-    );
-    joaoPessoaGroup.add(v.group);
-    return v;
-  });
   const vehicles: VehicleEntity[] = [];
 
   // 13. 50 Real Parachuting, Looting & Classic Bot AI (51 total participants with player)
   const BOT_NICKS = [
     'LuanPro_17', 'xX_Braga_Xx', 'Gabriel_07', 'YuriRush', 'CAPA_MESTRE',
-    'Pedro_PB', 'BielCapa', 'Kauan_JP', 'Matheus_PB', 'Davi_Gelo',
+    'Pedro_BR', 'BielCapa', 'Kauan_FF', 'Matheus_X1', 'Davi_Gelo',
     'ViniTop1', 'LucasSniper', 'Arthur_X1', 'Marcos_99', 'HenriqueBR',
     'Rafael2017', 'Thiago_Pro', 'Caua_Rush', 'Enzo_Capa', 'FelipeZika',
-    'Gustavo_JP', 'BrunoSertao', 'Diego_17', 'Natan_FF', 'Igor_Tambaú',
-    'Samu_Sniper', 'Ruan_Mestre', 'Caio_Lenda', 'JoaoVitorPB', 'Léo_Jampa',
-    'Erick_Bermuda', 'Murilo_BR', 'Vitor_Bessa', 'Renan_18', 'DaniloRush',
-    'Otavio_FF', 'NicolasCapa', 'Heitor_07', 'Eduardo_PB', 'Kaique_X1',
-    'Bernardo_FF', 'Leandro2018', 'Wesley_Sertao', 'Fabricio_JP', 'AlexandreBR',
-    'Emanuel_Top1', 'Samuel_M4', 'Guilherme_17', 'RodrigoCapa', 'Victor_Manaíra',
+    'Gustavo_BR', 'BrunoSertao', 'Diego_17', 'Natan_FF', 'Igor_Clock',
+    'Samu_Sniper', 'Ruan_Mestre', 'Caio_Lenda', 'Vitor_Peak', 'Léo_Rush',
+    'Erick_Bermuda', 'Murilo_BR', 'Breno_FF', 'Renan_18', 'DaniloRush',
+    'Otavio_FF', 'NicolasCapa', 'Heitor_07', 'Eduardo_BR', 'Kaique_X1',
+    'Bernardo_FF', 'Leandro2018', 'Wesley_Sertao', 'Fabricio_X1', 'AlexandreBR',
+    'Emanuel_Top1', 'Samuel_M4', 'Guilherme_17', 'RodrigoCapa', 'Victor_Peak',
   ];
 
-  const landPois = POIS.filter(
-    (p) => !p.name.startsWith('PONTE'),
-  );
   const targets: TargetDummy[] = BOT_NICKS.map((nick, idx) => {
-    const poi = landPois[idx % landPois.length];
+    const poi = bermudaPois[idx % bermudaPois.length];
     const ang = (idx * 2.399) % (Math.PI * 2);
     const dist = 12 + ((idx * 11) % 44);
-    let lx = poi.x + Math.cos(ang) * dist;
-    let lz = poi.z + Math.sin(ang) * dist;
-    if (sampleGroundHeight(lx, lz) < 0.75 || Math.hypot(lx + 175, lz + 15) < 48) {
-      lx = poi.x + (poi.name === 'A LAGOA' ? 56 : 0);
-      lz = poi.z;
-    }
+    const lx = poi.x + Math.cos(ang) * dist;
+    const lz = poi.z + Math.sin(ang) * dist;
     const waitX = WAIT_SPAWN.x - 14.5 + ((idx * 3.7) % 25.0);
     const waitZ = WAIT_SPAWN.z - 7.4 + ((idx * 2.3) % 7.0);
     const bot = createBotEntity(
@@ -3712,24 +1797,7 @@ export function createIslandWorld(
   });
   targets.forEach((t) => scene.add(t.group));
 
-  // 14. Comprehensive World Loot inside Houses, Sheds, Containers, Towers & POIs
-  const lootDefs: Array<{
-    x: number;
-    z: number;
-    yOverride?: number;
-    kind: LootItem['kind'];
-    weaponId?: WeaponId;
-    scopeType?: ScopeType;
-    attachmentKind?: LootItem['attachmentKind'];
-    level?: 1 | 2 | 3;
-    glooAmount?: number;
-    grenadeAmount?: number;
-    deathLoot?: LootItem['deathLoot'];
-    ammoAmount?: number;
-    coinAmount?: number;
-    label: string;
-  }> = [];
-
+  // 14. Comprehensive World Loot inside Bermuda Houses, Sheds, Containers, Towers & POIs
   const interiorWeapons: WeaponId[] = [
     'm4a1',
     'scar',
@@ -3752,371 +1820,6 @@ export function createIslandWorld(
     'stock',
   ];
   const interiorScopes: ScopeType[] = ['1x', '2x', '4x'];
-
-  // Spawn rich loot INSIDE every house!
-  houseSpecs.forEach(([hx, hz, hw, hd, , hrot], idx) => {
-    const cos = Math.cos(hrot);
-    const sin = Math.sin(hrot);
-    const houseBaseY = sampleGroundHeight(hx, hz) + 0.25;
-    const toWorld = (lx: number, lz: number) => ({
-      x: hx + lx * cos + lz * sin,
-      z: hz - lx * sin + lz * cos,
-    });
-
-    // 1. Weapon inside the house
-    const wId = interiorWeapons[idx % interiorWeapons.length];
-    const p1 = toWorld(hw * 0.18, -hd * 0.15);
-    lootDefs.push({
-      x: p1.x,
-      z: p1.z,
-      yOverride: houseBaseY,
-      kind: 'weapon',
-      weaponId: wId,
-      label:
-        wId === 'm4a1'
-          ? 'Carabina M4-17'
-          : wId === 'xm8'
-            ? 'Fuzil XM8'
-            : wId === 'scar'
-              ? 'Rifle SCAR'
-              : wId === 'ak47'
-                ? 'Fuzil AK-47'
-                : wId === 'deagle'
-                  ? 'Desert Eagle'
-                  : wId === 'ump45'
-                    ? 'SMG UMP-17'
-                    : wId === 'm1014'
-                      ? 'Espingarda M10-17'
-                      : 'Sniper AWM-17',
-    });
-
-    // 2. Vest, Helmet or Backpack inside the house
-    const p2 = toWorld(-hw * 0.2, hd * 0.16);
-    const gearMod = idx % 3;
-    const lvl = ((idx % 3) + 1) as 1 | 2 | 3;
-    if (gearMod === 0) {
-      lootDefs.push({
-        x: p2.x,
-        z: p2.z,
-        yOverride: houseBaseY,
-        kind: 'vest',
-        level: lvl,
-        label: `Colete Nível ${lvl}`,
-      });
-    } else if (gearMod === 1) {
-      lootDefs.push({
-        x: p2.x,
-        z: p2.z,
-        yOverride: houseBaseY,
-        kind: 'helmet',
-        level: lvl,
-        label: `Capacete Nível ${lvl}`,
-      });
-    } else {
-      lootDefs.push({
-        x: p2.x,
-        z: p2.z,
-        yOverride: houseBaseY,
-        kind: 'backpack',
-        level: lvl === 1 ? 2 : lvl,
-        label: `Mochila Nível ${lvl === 1 ? 2 : lvl}`,
-      });
-    }
-
-    // 3. Medkit or Attachment or Scope inside the house
-    const p3 = toWorld(hw * 0.18, hd * 0.18);
-    if (idx % 2 === 0) {
-      const isSmallKit = idx % 4 === 2;
-      lootDefs.push({
-        x: p3.x,
-        z: p3.z,
-        yOverride: houseBaseY,
-        kind: isSmallKit ? 'smallkit' : 'medkit',
-        label: isSmallKit ? 'Kit Pequeno (+35 HP)' : 'Kit Médico (+75 HP)',
-      });
-    } else {
-      const att = interiorAttachments[idx % interiorAttachments.length];
-      lootDefs.push({
-        x: p3.x,
-        z: p3.z,
-        yOverride: houseBaseY,
-        kind: 'attachment',
-        attachmentKind: att,
-        label:
-          att === 'silencer'
-            ? 'Silenciador'
-            : att === 'compensator'
-              ? 'Boca / Compensador'
-              : att === 'grip'
-                ? 'Empunhadura Tática'
-                : att === 'ext_mag'
-                  ? 'Carregador Estendido'
-                  : 'Coronha Tática',
-      });
-    }
-
-    // 4. Scope or Gloo or Grenade or Ammo inside house
-    const p4 = toWorld(-hw * 0.02, 0.1);
-    const mod4 = idx % 4;
-    if (mod4 === 0) {
-      const sc = interiorScopes[idx % interiorScopes.length];
-      lootDefs.push({
-        x: p4.x,
-        z: p4.z,
-        yOverride: houseBaseY,
-        kind: 'scope',
-        scopeType: sc,
-        label: `Mira ${sc.toUpperCase()}`,
-      });
-    } else if (mod4 === 1) {
-      lootDefs.push({
-        x: p4.x,
-        z: p4.z,
-        yOverride: houseBaseY,
-        kind: 'gloo',
-        glooAmount: 2,
-        label: 'Parede de Gelo x2',
-      });
-    } else if (mod4 === 2) {
-      lootDefs.push({
-        x: p4.x,
-        z: p4.z,
-        yOverride: houseBaseY,
-        kind: 'grenade',
-        grenadeAmount: 2,
-        label: 'Granada Explosiva x2',
-      });
-    } else {
-      lootDefs.push({
-        x: p4.x,
-        z: p4.z,
-        yOverride: houseBaseY,
-        kind: 'ammo',
-        ammoAmount: 45,
-        label: 'Munição +45',
-      });
-    }
-    // 5. Gold FF Coins inside houses
-    const p5 = toWorld(-hw * 0.24, -hd * 0.22);
-    lootDefs.push({
-      x: p5.x,
-      z: p5.z,
-      yOverride: houseBaseY,
-      kind: 'coin',
-      coinAmount: idx % 3 === 0 ? 200 : 100,
-      label: idx % 3 === 0 ? '200 Moedas FF' : '100 Moedas FF',
-    });
-  });
-
-  // Spawn loot INSIDE every shed & around POIs
-  shedSpecs.forEach(([sx, sz, , , ,], idx) => {
-    const shedY = sampleGroundHeight(sx, sz) + 0.25;
-    const shedWeapon: WeaponId =
-      idx % 6 === 0
-        ? 'scar'
-        : idx % 6 === 1
-          ? 'ak47'
-          : idx % 6 === 2
-            ? 'xm8'
-            : idx % 6 === 3
-              ? 'awm'
-              : idx % 6 === 4
-                ? 'm4a1'
-                : 'deagle';
-    lootDefs.push({
-      x: sx - 1.8,
-      z: sz - 2.2,
-      yOverride: shedY,
-      kind: 'weapon',
-      weaponId: shedWeapon,
-      label:
-        shedWeapon === 'scar'
-          ? 'Rifle SCAR'
-          : shedWeapon === 'ak47'
-            ? 'Fuzil AK-47'
-            : shedWeapon === 'xm8'
-              ? 'Fuzil XM8'
-              : shedWeapon === 'deagle'
-                ? 'Desert Eagle'
-                : shedWeapon === 'm4a1'
-                  ? 'Carabina M4-17'
-                  : 'Sniper AWM-17',
-    });
-    lootDefs.push({
-      x: sx + 1.8,
-      z: sz + 2.0,
-      yOverride: shedY,
-      kind: 'vest',
-      level: idx % 2 === 0 ? 3 : 2,
-      label: idx % 2 === 0 ? 'Colete Nível 3' : 'Colete Nível 2',
-    });
-    lootDefs.push({
-      x: sx,
-      z: sz + 0.2,
-      yOverride: shedY,
-      kind: idx % 2 === 0 ? 'gloo' : 'grenade',
-      glooAmount: 2,
-      grenadeAmount: 2,
-      label: idx % 2 === 0 ? 'Parede de Gelo x2' : 'Granada Explosiva x2',
-    });
-    lootDefs.push({
-      x: sx - 1.4,
-      z: sz + 2.4,
-      yOverride: shedY,
-      kind: 'backpack',
-      level: 3,
-      label: 'Mochila Nível 3',
-    });
-    lootDefs.push({
-      x: sx + 1.5,
-      z: sz - 2.0,
-      yOverride: shedY,
-      kind: 'coin',
-      coinAmount: 200,
-      label: '200 Moedas FF',
-    });
-  });
-
-  // Spawn loot INSIDE all new 2-story buildings (Térreo + Primeiro Andar + Sacada + Mezanino) & Guaritas!
-  prefabLootPoints.forEach((lp, idx) => {
-    const mod = idx % 6;
-    if (mod === 0) {
-      const wId = interiorWeapons[(idx + (lp.floor === 2 ? 1 : 0)) % interiorWeapons.length];
-      lootDefs.push({
-        x: lp.x,
-        z: lp.z,
-        yOverride: lp.y,
-        kind: 'weapon',
-        weaponId: wId,
-        label:
-          wId === 'm4a1'
-            ? 'Carabina M4-17'
-            : wId === 'xm8'
-              ? 'Fuzil XM8'
-              : wId === 'scar'
-                ? 'Rifle SCAR'
-                : wId === 'ak47'
-                  ? 'Fuzil AK-47'
-                  : wId === 'deagle'
-                    ? 'Desert Eagle'
-                    : wId === 'ump45'
-                      ? 'SMG UMP-17'
-                      : wId === 'm1014'
-                        ? 'Espingarda M10-17'
-                        : 'Sniper AWM-17',
-      });
-    } else if (mod === 1) {
-      const lvl: 1 | 2 | 3 = lp.floor === 2 ? (idx % 2 === 0 ? 3 : 2) : (((idx % 3) + 1) as 1 | 2 | 3);
-      const isHelm = idx % 2 === 0;
-      lootDefs.push({
-        x: lp.x,
-        z: lp.z,
-        yOverride: lp.y,
-        kind: isHelm ? 'helmet' : 'vest',
-        level: lvl,
-        label: `${isHelm ? 'Capacete' : 'Colete'} Nível ${lvl}`,
-      });
-    } else if (mod === 2) {
-      lootDefs.push({
-        x: lp.x,
-        z: lp.z,
-        yOverride: lp.y,
-        kind: idx % 4 === 2 ? 'smallkit' : idx % 2 === 0 ? 'medkit' : 'gloo',
-        glooAmount: 2,
-        label:
-          idx % 4 === 2
-            ? 'Kit Pequeno (+35 HP)'
-            : idx % 2 === 0
-              ? 'Kit Médico (+75 HP)'
-              : 'Parede de Gelo x2',
-      });
-    } else if (mod === 3) {
-      const sc = interiorScopes[(idx + (lp.floor === 2 ? 1 : 0)) % interiorScopes.length];
-      lootDefs.push({
-        x: lp.x,
-        z: lp.z,
-        yOverride: lp.y,
-        kind: 'scope',
-        scopeType: sc,
-        label: `Mira ${sc.toUpperCase()}`,
-      });
-    } else if (mod === 4) {
-      const att = interiorAttachments[idx % interiorAttachments.length];
-      lootDefs.push({
-        x: lp.x,
-        z: lp.z,
-        yOverride: lp.y,
-        kind: 'attachment',
-        attachmentKind: att,
-        label:
-          att === 'silencer'
-            ? 'Silenciador'
-            : att === 'compensator'
-              ? 'Boca / Compensador'
-              : att === 'grip'
-                ? 'Empunhadura Tática'
-                : att === 'ext_mag'
-                  ? 'Carregador Estendido'
-                  : 'Coronha Tática',
-      });
-    } else {
-      lootDefs.push({
-        x: lp.x,
-        z: lp.z,
-        yOverride: lp.y,
-        kind: idx % 12 === 5 ? 'backpack' : 'ammo',
-        level: 3,
-        ammoAmount: 45,
-        label: idx % 12 === 5 ? 'Mochila Nível 3' : 'Munição +45',
-      });
-    }
-  });
-
-  // Extra POI & Compound ground loot
-  landPois.forEach((poi, idx) => {
-    lootDefs.push({
-      x: poi.x + 4,
-      z: poi.z + 3,
-      kind: idx % 2 === 0 ? 'medkit' : 'smallkit',
-      label: idx % 2 === 0 ? 'Kit Médico (+75 HP)' : 'Kit Pequeno (+35 HP)',
-    });
-    lootDefs.push({
-      x: poi.x - 4,
-      z: poi.z + 5,
-      kind: 'ammo',
-      ammoAmount: 45,
-      label: 'Munição +45',
-    });
-    lootDefs.push({
-      x: poi.x + 2,
-      z: poi.z - 5,
-      kind: idx % 2 === 0 ? 'gloo' : 'grenade',
-      glooAmount: 1,
-      grenadeAmount: 1,
-      label: idx % 2 === 0 ? 'Parede de Gelo (+1)' : 'Granada (+1)',
-    });
-    lootDefs.push({
-      x: poi.x - 5,
-      z: poi.z - 3,
-      kind: 'scope',
-      scopeType: interiorScopes[idx % interiorScopes.length],
-      label: `Mira ${interiorScopes[idx % interiorScopes.length].toUpperCase()}`,
-    });
-    lootDefs.push({
-      x: poi.x + 6,
-      z: poi.z - 2,
-      kind: 'helmet',
-      level: ((idx % 3) + 1) as 1 | 2 | 3,
-      label: `Capacete Nível ${(idx % 3) + 1}`,
-    });
-    lootDefs.push({
-      x: poi.x - 2,
-      z: poi.z + 1.8,
-      kind: 'coin',
-      coinAmount: 100,
-      label: '100 Moedas FF',
-    });
-  });
 
   // Shared pooled geometries, prototypes & clean realistic materials + faint white floor glow disc
   const lootGlowTex = (() => {
@@ -4237,7 +1940,7 @@ export function createIslandWorld(
     isDynamic = false,
   ): LootVisual => {
     const g = new THREE.Group();
-    const ly = ld.yOverride !== undefined ? ld.yOverride : sampleGroundHeight(ld.x, ld.z);
+    const ly = ld.yOverride !== undefined ? ld.yOverride : groundHeightAt(ld.x, ld.z);
     const yLift =
       ld.kind === 'deathbox' ? 0.21 : ld.kind === 'weapon' ? 0.34 : ld.kind === 'vest' || ld.kind === 'backpack' ? 0.30 : 0.24;
     g.position.set(ld.x, ly + yLift, ld.z);
@@ -4397,11 +2100,6 @@ export function createIslandWorld(
   };
 
   const loots: LootVisual[] = [];
-  const jpPendingLootDefs = lootDefs.map((ld, idx) => ({
-    ...ld,
-    id: `loot_${idx}`,
-    spawned: false,
-  }));
   const bermudaPendingLootDefs: Array<{
     x: number;
     z: number;
@@ -4421,10 +2119,7 @@ export function createIslandWorld(
     spawned: boolean;
   }> = [];
 
-  const getActiveLootDefs = () =>
-    activeBrMap === 'bermuda' && bermudaPendingLootDefs.length > 0
-      ? bermudaPendingLootDefs
-      : jpPendingLootDefs;
+  const getActiveLootDefs = () => bermudaPendingLootDefs;
 
   const syncProximityLoot = (px: number, pz: number, radius = 56, maxPerTick = 24) => {
     const activeDefs = getActiveLootDefs();
@@ -4450,9 +2145,6 @@ export function createIslandWorld(
       scene.remove(loots[i].mesh);
     }
     loots.length = 0;
-    for (let i = 0; i < jpPendingLootDefs.length; i++) {
-      jpPendingLootDefs[i].spawned = false;
-    }
     for (let i = 0; i < bermudaPendingLootDefs.length; i++) {
       bermudaPendingLootDefs[i].spawned = false;
     }
@@ -4481,18 +2173,15 @@ export function createIslandWorld(
   };
 
   const hideExplosiveBarrel = (idx: number) => {
-    const list = activeBrMap === 'bermuda' ? bermudaExplosiveBarrels : jpExplosiveBarrels;
-    const cols = activeBrMap === 'bermuda' ? bermudaBarrelColliders : barrelColliders;
-    const inst = activeBrMap === 'bermuda' ? bermudaBarrelInst : barrelInst;
-    const eb = list[idx];
-    if (!eb || eb.exploded || !inst) return;
+    const eb = bermudaExplosiveBarrels[idx];
+    if (!eb || eb.exploded || !bermudaBarrelInst) return;
     eb.exploded = true;
     dummy.position.set(eb.x, -50, eb.z);
     dummy.scale.set(0.001, 0.001, 0.001);
     dummy.updateMatrix();
-    inst.setMatrixAt(idx, dummy.matrix);
-    inst.instanceMatrix.needsUpdate = true;
-    const col = cols[idx];
+    bermudaBarrelInst.setMatrixAt(idx, dummy.matrix);
+    bermudaBarrelInst.instanceMatrix.needsUpdate = true;
+    const col = bermudaBarrelColliders[idx];
     if (col) {
       col.minY = -99;
       col.maxY = -98;
@@ -4500,25 +2189,22 @@ export function createIslandWorld(
   };
 
   const resetExplosiveBarrels = () => {
-    const list = activeBrMap === 'bermuda' ? bermudaExplosiveBarrels : jpExplosiveBarrels;
-    const cols = activeBrMap === 'bermuda' ? bermudaBarrelColliders : barrelColliders;
-    const inst = activeBrMap === 'bermuda' ? bermudaBarrelInst : barrelInst;
-    if (!inst) return;
-    for (let i = 0; i < list.length; i++) {
-      const eb = list[i];
+    if (!bermudaBarrelInst) return;
+    for (let i = 0; i < bermudaExplosiveBarrels.length; i++) {
+      const eb = bermudaExplosiveBarrels[i];
       eb.exploded = false;
       dummy.position.set(eb.x, eb.y, eb.z);
       dummy.rotation.set(0, i * 0.5, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
-      inst.setMatrixAt(i, dummy.matrix);
-      const col = cols[i];
+      bermudaBarrelInst.setMatrixAt(i, dummy.matrix);
+      const col = bermudaBarrelColliders[i];
       if (col) {
         col.minY = eb.y - 0.625;
         col.maxY = eb.y + 0.655;
       }
     }
-    inst.instanceMatrix.needsUpdate = true;
+    bermudaBarrelInst.instanceMatrix.needsUpdate = true;
   };
 
   // 17. Electric Blue Shrinking Safe Zone Cylinder Wall
@@ -4526,7 +2212,7 @@ export function createIslandWorld(
   const safeZoneMat = new THREE.MeshBasicMaterial({
     color: 0x38bdf8,
     transparent: true,
-    opacity: 0.24,
+    opacity: 0.32,
     side: THREE.DoubleSide,
     depthWrite: false,
   });
@@ -4593,53 +2279,27 @@ export function createIslandWorld(
   };
 
   const applyActiveMapLists = () => {
-    const isBermuda = activeBrMap === 'bermuda' && bermudaAttached;
-    joaoPessoaGroup.visible = !isBermuda;
-    bermudaGroup.visible = isBermuda;
-
-    if (isBermuda) {
-      replaceInPlace(pois, bermudaPois);
-      replaceInPlace(buildings, bermudaBuildings);
-      replaceInPlace(roads, bermudaRoads);
-      replaceInPlace(vendingMachines, bermudaVendingMachines);
-      replaceInPlace(explosiveBarrels, bermudaExplosiveBarrels);
-      replaceInPlace(launchPads, bermudaLaunchPads);
-      replaceInPlace(buildingNavZones, bermudaBuildingNavZones);
-      replaceInPlace(obstacleMeshes, bermudaObstacleMeshes);
-      replaceInPlace(platforms, bermudaPlatforms);
-      replaceInPlace(colliders, bermudaStaticColliders);
-      handleRef.staticColliderCount = colliders.length;
-      for (let i = 0; i < bermudaVehicles.length; i++) {
-        colliders.push(bermudaVehicles[i].collider);
-      }
-      replaceInPlace(vehicles, bermudaVehicles);
-    } else {
-      replaceInPlace(pois, jpPois);
-      replaceInPlace(buildings, jpBuildings);
-      replaceInPlace(roads, jpRoads);
-      replaceInPlace(vendingMachines, jpVendingMachines);
-      replaceInPlace(explosiveBarrels, jpExplosiveBarrels);
-      replaceInPlace(launchPads, jpLaunchPads);
-      replaceInPlace(buildingNavZones, jpBuildingNavZones);
-      replaceInPlace(obstacleMeshes, jpObstacleMeshes);
-      replaceInPlace(platforms, jpPlatforms);
-      replaceInPlace(colliders, jpStaticColliders);
-      handleRef.staticColliderCount = colliders.length;
-      for (let i = 0; i < jpVehicles.length; i++) {
-        colliders.push(jpVehicles[i].collider);
-      }
-      replaceInPlace(vehicles, jpVehicles);
+    bermudaGroup.visible = true;
+    replaceInPlace(pois, bermudaPois);
+    replaceInPlace(buildings, bermudaBuildings);
+    replaceInPlace(roads, bermudaRoads);
+    replaceInPlace(vendingMachines, bermudaVendingMachines);
+    replaceInPlace(explosiveBarrels, bermudaExplosiveBarrels);
+    replaceInPlace(launchPads, bermudaLaunchPads);
+    replaceInPlace(buildingNavZones, bermudaBuildingNavZones);
+    replaceInPlace(obstacleMeshes, bermudaObstacleMeshes);
+    replaceInPlace(platforms, bermudaPlatforms);
+    replaceInPlace(colliders, bermudaStaticColliders);
+    handleRef.staticColliderCount = colliders.length;
+    for (let i = 0; i < bermudaVehicles.length; i++) {
+      colliders.push(bermudaVehicles[i].collider);
     }
+    replaceInPlace(vehicles, bermudaVehicles);
   };
 
-  const setActiveBrMap = (mapId: BrMapId) => {
-    if (activeBrMap === mapId && (mapId !== 'bermuda' || bermudaAttached)) {
-      joaoPessoaGroup.visible = mapId === 'joao_pessoa';
-      bermudaGroup.visible = mapId === 'bermuda';
-      return;
-    }
-    activeBrMap = mapId;
-    resetMatchLoots();
+  const setActiveBrMap = (_mapId: BrMapId) => {
+    activeBrMap = 'bermuda';
+    bermudaGroup.visible = true;
     applyActiveMapLists();
   };
 
@@ -5117,17 +2777,6 @@ export function createIslandWorld(
     }
   };
 
-  // Freeze static terrain, buildings, props, roads & foliage matrices of Joao Pessoa
-  joaoPessoaGroup.traverse((node) => {
-    node.updateMatrix();
-    node.matrixAutoUpdate = false;
-  });
-  for (let i = 0; i < jpVehicles.length; i++) {
-    jpVehicles[i].group.traverse((node) => {
-      node.matrixAutoUpdate = true;
-    });
-  }
-
   let structureCullDist = 155;
 
   let baseFogNear = 102;
@@ -5174,12 +2823,8 @@ export function createIslandWorld(
           : resolvedTex === 'high'
             ? 84.0
             : 106.0;
-    terrainMat.roughness = resolvedTex === 'low' ? 0.94 : resolvedTex === 'ultra' ? 0.86 : 0.9;
-    asphaltRoadMat.roughness = resolvedTex === 'low' ? 0.88 : resolvedTex === 'ultra' ? 0.76 : 0.82;
-
     if (resolvedShadow === 'off') {
       sunLight.castShadow = false;
-      foliageCtrl.setFoliageShadows(false, false);
     } else {
       const mobile = isMobileHardware();
       sunLight.castShadow = true;
@@ -5219,10 +2864,6 @@ export function createIslandWorld(
               : 2.6;
       sunLight.shadow.bias = resolvedShadow === 'ultra' ? -0.00032 : -0.00048;
       sunLight.shadow.normalBias = resolvedShadow === 'ultra' ? 0.018 : 0.024;
-      foliageCtrl.setFoliageShadows(
-        resolvedShadow === 'high' || resolvedShadow === 'ultra',
-        resolvedShadow === 'ultra',
-      );
     }
     if (sunLight.shadow.map) {
       sunLight.shadow.map.dispose();
@@ -5236,9 +2877,9 @@ export function createIslandWorld(
       structureCullDist = 115;
       sunLight.intensity = 1.95;
       hemi.intensity = 1.62;
-      waterMat.roughness = 0.72;
-      waterMat.metalness = 0.02;
-      waterMat.envMapIntensity = 0.4;
+      bermudaOceanSkirtMat.roughness = 0.72;
+      bermudaOceanSkirtMat.metalness = 0.02;
+      bermudaOceanSkirtMat.envMapIntensity = 0.4;
       cloudMat.opacity = 0.6;
       scene.environment = null;
       scene.environmentIntensity = 0;
@@ -5249,9 +2890,9 @@ export function createIslandWorld(
       structureCullDist = 155;
       sunLight.intensity = 1.98;
       hemi.intensity = 1.38;
-      waterMat.roughness = 0.32;
-      waterMat.metalness = 0.2;
-      waterMat.envMapIntensity = 0.9;
+      bermudaOceanSkirtMat.roughness = 0.32;
+      bermudaOceanSkirtMat.metalness = 0.2;
+      bermudaOceanSkirtMat.envMapIntensity = 0.9;
       cloudMat.opacity = 0.74;
       scene.environment = envMap;
       scene.environmentIntensity = 0.58;
@@ -5262,9 +2903,9 @@ export function createIslandWorld(
       structureCullDist = 195;
       sunLight.intensity = 2.24;
       hemi.intensity = 1.36;
-      waterMat.roughness = 0.12;
-      waterMat.metalness = 0.38;
-      waterMat.envMapIntensity = 1.35;
+      bermudaOceanSkirtMat.roughness = 0.12;
+      bermudaOceanSkirtMat.metalness = 0.38;
+      bermudaOceanSkirtMat.envMapIntensity = 1.35;
       cloudMat.opacity = 0.86;
       scene.environment = envMap;
       scene.environmentIntensity = 1.05;
@@ -5346,28 +2987,7 @@ export function createIslandWorld(
         Math.abs(cz - GLADIADORES_ORIGIN.z) < 180;
 
       const keepAllStructures = isAirborne || cy > 45;
-      if (activeBrMap === 'joao_pessoa') {
-        for (let i = 0; i < cullableStructures.length; i++) {
-          const s = cullableStructures[i];
-          const vis = keepAllStructures
-            ? true
-            : shouldRenderInView(
-                s.x,
-                s.z,
-                cx,
-                cz,
-                fwdX,
-                fwdZ,
-                hasFwd,
-                16 * s.radiusScale,
-                structureCullDist * s.radiusScale,
-                34,
-              );
-          if (s.obj.visible !== vis) {
-            s.obj.visible = vis;
-          }
-        }
-      } else if (bermudaAttached) {
+      if (bermudaAttached) {
         for (let i = 0; i < bermudaCullables.length; i++) {
           const b = bermudaCullables[i];
           const vis = keepAllStructures
@@ -5531,7 +3151,7 @@ export function createIslandWorld(
     attachExternalWorldModels,
     safeZoneMesh,
     colliders,
-    staticColliderCount: jpStaticColliders.length,
+    staticColliderCount: 0,
     platforms,
     buildingNavZones,
     obstacleMeshes,
@@ -5560,19 +3180,7 @@ export function createIslandWorld(
     dispose,
   };
 
-  // Populate initial João Pessoa lists until bermuda.glb attaches (then defaults cleanly to Bermuda)
-  replaceInPlace(pois, jpPois);
-  replaceInPlace(vendingMachines, jpVendingMachines);
-  replaceInPlace(explosiveBarrels, jpExplosiveBarrels);
-  replaceInPlace(launchPads, jpLaunchPads);
-  for (let i = 0; i < jpVehicles.length; i++) {
-    colliders.push(jpVehicles[i].collider);
-  }
-  replaceInPlace(vehicles, jpVehicles);
-  if (!bermudaAttached) {
-    joaoPessoaGroup.visible = true;
-    bermudaGroup.visible = false;
-  }
+  replaceInPlace(pois, bermudaPois);
 
   return handleRef;
 }

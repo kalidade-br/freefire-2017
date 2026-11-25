@@ -9,9 +9,25 @@ export interface VoiceParticipant {
   inCall: boolean;
 }
 
+const RTC_CONFIG: RTCConfiguration = {
+  iceServers: [
+    {
+      urls: [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302',
+        'stun:stun2.l.google.com:19302',
+        'stun:stun3.l.google.com:19302',
+      ],
+    },
+  ],
+};
+
 class VoiceChatManager {
   private localStream: MediaStream | null = null;
   private peerConnections = new Map<number, RTCPeerConnection>();
+  private makingOffer = new Map<number, boolean>();
+  private ignoreOffer = new Map<number, boolean>();
+  private pendingIceCandidates = new Map<number, RTCIceCandidateInit[]>();
   private remoteAudioElements = new Map<number, HTMLAudioElement>();
   private teammates = new Map<number, string>(); // accountId -> nickname (same team/party ONLY)
   private remoteInCall = new Set<number>();
@@ -29,8 +45,17 @@ class VoiceChatManager {
   private remoteAnalysers = new Map<number, AnalyserNode>();
 
   private listeners = new Set<(participants: VoiceParticipant[]) => void>();
+  private lastMicError: string | null = null;
 
   constructor() {
+    if (typeof window !== 'undefined') {
+      const unlockHandler = () => {
+        this.resumeAudioPlayback();
+      };
+      window.addEventListener('pointerdown', unlockHandler, { passive: true });
+      window.addEventListener('keydown', unlockHandler, { passive: true });
+    }
+
     multiplayerClient.subscribe((ev) => {
       if (ev.type === 'party_update' && ev.party) {
         if (ev.party.status !== 'in_match') {
@@ -43,22 +68,53 @@ class VoiceChatManager {
         this.syncTeamMembers(`room:${ev.joinInfo.roomId}`, teamHumans);
       } else if (ev.type === 'room_snapshot' && ev.snapshot?.roomId) {
         this.syncSnapshotTeam(ev.snapshot.roomId, ev.snapshot.humans);
+      } else if (ev.type === 'ws_ready') {
+        if (this.inCall && this.localStream) {
+          this.connectToCurrentTeammates();
+        }
       } else if (ev.type === 'webrtc_signal') {
         void this.handleSignaling(ev.fromAccountId, ev.signal);
       } else if (ev.type === 'match_kicked') {
-        this.clearPeersOnly();
+        this.handleReturnToLobby();
       }
     });
+  }
+
+  private isPolitePeer(targetAccountId: number): boolean {
+    if (this.localAccountId === null) return true;
+    return this.localAccountId > targetAccountId;
   }
 
   public setLocalAccountId(accountId: number | null): void {
     this.localAccountId = accountId;
     if (accountId === null) {
       this.teammates.clear();
+      this.currentContextKey = null;
       this.stopCall();
-    } else {
-      this.emitState();
+      return;
     }
+
+    const latestSnap = multiplayerClient.getLatestSnapshot();
+    if (latestSnap?.roomId && latestSnap.humans.some((h) => h.accountId === accountId)) {
+      this.syncSnapshotTeam(latestSnap.roomId, latestSnap.humans);
+    } else {
+      const latestParty = multiplayerClient.getLatestParty();
+      if (latestParty && latestParty.members.some((m) => m.accountId === accountId)) {
+        this.syncPartyTeammates(latestParty.partyId, latestParty.members);
+      } else {
+        this.emitState();
+      }
+    }
+  }
+
+  public handleReturnToLobby(): void {
+    const latestParty = multiplayerClient.getLatestParty();
+    if (latestParty && this.localAccountId !== null) {
+      this.syncPartyTeammates(latestParty.partyId, latestParty.members);
+      return;
+    }
+    this.clearPeersOnly();
+    this.emitState();
   }
 
   public subscribe(cb: (participants: VoiceParticipant[]) => void): () => void {
@@ -84,7 +140,7 @@ class VoiceChatManager {
         const data = new Uint8Array(analyser.frequencyBinCount);
         analyser.getByteFrequencyData(data);
         const avg = data.reduce((a, b) => a + b, 0) / data.length;
-        isSpeaking = avg > 14;
+        isSpeaking = avg > 12;
       }
       result.push({
         accountId: accId,
@@ -101,20 +157,37 @@ class VoiceChatManager {
     return this.inCall && this.localStream !== null && !this.micMuted;
   }
 
-  private lastMicError: string | null = null;
-
   public getLastMicError(): string | null {
     return this.lastMicError;
   }
 
+  public resumeAudioPlayback(): void {
+    if (this.audioCtx && this.audioCtx.state === 'suspended') {
+      void this.audioCtx.resume().catch(() => undefined);
+    }
+    for (const [accId, audioEl] of this.remoteAudioElements.entries()) {
+      audioEl.muted = this.speakersMuted || this.mutedAccountIds.has(accId);
+      if (audioEl.paused && audioEl.srcObject) {
+        void audioEl.play().catch(() => undefined);
+      }
+    }
+  }
+
   public async startCall(): Promise<boolean> {
     this.lastMicError = null;
+    this.resumeAudioPlayback();
+
     if (this.localStream) {
-      this.inCall = true;
-      this.setMicMuted(false);
-      this.connectToCurrentTeammates();
-      this.emitState();
-      return true;
+      const liveTracks = this.localStream.getAudioTracks().filter((t) => t.readyState === 'live');
+      if (liveTracks.length > 0) {
+        this.inCall = true;
+        this.setMicMuted(false);
+        this.connectToCurrentTeammates();
+        this.emitState();
+        return true;
+      }
+      this.localStream.getTracks().forEach((t) => t.stop());
+      this.localStream = null;
     }
 
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -187,7 +260,6 @@ class VoiceChatManager {
 
     this.inCall = false;
     this.micMuted = true;
-    this.clearPeersOnly();
 
     if (this.localStream) {
       this.localStream.getTracks().forEach((t) => t.stop());
@@ -195,7 +267,25 @@ class VoiceChatManager {
     }
     this.localAnalyser = null;
 
-    if (this.vadInterval !== null) {
+    // Remove local senders from any existing PCs or close peers if no remote call is active
+    for (const [accId, pc] of this.peerConnections.entries()) {
+      if (!this.remoteInCall.has(accId)) {
+        this.closePeer(accId, pc);
+      } else {
+        try {
+          for (const sender of pc.getSenders()) {
+            if (sender.track && sender.track.kind === 'audio') {
+              pc.removeTrack(sender);
+            }
+          }
+          void this.sendOffer(accId, pc);
+        } catch {
+          this.closePeer(accId, pc);
+        }
+      }
+    }
+
+    if (this.remoteAudioElements.size === 0 && this.vadInterval !== null) {
       window.clearInterval(this.vadInterval);
       this.vadInterval = null;
     }
@@ -215,19 +305,42 @@ class VoiceChatManager {
     return this.startCall();
   }
 
-  private clearPeersOnly(): void {
-    for (const pc of this.peerConnections.values()) {
+  private closePeer(accId: number, pc?: RTCPeerConnection): void {
+    const targetPc = pc ?? this.peerConnections.get(accId);
+    if (targetPc) {
       try {
-        pc.close();
+        targetPc.onicecandidate = null;
+        targetPc.ontrack = null;
+        targetPc.onconnectionstatechange = null;
+        targetPc.oniceconnectionstatechange = null;
+        targetPc.close();
       } catch {
         // ignore
       }
+      this.peerConnections.delete(accId);
+    }
+    this.makingOffer.delete(accId);
+    this.ignoreOffer.delete(accId);
+    this.pendingIceCandidates.delete(accId);
+
+    const audioEl = this.remoteAudioElements.get(accId);
+    if (audioEl) {
+      audioEl.srcObject = null;
+      audioEl.remove();
+      this.remoteAudioElements.delete(accId);
+    }
+    this.remoteAnalysers.delete(accId);
+    this.remoteInCall.delete(accId);
+  }
+
+  private clearPeersOnly(): void {
+    for (const [accId, pc] of Array.from(this.peerConnections.entries())) {
+      this.closePeer(accId, pc);
     }
     this.peerConnections.clear();
-
-    for (const audioEl of this.remoteAudioElements.values()) {
-      audioEl.remove();
-    }
+    this.makingOffer.clear();
+    this.ignoreOffer.clear();
+    this.pendingIceCandidates.clear();
     this.remoteAudioElements.clear();
     this.remoteAnalysers.clear();
     this.remoteInCall.clear();
@@ -245,7 +358,7 @@ class VoiceChatManager {
     const data = new Uint8Array(this.localAnalyser.frequencyBinCount);
     this.localAnalyser.getByteFrequencyData(data);
     const avg = data.reduce((a, b) => a + b, 0) / data.length;
-    return avg > 15;
+    return avg > 14;
   }
 
   public setMicMuted(muted: boolean): void {
@@ -266,6 +379,9 @@ class VoiceChatManager {
     this.speakersMuted = muted;
     for (const [accId, audioEl] of this.remoteAudioElements.entries()) {
       audioEl.muted = muted || this.mutedAccountIds.has(accId);
+      if (!audioEl.muted && audioEl.paused && audioEl.srcObject) {
+        void audioEl.play().catch(() => undefined);
+      }
     }
     this.emitState();
   }
@@ -275,16 +391,23 @@ class VoiceChatManager {
   }
 
   public toggleSpeakerMuted(): boolean {
+    this.resumeAudioPlayback();
     const next = !this.speakersMuted;
     this.setSpeakerMuted(next);
     return next;
   }
 
   public toggleMutePlayer(accountId: number): void {
+    this.resumeAudioPlayback();
     if (this.mutedAccountIds.has(accountId)) {
       this.mutedAccountIds.delete(accountId);
       const el = this.remoteAudioElements.get(accountId);
-      if (el) el.muted = this.speakersMuted;
+      if (el) {
+        el.muted = this.speakersMuted;
+        if (!el.muted && el.paused && el.srcObject) {
+          void el.play().catch(() => undefined);
+        }
+      }
     } else {
       this.mutedAccountIds.add(accountId);
       const el = this.remoteAudioElements.get(accountId);
@@ -313,12 +436,7 @@ class VoiceChatManager {
     contextKey: string,
     members: Array<{ accountId: number; nickname: string }>,
   ): void {
-    const contextChanged = this.currentContextKey !== contextKey;
     this.currentContextKey = contextKey;
-
-    if (contextChanged) {
-      this.clearPeersOnly();
-    }
 
     const activeIds = new Set<number>();
     this.teammates.clear();
@@ -329,21 +447,10 @@ class VoiceChatManager {
       this.teammates.set(m.accountId, m.nickname);
     }
 
-    for (const [accId, pc] of this.peerConnections.entries()) {
+    // Close connections only for players who left the squad/team; preserve existing active teammate calls
+    for (const [accId, pc] of Array.from(this.peerConnections.entries())) {
       if (!activeIds.has(accId)) {
-        try {
-          pc.close();
-        } catch {
-          // ignore
-        }
-        this.peerConnections.delete(accId);
-        const audioEl = this.remoteAudioElements.get(accId);
-        if (audioEl) {
-          audioEl.remove();
-          this.remoteAudioElements.delete(accId);
-        }
-        this.remoteAnalysers.delete(accId);
-        this.remoteInCall.delete(accId);
+        this.closePeer(accId, pc);
       }
     }
 
@@ -361,9 +468,8 @@ class VoiceChatManager {
       multiplayerClient.sendWebrtcSignal(peerId, { type: 'voice_join' });
       const existingPc = this.peerConnections.get(peerId);
       if (!existingPc) {
-        if (this.localAccountId < peerId) {
-          void this.createPeerConnection(peerId, true);
-        }
+        // Always initiate so listen-only teammates (not in mic call yet) still hear us immediately
+        void this.createPeerConnection(peerId, true);
       } else {
         this.attachLocalTracksAndNegotiate(peerId, existingPc);
       }
@@ -375,25 +481,60 @@ class VoiceChatManager {
     const senders = pc.getSenders();
     let added = false;
     this.localStream.getTracks().forEach((track) => {
-      if (!senders.some((s) => s.track === track)) {
+      const matchingSender = senders.find((s) => s.track?.kind === track.kind);
+      if (!matchingSender) {
         pc.addTrack(track, this.localStream!);
         added = true;
+      } else if (matchingSender.track !== track) {
+        void matchingSender.replaceTrack(track).catch(() => undefined);
       }
     });
     if (added) {
-      void (async () => {
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          multiplayerClient.sendWebrtcSignal(targetAccountId, {
-            type: 'offer',
-            sdp: pc.localDescription,
-          });
-        } catch (err) {
-          console.error('Error renegotiating WebRTC call:', err);
-        }
-      })();
+      void this.sendOffer(targetAccountId, pc);
     }
+  }
+
+  private async sendOffer(targetAccountId: number, pc: RTCPeerConnection): Promise<void> {
+    if (this.makingOffer.get(targetAccountId)) return;
+    try {
+      this.makingOffer.set(targetAccountId, true);
+      const offer = await pc.createOffer();
+      if (pc.signalingState !== 'stable') return;
+      await pc.setLocalDescription(offer);
+      multiplayerClient.sendWebrtcSignal(targetAccountId, {
+        type: 'offer',
+        sdp: pc.localDescription,
+      });
+    } catch (err) {
+      console.error('Error creating WebRTC offer:', err);
+    } finally {
+      this.makingOffer.set(targetAccountId, false);
+    }
+  }
+
+  private async flushPendingIce(targetAccountId: number, pc: RTCPeerConnection): Promise<void> {
+    const queue = this.pendingIceCandidates.get(targetAccountId);
+    if (!queue || queue.length === 0 || !pc.remoteDescription) return;
+    this.pendingIceCandidates.delete(targetAccountId);
+    for (const cand of queue) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(cand));
+      } catch {
+        // Ignore stale ICE candidate
+      }
+    }
+  }
+
+  private lookupTeammateNickname(accountId: number): string {
+    const existing = this.teammates.get(accountId);
+    if (existing) return existing;
+    const snap = multiplayerClient.getLatestSnapshot();
+    const snapMember = snap?.humans.find((h) => h.accountId === accountId);
+    if (snapMember) return snapMember.nickname;
+    const party = multiplayerClient.getLatestParty();
+    const partyMember = party?.members.find((m) => m.accountId === accountId);
+    if (partyMember) return partyMember.nickname;
+    return `Aliado #${accountId}`;
   }
 
   private async createPeerConnection(
@@ -401,41 +542,68 @@ class VoiceChatManager {
     isInitiator: boolean,
   ): Promise<RTCPeerConnection> {
     const existing = this.peerConnections.get(targetAccountId);
-    if (existing) {
+    if (existing && existing.connectionState !== 'closed' && existing.connectionState !== 'failed') {
+      if (isInitiator && this.inCall && this.localStream) {
+        this.attachLocalTracksAndNegotiate(targetAccountId, existing);
+      }
       return existing;
     }
+    if (existing) {
+      this.closePeer(targetAccountId, existing);
+    }
 
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
-      ],
-    });
-
+    const pc = new RTCPeerConnection(RTC_CONFIG);
     this.peerConnections.set(targetAccountId, pc);
+    this.makingOffer.set(targetAccountId, false);
+    this.ignoreOffer.set(targetAccountId, false);
 
     pc.onicecandidate = (event) => {
       if (event.candidate && this.localAccountId !== null) {
         multiplayerClient.sendWebrtcSignal(targetAccountId, {
           type: 'ice',
-          candidate: event.candidate,
+          candidate: event.candidate.toJSON ? event.candidate.toJSON() : event.candidate,
         });
       }
     };
 
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === 'failed') {
+        try {
+          pc.restartIce();
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        if (this.peerConnections.get(targetAccountId) === pc) {
+          this.closePeer(targetAccountId, pc);
+          this.emitState();
+        }
+      }
+    };
+
     pc.ontrack = (event) => {
-      const remoteStream = event.streams[0];
-      if (!remoteStream) return;
+      const remoteStream =
+        event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
       this.remoteInCall.add(targetAccountId);
 
       let audioEl = this.remoteAudioElements.get(targetAccountId);
       if (!audioEl) {
         audioEl = document.createElement('audio');
         audioEl.autoplay = true;
+        audioEl.setAttribute('playsinline', 'true');
+        audioEl.volume = 1.0;
         audioEl.muted = this.speakersMuted || this.mutedAccountIds.has(targetAccountId);
         document.body.appendChild(audioEl);
         this.remoteAudioElements.set(targetAccountId, audioEl);
       }
       audioEl.srcObject = remoteStream;
+      void audioEl.play().catch(() => {
+        // Will automatically resume on next user pointer/key gesture via resumeAudioPlayback()
+      });
 
       try {
         const AudioCtxClass =
@@ -445,7 +613,7 @@ class VoiceChatManager {
           this.audioCtx = new AudioCtxClass();
         }
         if (this.audioCtx.state === 'suspended') {
-          void this.audioCtx.resume();
+          void this.audioCtx.resume().catch(() => undefined);
         }
         const source = this.audioCtx.createMediaStreamSource(remoteStream);
         const analyser = this.audioCtx.createAnalyser();
@@ -459,7 +627,7 @@ class VoiceChatManager {
       this.emitState();
     };
 
-    if (this.localStream) {
+    if (this.inCall && this.localStream) {
       this.localStream.getTracks().forEach((track) => {
         if (this.localStream) {
           pc.addTrack(track, this.localStream);
@@ -468,68 +636,76 @@ class VoiceChatManager {
     }
 
     if (isInitiator) {
-      try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        multiplayerClient.sendWebrtcSignal(targetAccountId, {
-          type: 'offer',
-          sdp: pc.localDescription,
-        });
-      } catch (err) {
-        console.error('Error creating WebRTC offer:', err);
-      }
+      await this.sendOffer(targetAccountId, pc);
     }
 
     return pc;
   }
 
   private async handleSignaling(fromAccountId: number, signalRaw: unknown): Promise<void> {
-    if (!this.teammates.has(fromAccountId)) return;
+    if (fromAccountId === this.localAccountId) return;
+    // Server already validates sameMatchTeam || sameParty; ensure teammate entry exists even if snapshot arrived slightly later
+    if (!this.teammates.has(fromAccountId)) {
+      this.teammates.set(fromAccountId, this.lookupTeammateNickname(fromAccountId));
+    }
+
     const signal = signalRaw as {
       type: string;
       sdp?: RTCSessionDescriptionInit;
       candidate?: RTCIceCandidateInit;
     };
-    if (!signal) return;
+    if (!signal || typeof signal.type !== 'string') return;
 
     if (signal.type === 'voice_join') {
       this.remoteInCall.add(fromAccountId);
-      if (this.inCall && this.localStream && !this.peerConnections.has(fromAccountId)) {
-        await this.createPeerConnection(fromAccountId, true);
+      if (this.inCall && this.localStream) {
+        multiplayerClient.sendWebrtcSignal(fromAccountId, { type: 'voice_ack' });
+        const pc = await this.createPeerConnection(fromAccountId, false);
+        this.attachLocalTracksAndNegotiate(fromAccountId, pc);
       }
+      this.emitState();
+      return;
+    }
+
+    if (signal.type === 'voice_ack') {
+      this.remoteInCall.add(fromAccountId);
       this.emitState();
       return;
     }
 
     if (signal.type === 'voice_leave') {
-      this.remoteInCall.delete(fromAccountId);
-      const pc = this.peerConnections.get(fromAccountId);
-      if (pc) {
-        try {
-          pc.close();
-        } catch {
-          // ignore
-        }
-        this.peerConnections.delete(fromAccountId);
-      }
-      const audioEl = this.remoteAudioElements.get(fromAccountId);
-      if (audioEl) {
-        audioEl.remove();
-        this.remoteAudioElements.delete(fromAccountId);
-      }
-      this.remoteAnalysers.delete(fromAccountId);
+      this.closePeer(fromAccountId);
       this.emitState();
       return;
     }
 
     let pc = this.peerConnections.get(fromAccountId);
-    if (!pc) {
+    if (!pc || pc.connectionState === 'closed' || pc.connectionState === 'failed') {
       pc = await this.createPeerConnection(fromAccountId, false);
     }
 
     try {
       if (signal.type === 'offer' && signal.sdp) {
+        const polite = this.isPolitePeer(fromAccountId);
+        const offerCollision =
+          Boolean(this.makingOffer.get(fromAccountId)) || pc.signalingState !== 'stable';
+        const ignore = !polite && offerCollision;
+        this.ignoreOffer.set(fromAccountId, ignore);
+        if (ignore) {
+          return;
+        }
+
+        if (offerCollision && polite) {
+          try {
+            await pc.setLocalDescription({ type: 'rollback' });
+          } catch {
+            // Browser may accept remote offer directly
+          }
+        }
+
         await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+        await this.flushPendingIce(fromAccountId, pc);
+
         if (this.inCall && this.localStream) {
           const senders = pc.getSenders();
           this.localStream.getTracks().forEach((track) => {
@@ -538,6 +714,7 @@ class VoiceChatManager {
             }
           });
         }
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         multiplayerClient.sendWebrtcSignal(fromAccountId, {
@@ -545,8 +722,18 @@ class VoiceChatManager {
           sdp: pc.localDescription,
         });
       } else if (signal.type === 'answer' && signal.sdp) {
-        await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+        if (pc.signalingState === 'have-local-offer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+          await this.flushPendingIce(fromAccountId, pc);
+        }
       } else if (signal.type === 'ice' && signal.candidate) {
+        if (this.ignoreOffer.get(fromAccountId)) return;
+        if (!pc.remoteDescription) {
+          const q = this.pendingIceCandidates.get(fromAccountId) ?? [];
+          q.push(signal.candidate);
+          this.pendingIceCandidates.set(fromAccountId, q);
+          return;
+        }
         await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
       }
     } catch (err) {

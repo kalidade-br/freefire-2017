@@ -317,26 +317,50 @@ export const IconVehicleSvg: React.FC<IconProps> = ({ className = 'w-5 h-5' }) =
 export const RankEmblemSvg: React.FC<{
   color: string;
   accent: string;
+  iconUrl?: string;
+  alt?: string;
   className?: string;
-}> = ({ color, accent, className = 'w-8 h-8' }) => (
-  <svg viewBox="0 0 40 40" fill="none" className={className} aria-hidden="true">
-    <path
-      d="M20 3L34 10V22C34 29.5 27.8 35.4 20 38C12.2 35.4 6 29.5 6 22V10L20 3Z"
-      fill={color}
-      stroke={accent}
-      strokeWidth="2.2"
-    />
-    <path
-      d="M20 8L29 12.8V21.5C29 26.8 25 31.2 20 33.2C15 31.2 11 26.8 11 21.5V12.8L20 8Z"
-      fill="#11161d"
-      fillOpacity="0.65"
-    />
-    <path
-      d="M20 11.5L22.5 17L28.5 17.6L23.8 21.5L25.3 27.3L20 24.1L14.7 27.3L16.2 21.5L11.5 17.6L17.5 17L20 11.5Z"
-      fill={accent}
-    />
-  </svg>
-);
+}> = ({ color, accent, iconUrl, alt = 'Patente', className = 'w-8 h-8' }) => {
+  const [imgFailed, setImgFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    setImgFailed(false);
+  }, [iconUrl]);
+
+  if (iconUrl && !imgFailed) {
+    return (
+      <img
+        src={iconUrl}
+        alt={alt}
+        loading="lazy"
+        decoding="async"
+        draggable={false}
+        onError={() => setImgFailed(true)}
+        className={`${className} object-contain select-none`}
+      />
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 40 40" fill="none" className={className} aria-hidden="true">
+      <path
+        d="M20 3L34 10V22C34 29.5 27.8 35.4 20 38C12.2 35.4 6 29.5 6 22V10L20 3Z"
+        fill={color}
+        stroke={accent}
+        strokeWidth="2.2"
+      />
+      <path
+        d="M20 8L29 12.8V21.5C29 26.8 25 31.2 20 33.2C15 31.2 11 26.8 11 21.5V12.8L20 8Z"
+        fill="#11161d"
+        fillOpacity="0.65"
+      />
+      <path
+        d="M20 11.5L22.5 17L28.5 17.6L23.8 21.5L25.3 27.3L20 24.1L14.7 27.3L16.2 21.5L11.5 17.6L17.5 17L20 11.5Z"
+        fill={accent}
+      />
+    </svg>
+  );
+};
 
 export const IconAmmoSvg: React.FC<IconProps> = ({ className = 'w-8 h-8' }) => (
   <svg viewBox="0 0 36 32" fill="none" className={className} aria-hidden="true">

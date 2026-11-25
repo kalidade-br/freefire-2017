@@ -1,4 +1,11 @@
-import type { BrMapId, CharacterConfig, GlooSkinId, MatchMode, WeaponId } from '../game/types.ts';
+import type {
+  BrMapId,
+  CharacterConfig,
+  GlooSkinId,
+  MatchMode,
+  PlayerAvatarId,
+  WeaponId,
+} from '../game/types.ts';
 
 export type PresenceStatus = 'offline' | 'lobby' | 'matchmaking' | 'in_match';
 
@@ -16,6 +23,11 @@ export interface PublicPlayerAccount {
   rankedMatches: number;
   rankedWins: number;
   totalKills: number;
+  avatarId: PlayerAvatarId;
+  unlockedAvatars: PlayerAvatarId[];
+  seasonId: string;
+  s1PeakRankPoints: number;
+  s1ClaimedRewards: string[];
   character: Partial<CharacterConfig>;
   presence?: PresenceStatus;
 }
@@ -39,6 +51,7 @@ export interface PartyMemberInfo {
   nickname: string;
   level: number;
   rankPoints: number;
+  avatarId?: PlayerAvatarId;
   character: Partial<CharacterConfig>;
   ready: boolean;
   isLeader: boolean;
@@ -98,6 +111,7 @@ export interface RoomHumanSlot {
   nickname: string;
   level?: number;
   rankPoints?: number;
+  avatarId?: PlayerAvatarId;
   teamId: number; // 1..12
   slotInTeam: number; // 1..4
   isTeamLeader?: boolean;
@@ -121,6 +135,36 @@ export interface MatchRoomJoinInfo {
   humans: RoomHumanSlot[];
 }
 
+export interface SearchingPlayerInfo {
+  accountId: number;
+  publicId: string;
+  nickname: string;
+  level: number;
+  rankPoints: number;
+  characterModelId: string;
+  avatarId?: PlayerAvatarId;
+}
+
+export interface SearchingPoolInfo {
+  poolKey: string;
+  mode: MatchMode;
+  mapId: BrMapId;
+  isRanked: boolean;
+  startedAtMs: number;
+  launchAtMs: number;
+  players: SearchingPlayerInfo[];
+}
+
+export interface MatchmakingSearchStatus {
+  searching: boolean;
+  poolKey?: string;
+  startedAtMs?: number;
+  launchAtMs?: number;
+  mode?: MatchMode;
+  mapId?: BrMapId;
+  isRanked?: boolean;
+}
+
 export type RemoteFlightPhase = 'waiting' | 'airplane' | 'dropping' | 'parachute' | 'landed';
 
 export interface RemotePlayerSync {
@@ -129,6 +173,7 @@ export interface RemotePlayerSync {
   nickname: string;
   level?: number;
   rankPoints?: number;
+  avatarId?: PlayerAvatarId;
   teamId: number;
   slotInTeam: number;
   isTeamLeader?: boolean;
@@ -141,6 +186,13 @@ export interface RemotePlayerSync {
   stance: 'stand' | 'crouch' | 'prone';
   isSprinting: boolean;
   isAiming: boolean;
+  isFiring?: boolean;
+  isReloading?: boolean;
+  isHealing?: boolean;
+  isReviving?: boolean;
+  isGrounded?: boolean;
+  isVaulting?: boolean;
+  vaultProgress?: number;
   inWater: boolean;
   isSwimming: boolean;
   isOnSurfboard: boolean;
@@ -177,6 +229,7 @@ export interface RemoteVehicleSync {
 
 export interface RemoteBotSync {
   id: string;
+  teamId?: number;
   x: number;
   y: number;
   z: number;
@@ -186,10 +239,19 @@ export interface RemoteBotSync {
   isDowned: boolean;
   bleedHp: number;
   eliminated: boolean;
+  isDying?: boolean;
   weaponId: WeaponId;
   stance: 'stand' | 'crouch';
+  airState?: 'inPlane' | 'skydiving' | 'parachuting' | 'ground';
   inParachute: boolean;
   isSwimming: boolean;
+  isSprinting?: boolean;
+  isAiming?: boolean;
+  isFiring?: boolean;
+  isReloading?: boolean;
+  isHealing?: boolean;
+  isReviving?: boolean;
+  shotSeq?: number;
   kills: number;
   hidden?: boolean;
 }
@@ -242,6 +304,13 @@ export interface ClientMatchStatePush {
   stance: 'stand' | 'crouch' | 'prone';
   isSprinting: boolean;
   isAiming: boolean;
+  isFiring?: boolean;
+  isReloading?: boolean;
+  isHealing?: boolean;
+  isReviving?: boolean;
+  isGrounded?: boolean;
+  isVaulting?: boolean;
+  vaultProgress?: number;
   inWater: boolean;
   isSwimming: boolean;
   isOnSurfboard: boolean;

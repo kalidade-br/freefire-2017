@@ -13,6 +13,7 @@ import {
   Move,
   Play,
   Plus,
+  Radio,
   Settings,
   Shield,
   ShieldCheck,
@@ -21,8 +22,9 @@ import {
   Users,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-react';
-import { getCharacterAvatar } from '../game/avatars';
+import { getPlayerAvatar } from '../game/avatars';
 import { soundEngine } from '../game/audio';
 import { multiplayerClient, PingStatus } from '../game/multiplayerClient';
 import {
@@ -80,6 +82,11 @@ interface LobbyScreenProps {
   onKickMember: (accountId: number) => void;
   onLeaveParty: () => void;
   onBackToMenu: () => void;
+  isSearchingMatch: boolean;
+  searchElapsedSec: number;
+  searchingPlayersCount: number;
+  onCancelSearch: () => void;
+  onOpenSearchingPlayers: () => void;
 }
 
 export const LobbyScreen: React.FC<LobbyScreenProps> = ({
@@ -118,6 +125,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   onKickMember,
   onLeaveParty,
   onBackToMenu,
+  isSearchingMatch,
+  searchElapsedSec,
+  searchingPlayersCount,
+  onCancelSearch,
+  onOpenSearchingPlayers,
 }) => {
   const [pingInfo, setPingInfo] = useState<PingStatus>(() => multiplayerClient.getPingInfo());
   const [friends, setFriends] = useState<FriendEntry[]>([]);
@@ -186,6 +198,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             nickname: profile.nickname,
             level: profile.level,
             rankPoints: profile.rankPoints,
+            avatarId: profile.avatarId ?? character.avatarId ?? 'default',
             character,
             ready: true,
             isLeader: true,
@@ -247,7 +260,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           >
             <div className="relative w-10 h-10 sm:w-11 sm:h-11 border-2 border-amber-400/80 bg-black shrink-0 overflow-hidden">
               <img
-                src={getCharacterAvatar(character.modelId)}
+                src={getPlayerAvatar(profile.avatarId ?? character.avatarId, character.modelId)}
                 alt={character.name}
                 className="w-full h-full object-cover object-top"
               />
@@ -267,7 +280,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 <RankEmblemSvg
                   color={rank.color}
                   accent={rank.accent}
-                  className="w-4 h-4 shrink-0"
+                  iconUrl={rank.iconUrl}
+                  alt={rank.name}
+                  className="w-5 h-5 shrink-0"
                 />
               </div>
             </div>
@@ -417,7 +432,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           >
             <Award className="w-3.5 h-3.5 shrink-0 text-yellow-300" />
             <span className="text-[11px] font-black uppercase tracking-wider whitespace-nowrap">
-              PATENTES
+              PATENTES / TOP
             </span>
           </button>
 
@@ -433,6 +448,31 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             <span className="text-[11px] font-black uppercase tracking-wider whitespace-nowrap">
               HUD CUSTOM
             </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              soundEngine.playUiClick();
+              onOpenSearchingPlayers();
+            }}
+            className="bg-gradient-to-r from-black/82 to-black/45 hover:from-emerald-500/90 hover:to-emerald-600/70 hover:text-black border-l-4 border-emerald-400 px-2.5 py-2 text-left flex items-center justify-between gap-1.5 cursor-pointer transition-all shadow-md"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Radio
+                className={`w-3.5 h-3.5 shrink-0 ${
+                  searchingPlayersCount > 0 ? 'text-emerald-400 animate-pulse' : 'text-emerald-300'
+                }`}
+              />
+              <span className="text-[11px] font-black uppercase tracking-wider truncate">
+                VER BUSCA
+              </span>
+            </div>
+            {searchingPlayersCount > 0 && (
+              <span className="px-1.5 py-0.5 bg-emerald-400 text-black text-[9px] font-black font-mono shrink-0">
+                {searchingPlayersCount}
+              </span>
+            )}
           </button>
 
           <button
@@ -517,7 +557,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         >
                           <div className="relative w-8 h-8 shrink-0 bg-neutral-900">
                             <img
-                              src={getCharacterAvatar(f.account.character?.modelId)}
+                              src={getPlayerAvatar(
+                                f.account.avatarId ?? f.account.character?.avatarId,
+                                f.account.character?.modelId,
+                              )}
                               alt={f.account.nickname}
                               className="w-full h-full object-cover object-top"
                             />
@@ -669,7 +712,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                       >
                         <div className="flex items-center gap-1.5 min-w-0">
                           <img
-                            src={getCharacterAvatar(member.character?.modelId)}
+                            src={getPlayerAvatar(
+                              member.avatarId ?? member.character?.avatarId,
+                              member.character?.modelId,
+                            )}
                             alt={member.nickname}
                             className="w-5 h-5 object-cover object-top border border-white/30 shrink-0"
                           />
@@ -683,6 +729,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         <RankEmblemSvg
                           color={memberRank.color}
                           accent={memberRank.accent}
+                          iconUrl={memberRank.iconUrl}
+                          alt={memberRank.name}
                           className="w-4 h-4 shrink-0"
                         />
                       </button>
@@ -860,11 +908,12 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           <div className="w-full flex items-stretch gap-1">
             <button
               type="button"
+              disabled={isSearchingMatch}
               onClick={() => {
                 soundEngine.playUiClick(700);
                 onOpenModeSelect();
               }}
-              className="flex-1 bg-[#141923]/92 hover:bg-[#1b2230] border border-white/25 px-2.5 py-1.5 flex items-center gap-2 text-left cursor-pointer transition-colors min-w-0"
+              className="flex-1 bg-[#141923]/92 hover:bg-[#1b2230] disabled:opacity-60 border border-white/25 px-2.5 py-1.5 flex items-center gap-2 text-left cursor-pointer disabled:cursor-not-allowed transition-colors min-w-0"
             >
               {gameVariant === 'gladiadores' ? (
                 <div className="w-7 h-7 bg-red-950/90 border border-red-400/80 flex items-center justify-center shrink-0">
@@ -874,7 +923,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 <RankEmblemSvg
                   color={rank.color}
                   accent={rank.accent}
-                  className="w-7 h-7 shrink-0"
+                  iconUrl={rank.iconUrl}
+                  alt={rank.name}
+                  className="w-8 h-8 shrink-0"
                 />
               )}
               <div className="min-w-0 leading-tight">
@@ -887,19 +938,20 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 </div>
                 <div className="text-[9px] font-mono text-amber-300 truncate">
                   {gameVariant === 'gladiadores'
-                    ? `Arena 3D · ${gladiadoresTargetRounds} Rodadas`
-                    : `${brMapId === 'bermuda' ? 'Bermuda' : 'João Pessoa'} · ${isRanked ? 'Pontos Rank' : 'Sem Pontos'}`}
+                    ? 'Arena 3D · 5 Rodadas (MD5)'
+                    : `${brMapId === 'bermuda' ? 'Bermuda' : 'Bermuda'} · ${isRanked ? 'Pontos Rank' : 'Sem Pontos'}`}
                 </div>
               </div>
             </button>
 
             <button
               type="button"
+              disabled={isSearchingMatch}
               onClick={() => {
                 soundEngine.playUiClick(650);
                 setTeamPickerOpen((v) => !v);
               }}
-              className="bg-[#141923]/92 hover:bg-[#1e2636] border border-amber-400/60 px-2.5 py-1.5 flex flex-col items-center justify-center cursor-pointer transition-colors shrink-0 min-w-[66px]"
+              className="bg-[#141923]/92 hover:bg-[#1e2636] disabled:opacity-60 border border-amber-400/60 px-2.5 py-1.5 flex flex-col items-center justify-center cursor-pointer disabled:cursor-not-allowed transition-colors shrink-0 min-w-[66px]"
               title={gameVariant === 'gladiadores' ? 'Mudar 1v1 / 2v2' : 'Mudar Solo / Duo / Squad'}
             >
               <Users className="w-4 h-4 text-amber-300" />
@@ -909,11 +961,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             </button>
           </div>
 
-          {/* Row 2: Auto Formação Toggle (when BR Duo/Squad) + Big Glossy Golden INICIAR */}
+          {/* Row 2: Auto Formação Toggle (when BR Duo/Squad) + Big Glossy Golden INICIAR OR Small Searching Rectangle */}
           {gameVariant === 'br' && matchMode !== 'solo' && (
             <button
               type="button"
-              disabled={!isPartyLeader}
+              disabled={!isPartyLeader || isSearchingMatch}
               onClick={() => {
                 soundEngine.playUiClick(640);
                 onChangeAutoFillBots(!autoFillBots);
@@ -930,17 +982,41 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             </button>
           )}
 
-          <button
-            type="button"
-            disabled={Boolean(account && !isPartyLeader)}
-            onClick={onStartMatch}
-            className="w-full py-2.5 sm:py-3 bg-gradient-to-b from-yellow-300 via-amber-400 to-amber-500 hover:brightness-110 disabled:from-neutral-700 disabled:to-neutral-700 disabled:text-neutral-300 border border-yellow-100/80 text-black font-black text-base sm:text-lg uppercase tracking-[0.2em] flex items-center justify-center gap-2 shadow-[0_0_24px_rgba(251,191,36,0.45)] active:scale-[0.99] cursor-pointer disabled:cursor-not-allowed transition-all whitespace-nowrap"
-          >
-            <Play className="w-4 h-4 fill-current shrink-0" />
-            <span>
-              {account && !isPartyLeader ? 'AGUARDANDO...' : 'INICIAR'}
-            </span>
-          </button>
+          {isSearchingMatch ? (
+            <div className="w-full bg-[#11161f]/95 border border-amber-400/85 px-3 py-2 flex items-center justify-between gap-3 shadow-[0_0_18px_rgba(251,191,36,0.28)]">
+              <div className="flex-1 text-center leading-tight">
+                <div className="text-lg font-black font-mono tabular-nums text-amber-300">
+                  {Math.floor(searchElapsedSec / 60)}:
+                  {String(searchElapsedSec % 60).padStart(2, '0')}
+                </div>
+                <div className="text-[11px] font-bold tracking-wide text-neutral-200">
+                  Buscando partida
+                </div>
+              </div>
+              {(!account || isPartyLeader) && (
+                <button
+                  type="button"
+                  onClick={onCancelSearch}
+                  title="Cancelar busca"
+                  className="p-1.5 bg-black/60 hover:bg-red-900/90 border border-white/20 text-neutral-200 hover:text-white cursor-pointer transition-colors shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              disabled={Boolean(account && !isPartyLeader)}
+              onClick={onStartMatch}
+              className="w-full py-2.5 sm:py-3 bg-gradient-to-b from-yellow-300 via-amber-400 to-amber-500 hover:brightness-110 disabled:from-neutral-700 disabled:to-neutral-700 disabled:text-neutral-300 border border-yellow-100/80 text-black font-black text-base sm:text-lg uppercase tracking-[0.2em] flex items-center justify-center gap-2 shadow-[0_0_24px_rgba(251,191,36,0.45)] active:scale-[0.99] cursor-pointer disabled:cursor-not-allowed transition-all whitespace-nowrap"
+            >
+              <Play className="w-4 h-4 fill-current shrink-0" />
+              <span>
+                {account && !isPartyLeader ? 'AGUARDANDO...' : 'INICIAR'}
+              </span>
+            </button>
+          )}
         </div>
       </footer>
     </div>

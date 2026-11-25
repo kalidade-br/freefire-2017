@@ -65,6 +65,34 @@
           "enum": ["adam", "eva", "maxim", "kelly"],
           "maxLength": 16
         },
+        "avatarId": {
+          "type": "string",
+          "description": "Equipped profile avatar ID.",
+          "enum": ["default", "adam", "eva", "maxim", "kelly", "angelic", "eagle_eye"],
+          "maxLength": 24
+        },
+        "unlockedAvatars": {
+          "type": "array",
+          "description": "Unlocked profile avatar IDs.",
+          "items": { "type": "string", "maxLength": 24 },
+          "maxItems": 10
+        },
+        "seasonId": {
+          "type": "string",
+          "description": "Current ranked season identifier.",
+          "enum": ["S1"],
+          "maxLength": 8
+        },
+        "s1PeakRankPoints": {
+          "type": "integer",
+          "description": "Highest ranked points reached during Season 1."
+        },
+        "s1ClaimedRewards": {
+          "type": "array",
+          "description": "Claimed Season 1 reward tier IDs.",
+          "items": { "type": "string", "maxLength": 32 },
+          "maxItems": 10
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -90,6 +118,11 @@
         "rankedWins",
         "totalKills",
         "characterModelId",
+        "avatarId",
+        "unlockedAvatars",
+        "seasonId",
+        "s1PeakRankPoints",
+        "s1ClaimedRewards",
         "createdAt",
         "updatedAt"
       ]

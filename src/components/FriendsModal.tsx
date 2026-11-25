@@ -9,7 +9,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { getCharacterAvatar } from '../game/avatars';
+import { getPlayerAvatar } from '../game/avatars';
 import { multiplayerClient } from '../game/multiplayerClient';
 import { getRankInfo } from '../game/types';
 import {
@@ -292,7 +292,10 @@ export const FriendsModal: React.FC<FriendsModalProps> = ({
                       >
                         <div className="relative w-10 h-10 shrink-0 border border-amber-400/60 bg-black/60">
                           <img
-                            src={getCharacterAvatar(f.account.character?.modelId)}
+                            src={getPlayerAvatar(
+                              f.account.avatarId ?? f.account.character?.avatarId,
+                              f.account.character?.modelId,
+                            )}
                             alt={f.account.nickname}
                             className="w-full h-full object-cover object-top"
                           />
@@ -315,7 +318,9 @@ export const FriendsModal: React.FC<FriendsModalProps> = ({
                               <RankEmblemSvg
                                 color={rk.color}
                                 accent={rk.accent}
-                                className="w-3.5 h-3.5 shrink-0"
+                                iconUrl={rk.iconUrl}
+                                alt={rk.name}
+                                className="w-4 h-4 shrink-0"
                               />
                               {rk.name}
                             </span>
@@ -378,7 +383,10 @@ export const FriendsModal: React.FC<FriendsModalProps> = ({
                   <div className="bg-[#18202a] border border-amber-400/70 p-3 flex items-center justify-between gap-3">
                     <div className="flex items-center gap-3 min-w-0">
                       <img
-                        src={getCharacterAvatar(searchResult.character?.modelId)}
+                        src={getPlayerAvatar(
+                          searchResult.avatarId ?? searchResult.character?.avatarId,
+                          searchResult.character?.modelId,
+                        )}
                         alt={searchResult.nickname}
                         className="w-10 h-10 object-cover object-top border border-amber-400/60 shrink-0"
                       />
@@ -454,7 +462,10 @@ export const FriendsModal: React.FC<FriendsModalProps> = ({
                           className="flex items-center gap-2.5 text-left min-w-0 cursor-pointer hover:opacity-90"
                         >
                           <img
-                            src={getCharacterAvatar(req.account.character?.modelId)}
+                            src={getPlayerAvatar(
+                              req.account.avatarId ?? req.account.character?.avatarId,
+                              req.account.character?.modelId,
+                            )}
                             alt={req.account.nickname}
                             className="w-9 h-9 object-cover object-top border border-amber-400/50 shrink-0"
                           />

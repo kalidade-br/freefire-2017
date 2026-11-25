@@ -51,6 +51,11 @@ service cloud.firestore {
           'rankedWins',
           'totalKills',
           'characterModelId',
+          'avatarId',
+          'unlockedAvatars',
+          'seasonId',
+          's1PeakRankPoints',
+          's1ClaimedRewards',
           'createdAt',
           'updatedAt'
         ])
@@ -68,6 +73,11 @@ service cloud.firestore {
           'rankedWins',
           'totalKills',
           'characterModelId',
+          'avatarId',
+          'unlockedAvatars',
+          'seasonId',
+          's1PeakRankPoints',
+          's1ClaimedRewards',
           'createdAt',
           'updatedAt'
         ])
@@ -113,6 +123,25 @@ service cloud.firestore {
         && data.characterModelId is string
         && data.characterModelId.size() <= 16
         && data.characterModelId in ['adam', 'eva', 'maxim', 'kelly']
+        && data.avatarId is string
+        && data.avatarId.size() <= 24
+        && data.avatarId in ['default', 'adam', 'eva', 'maxim', 'kelly', 'angelic', 'eagle_eye']
+        && (!(data.avatarId in ['angelic', 'eagle_eye']) || data.s1PeakRankPoints >= 3100 || data.rankPoints >= 3100)
+        && data.unlockedAvatars is list
+        && data.unlockedAvatars.size() >= 1
+        && data.unlockedAvatars.size() <= 10
+        && data.unlockedAvatars[0] is string
+        && data.unlockedAvatars[0].size() <= 24
+        && (!('angelic' in data.unlockedAvatars) || data.s1PeakRankPoints >= 3100 || data.rankPoints >= 3100)
+        && (!('eagle_eye' in data.unlockedAvatars) || data.s1PeakRankPoints >= 3100 || data.rankPoints >= 3100)
+        && data.seasonId is string
+        && data.seasonId == 'S1'
+        && data.s1PeakRankPoints is int
+        && data.s1PeakRankPoints >= 0
+        && data.s1PeakRankPoints <= 1000000
+        && data.s1ClaimedRewards is list
+        && data.s1ClaimedRewards.size() <= 10
+        && (data.s1ClaimedRewards.size() == 0 || (data.s1ClaimedRewards[0] is string && data.s1ClaimedRewards[0].size() <= 32))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -151,7 +180,7 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && isNearRequestTime(incoming().updatedAt)
         && (
-          // Action: Update player stats, currency, nickname, or character selection
+          // Action: Update player stats, currency, nickname, avatar, Season 1 progress, or character selection
           incoming().diff(existing()).affectedKeys().hasOnly([
             'nickname',
             'level',
@@ -164,6 +193,11 @@ service cloud.firestore {
             'rankedWins',
             'totalKills',
             'characterModelId',
+            'avatarId',
+            'unlockedAvatars',
+            'seasonId',
+            's1PeakRankPoints',
+            's1ClaimedRewards',
             'updatedAt'
           ])
         );

@@ -3,6 +3,7 @@ import type {
   BrMapId,
   CharacterConfig,
   MatchMode,
+  NetworkSyncPreset,
   WeaponId,
 } from './types';
 import type {
@@ -12,11 +13,13 @@ import type {
   MatchRoomAction,
   MatchRoomJoinInfo,
   MatchRoomSnapshot,
+  MatchmakingSearchStatus,
   PartyInvitePayload,
   PartyState,
   PublicPlayerAccount,
   RemoteGlooWallSync,
   RemoteKillFeedEvent,
+  SearchingPoolInfo,
 } from '../shared/multiplayerTypes';
 
 const RAW_API_BASE = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
@@ -108,7 +111,23 @@ export type MultiplayerServerEvent =
     }
   | { type: 'friends_refresh' }
   | { type: 'match_kicked'; roomId: string; reason: string }
-  | { type: 'webrtc_signal'; fromAccountId: number; signal: unknown };
+  | { type: 'webrtc_signal'; fromAccountId: number; signal: unknown }
+  | {
+      type: 'ws_ready';
+      serverTimeMs: number;
+      capabilities: { cloudSql: boolean; supabase: boolean; websocket: boolean };
+    }
+  | { type: 'leaderboard_update' }
+  | { type: 'matchmaking_status'; status: MatchmakingSearchStatus }
+  | { type: 'matchmaking_queue_update'; pools: SearchingPoolInfo[] }
+  | {
+      type: 'chat_message';
+      scope: 'party' | 'match';
+      fromAccountId: number;
+      nickname: string;
+      text: string;
+      sentAtMs: number;
+    };
 
 type EventListener = (ev: MultiplayerServerEvent) => void;
 
@@ -122,6 +141,12 @@ class MultiplayerClient {
   private reconnectTimer: number | null = null;
   private listeners = new Set<EventListener>();
   private lastRoomSnapshot: MatchRoomSnapshot | null = null;
+  private lastParty: PartyState | null = null;
+  private pendingWebrtcSignals: Array<{
+    targetAccountId: number;
+    signal: unknown;
+    queuedAtMs: number;
+  }> = [];
 
   // Real-time RTT / Ping tracking (ms + 999+ disconnect detection)
   private lastMeasuredPingMs = 24;
@@ -130,6 +155,10 @@ class MultiplayerClient {
   private connectionLost = typeof navigator !== 'undefined' ? !navigator.onLine : false;
   private pingProbeTimer: number | null = null;
   private probeInFlight = false;
+  private syncPreset: NetworkSyncPreset = 'fast';
+  private lowLatencyMode = true;
+  private highPingSmoothing = true;
+  private activeSyncAbort: AbortController | null = null;
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -146,12 +175,49 @@ class MultiplayerClient {
     }
   }
 
+  public configureNetwork(opts: {
+    syncPreset?: NetworkSyncPreset;
+    lowLatencyMode?: boolean;
+    highPingSmoothing?: boolean;
+  }): void {
+    if (opts.syncPreset) this.syncPreset = opts.syncPreset;
+    if (typeof opts.lowLatencyMode === 'boolean') this.lowLatencyMode = opts.lowLatencyMode;
+    if (typeof opts.highPingSmoothing === 'boolean') this.highPingSmoothing = opts.highPingSmoothing;
+    if (typeof window !== 'undefined') {
+      if (this.pingProbeTimer !== null) {
+        window.clearInterval(this.pingProbeTimer);
+        this.pingProbeTimer = null;
+      }
+      this.startPingLoop();
+    }
+  }
+
+  public getNetworkConfig(): {
+    syncPreset: NetworkSyncPreset;
+    lowLatencyMode: boolean;
+    highPingSmoothing: boolean;
+    wsConnected: boolean;
+  } {
+    return {
+      syncPreset: this.syncPreset,
+      lowLatencyMode: this.lowLatencyMode,
+      highPingSmoothing: this.highPingSmoothing,
+      wsConnected: Boolean(this.ws && this.ws.readyState === WebSocket.OPEN),
+    };
+  }
+
+  private getPingProbeIntervalMs(): number {
+    if (this.lowLatencyMode || this.syncPreset === 'ultra') return 650;
+    if (this.syncPreset === 'economy') return 1800;
+    return 1000;
+  }
+
   private startPingLoop(): void {
     if (typeof window === 'undefined' || this.pingProbeTimer !== null) return;
     void this.probePing();
     this.pingProbeTimer = window.setInterval(() => {
       void this.probePing();
-    }, 1000);
+    }, this.getPingProbeIntervalMs());
   }
 
   private markRequestStarted(): number {
@@ -269,7 +335,9 @@ class MultiplayerClient {
   }
 
   private emit(ev: MultiplayerServerEvent): void {
-    if (ev.type === 'room_snapshot') {
+    if (ev.type === 'party_update') {
+      this.lastParty = ev.party;
+    } else if (ev.type === 'room_snapshot') {
       this.lastRoomSnapshot = ev.snapshot;
       if (this.lastWsSyncSentAtMs !== null) {
         this.markRequestSucceeded(this.lastWsSyncSentAtMs);
@@ -287,6 +355,10 @@ class MultiplayerClient {
 
   public getLatestSnapshot(): MatchRoomSnapshot | null {
     return this.lastRoomSnapshot;
+  }
+
+  public getLatestParty(): PartyState | null {
+    return this.lastParty;
   }
 
   public connectWs(): void {
@@ -311,6 +383,22 @@ class MultiplayerClient {
         this.wsFailedWithoutOpenCount = 0;
         this.wsConnecting = false;
         this.connectionLost = false;
+        const cutoff = Date.now() - 12_000;
+        const toFlush = this.pendingWebrtcSignals.filter((item) => item.queuedAtMs >= cutoff);
+        this.pendingWebrtcSignals = [];
+        for (const item of toFlush) {
+          try {
+            socket.send(
+              JSON.stringify({
+                type: 'webrtc_signal',
+                targetAccountId: item.targetAccountId,
+                signal: item.signal,
+              }),
+            );
+          } catch {
+            // ignore
+          }
+        }
         void this.probePing();
       };
 
@@ -364,10 +452,11 @@ class MultiplayerClient {
           this.markConnectionFailed();
         }
         if (this.token && !this.wsUnsupported && this.reconnectTimer === null) {
+          const delay = this.lowLatencyMode ? 550 : 1800;
           this.reconnectTimer = window.setTimeout(() => {
             this.reconnectTimer = null;
             this.connectWs();
-          }, 1800);
+          }, delay);
         }
       };
     } catch {
@@ -492,6 +581,7 @@ class MultiplayerClient {
       method: 'POST',
       body: JSON.stringify(params),
     });
+    this.emit({ type: 'party_update', party: res.party });
     this.setToken(res.token);
     return res;
   }
@@ -514,6 +604,7 @@ class MultiplayerClient {
       method: 'POST',
       body: JSON.stringify(params),
     });
+    this.emit({ type: 'party_update', party: res.party });
     this.setToken(res.token);
     return res;
   }
@@ -549,6 +640,7 @@ class MultiplayerClient {
           method: 'POST',
           body: JSON.stringify(params),
         });
+        this.emit({ type: 'party_update', party: res.party });
         this.setToken(res.token);
         return res;
       } finally {
@@ -558,10 +650,60 @@ class MultiplayerClient {
     return this.inFlightFirebaseLogin;
   }
 
+  public async loginGuest(params: {
+    nickname?: string;
+    character?: Partial<CharacterConfig>;
+  } = {}): Promise<{
+    token: string;
+    account: PublicPlayerAccount;
+    party: PartyState;
+    invites: PartyInvitePayload[];
+  }> {
+    const res = await this.request<{
+      token: string;
+      account: PublicPlayerAccount;
+      party: PartyState;
+      invites: PartyInvitePayload[];
+    }>('/api/auth/guest', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+    this.emit({ type: 'party_update', party: res.party });
+    this.setToken(res.token);
+    return res;
+  }
+
+  public async loginWithSupabase(params: {
+    accessToken: string;
+    nickname?: string;
+    character?: Partial<CharacterConfig>;
+  }): Promise<{
+    token: string;
+    account: PublicPlayerAccount;
+    party: PartyState;
+    invites: PartyInvitePayload[];
+  }> {
+    const res = await this.request<{
+      token: string;
+      account: PublicPlayerAccount;
+      party: PartyState;
+      invites: PartyInvitePayload[];
+    }>('/api/auth/supabase', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+    this.emit({ type: 'party_update', party: res.party });
+    this.setToken(res.token);
+    return res;
+  }
+
   public async logout(): Promise<void> {
     if (this.token) {
       await this.request('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
     }
+    this.lastParty = null;
+    this.lastRoomSnapshot = null;
+    this.pendingWebrtcSignals = [];
     this.setToken(null);
   }
 
@@ -575,12 +717,14 @@ class MultiplayerClient {
       party: PartyState;
       invites: PartyInvitePayload[];
     }>('/api/auth/me');
+    this.emit({ type: 'party_update', party: res.party });
     this.connectWs();
     return res;
   }
 
   public async updateProfile(patch: Partial<{
     nickname: string;
+    avatarId: string;
     level: number;
     gold: number;
     gems: number;
@@ -595,6 +739,18 @@ class MultiplayerClient {
     return this.request<{ account: PublicPlayerAccount }>('/api/profile/me', {
       method: 'PUT',
       body: JSON.stringify(patch),
+    });
+  }
+
+  public async claimSeason1Reward(rewardId: string): Promise<{
+    account: PublicPlayerAccount;
+    grantedGold: number;
+    grantedGems: number;
+    grantedAvatars: string[];
+  }> {
+    return this.request('/api/season/s1/claim', {
+      method: 'POST',
+      body: JSON.stringify({ rewardId }),
     });
   }
 
@@ -652,7 +808,13 @@ class MultiplayerClient {
     invites: PartyInvitePayload[];
     roomJoinInfo: MatchRoomJoinInfo | null;
   }> {
-    return this.request('/api/party');
+    const res = await this.request<{
+      party: PartyState;
+      invites: PartyInvitePayload[];
+      roomJoinInfo: MatchRoomJoinInfo | null;
+    }>('/api/party');
+    this.emit({ type: 'party_update', party: res.party });
+    return res;
   }
 
   public async setPartyConfig(cfg: Partial<{
@@ -661,44 +823,92 @@ class MultiplayerClient {
     isRanked: boolean;
     autoFillBots: boolean;
   }>): Promise<{ party: PartyState }> {
-    return this.request('/api/party/config', {
+    const res = await this.request<{ party: PartyState }>('/api/party/config', {
       method: 'POST',
       body: JSON.stringify(cfg),
     });
+    this.emit({ type: 'party_update', party: res.party });
+    return res;
   }
 
   public async inviteToParty(targetAccountId: number): Promise<{ ok: boolean; party: PartyState }> {
-    return this.request('/api/party/invite', {
+    const res = await this.request<{ ok: boolean; party: PartyState }>('/api/party/invite', {
       method: 'POST',
       body: JSON.stringify({ targetAccountId }),
     });
+    this.emit({ type: 'party_update', party: res.party });
+    return res;
   }
 
   public async respondPartyInvite(
     inviteId: string,
     accept: boolean,
   ): Promise<{ ok: boolean; party: PartyState }> {
-    return this.request('/api/party/invite/respond', {
+    const res = await this.request<{ ok: boolean; party: PartyState }>('/api/party/invite/respond', {
       method: 'POST',
       body: JSON.stringify({ inviteId, accept }),
     });
+    this.emit({ type: 'party_update', party: res.party });
+    return res;
   }
 
   public async leaveParty(): Promise<{ party: PartyState }> {
-    return this.request('/api/party/leave', { method: 'POST' });
+    const res = await this.request<{ party: PartyState }>('/api/party/leave', { method: 'POST' });
+    this.emit({ type: 'party_update', party: res.party });
+    return res;
   }
 
   public async kickPartyMember(targetAccountId: number): Promise<{ party: PartyState }> {
-    return this.request('/api/party/kick', {
+    const res = await this.request<{ party: PartyState }>('/api/party/kick', {
       method: 'POST',
       body: JSON.stringify({ targetAccountId }),
     });
+    this.emit({ type: 'party_update', party: res.party });
+    return res;
   }
 
-  // --- MATCHMAKING & 50MS SYNC ---
-  public async startMatchmaking(): Promise<{ joinInfo: MatchRoomJoinInfo }> {
+  // --- MATCHMAKING QUEUE (INITIAL LOBBY) & 50MS SYNC ---
+  public async startMatchmaking(): Promise<{ search: MatchmakingSearchStatus }> {
     this.lastRoomSnapshot = null;
     return this.request('/api/matchmaking/start', { method: 'POST' });
+  }
+
+  public async joinMatchmakingQueue(
+    poolKey: string,
+  ): Promise<{ search: MatchmakingSearchStatus; party: PartyState }> {
+    this.lastRoomSnapshot = null;
+    const res = await this.request<{ search: MatchmakingSearchStatus; party: PartyState }>(
+      '/api/matchmaking/join-queue',
+      {
+        method: 'POST',
+        body: JSON.stringify({ poolKey }),
+      },
+    );
+    this.emit({ type: 'party_update', party: res.party });
+    return res;
+  }
+
+  public async cancelMatchmaking(): Promise<{ ok: boolean; party?: PartyState }> {
+    if (!this.token) return { ok: true };
+    const res = await this.request<{ ok: boolean; party?: PartyState }>(
+      '/api/matchmaking/cancel',
+      { method: 'POST' },
+    );
+    if (res.party) {
+      this.emit({ type: 'party_update', party: res.party });
+    }
+    return res;
+  }
+
+  public async getMatchmakingStatus(): Promise<{
+    search: MatchmakingSearchStatus;
+    joinInfo?: MatchRoomJoinInfo;
+  }> {
+    return this.request('/api/matchmaking/status');
+  }
+
+  public async getSearchingPlayers(): Promise<{ pools: SearchingPoolInfo[] }> {
+    return this.request('/api/matchmaking/searching');
   }
 
   public async leaveMatch(): Promise<void> {
@@ -712,15 +922,33 @@ class MultiplayerClient {
     state?: ClientMatchStatePush,
     actions?: MatchRoomAction[],
   ): Promise<MatchRoomSnapshot> {
-    const res = await this.request<{ snapshot: MatchRoomSnapshot }>(
-      `/api/match/${encodeURIComponent(roomId)}/sync`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ state, actions }),
-      },
-    );
-    this.emit({ type: 'room_snapshot', snapshot: res.snapshot });
-    return res.snapshot;
+    if (this.lowLatencyMode && this.activeSyncAbort) {
+      this.activeSyncAbort.abort();
+      this.activeSyncAbort = null;
+    }
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    if (ctrl) this.activeSyncAbort = ctrl;
+    const timeoutMs = this.lowLatencyMode ? 1150 : 2400;
+    const timer =
+      typeof window !== 'undefined' && ctrl
+        ? window.setTimeout(() => ctrl.abort(), timeoutMs)
+        : null;
+    try {
+      const res = await this.request<{ snapshot: MatchRoomSnapshot }>(
+        `/api/match/${encodeURIComponent(roomId)}/sync`,
+        {
+          method: 'POST',
+          cache: 'no-store',
+          signal: ctrl?.signal,
+          body: JSON.stringify({ state, actions }),
+        },
+      );
+      this.emit({ type: 'room_snapshot', snapshot: res.snapshot });
+      return res.snapshot;
+    } finally {
+      if (timer !== null) window.clearTimeout(timer);
+      if (this.activeSyncAbort === ctrl) this.activeSyncAbort = null;
+    }
   }
 
   public sendWsState(state: ClientMatchStatePush): boolean {
@@ -747,7 +975,81 @@ class MultiplayerClient {
       this.ws.send(JSON.stringify({ type: 'webrtc_signal', targetAccountId, signal }));
       return true;
     }
+    if (this.token) {
+      if (this.pendingWebrtcSignals.length > 64) {
+        this.pendingWebrtcSignals.shift();
+      }
+      this.pendingWebrtcSignals.push({
+        targetAccountId,
+        signal,
+        queuedAtMs: Date.now(),
+      });
+      this.connectWs();
+    }
     return false;
+  }
+
+  public sendChatMessage(text: string): boolean {
+    const clean = text.trim().slice(0, 160);
+    if (!clean) return false;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'lobby_chat', text: clean }));
+      return true;
+    }
+    return false;
+  }
+
+  public async getLeaderboard(limit = 50): Promise<{
+    source: string;
+    leaderboard: Array<{
+      publicId: string;
+      nickname: string;
+      level: number;
+      rankPoints: number;
+      wins: number;
+      totalKills: number;
+      matchesPlayed: number;
+    }>;
+  }> {
+    return this.request(`/api/leaderboard?limit=${encodeURIComponent(String(limit))}`);
+  }
+
+  public async getMyMatchHistory(limit = 20): Promise<{
+    matches: Array<{
+      id: number;
+      roomId: string;
+      mode: string;
+      mapId: string;
+      isRanked: boolean;
+      placement: number;
+      kills: number;
+      damage: number;
+      survivalSec: number;
+      booyah: boolean;
+      rankDelta: number;
+      createdAt: string;
+    }>;
+  }> {
+    return this.request(`/api/matches/me?limit=${encodeURIComponent(String(limit))}`);
+  }
+
+  public async recordMatchResult(entry: {
+    roomId: string;
+    mode: string;
+    mapId: string;
+    isRanked: boolean;
+    placement: number;
+    kills: number;
+    damage: number;
+    survivalSec: number;
+    booyah: boolean;
+    rankDelta: number;
+  }): Promise<void> {
+    if (!this.token) return;
+    await this.request('/api/matches/record', {
+      method: 'POST',
+      body: JSON.stringify(entry),
+    });
   }
 }
 

@@ -15,18 +15,27 @@ import {
   saveSettings,
 } from './game/storage';
 import {
+  FREE_PLAYER_AVATARS,
+  S1_MESTRE_AVATARS,
+  normalizePlayerAvatarId,
+} from './game/avatars';
+import {
   BrMapId,
+  CURRENT_RANKED_SEASON,
   CharacterConfig,
   GameSettings,
   GameState,
   GameVariant,
   GladiadoresFormat,
   HudSnapshot,
+  MESTRE_MIN_PTS,
   MatchMode,
   MinimapBuilding,
   MinimapRoad,
+  PlayerAvatarId,
   PlayerProfile,
   PoiMarker,
+  SEASON_1_REWARDS,
   computeRankedPointDelta,
   getCharacterPresetByModelId,
   normalizeCharacterModelId,
@@ -37,6 +46,7 @@ import {
   PartyInvitePayload,
   PartyState,
   PublicPlayerAccount,
+  SearchingPoolInfo,
 } from './shared/multiplayerTypes';
 import { BootAndLoadingScreen } from './components/BootAndLoadingScreen';
 import { MainMenuScreen } from './components/MainMenuScreen';
@@ -47,9 +57,10 @@ import {
   CreditsModal,
   SettingsModal,
 } from './components/Modals';
-import { MatchmakingOverlay } from './components/MatchmakingOverlay';
+import { SearchingPlayersModal } from './components/SearchingPlayersModal';
 import { GameHud } from './components/GameHud';
 import { EndMatchModal } from './components/EndMatchModal';
+import { GgMouseMacroModal } from './components/GgMouseMacroModal';
 import { HudEditorModal } from './components/HudEditorModal';
 import { BackpackModal } from './components/BackpackModal';
 import { VendingShopModal } from './components/VendingShopModal';
@@ -320,9 +331,13 @@ export default function App() {
   const [showModeModal, setShowModeModal] = useState(false);
   const [showCharModal, setShowCharModal] = useState(false);
   const [showArsenalModal, setShowArsenalModal] = useState(false);
+  const [arsenalInitialTab, setArsenalInitialTab] = useState<'weapons' | 'avatars'>('weapons');
   const [showRankModal, setShowRankModal] = useState(false);
+  const [claimingRewardId, setClaimingRewardId] = useState<string | null>(null);
+  const [seasonClaimFeedback, setSeasonClaimFeedback] = useState<string | null>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showHudEditor, setShowHudEditor] = useState(false);
+  const [showGgMacroModal, setShowGgMacroModal] = useState(false);
   const [showCreditsModal, setShowCreditsModal] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isBackpackOpen, setIsBackpackOpen] = useState(false);
@@ -339,7 +354,18 @@ export default function App() {
     newPoints: number;
   } | null>(null);
   const [webglError, setWebglError] = useState<string | null>(null);
-  const [onlineStarting, setOnlineStarting] = useState(false);
+  const [searchState, setSearchState] = useState<{
+    active: boolean;
+    startedAtMs: number;
+    poolKey: string | null;
+    isOffline: boolean;
+  }>({ active: false, startedAtMs: 0, poolKey: null, isOffline: false });
+  const [searchElapsedSec, setSearchElapsedSec] = useState(0);
+  const [searchingPools, setSearchingPools] = useState<SearchingPoolInfo[]>([]);
+  const [showSearchingModal, setShowSearchingModal] = useState(false);
+  const [joiningPoolKey, setJoiningPoolKey] = useState<string | null>(null);
+  const [searchJoinError, setSearchJoinError] = useState<string | null>(null);
+  const offlineLaunchTimerRef = useRef<number | null>(null);
   const [needsRotateLandscape, setNeedsRotateLandscape] = useState(() => {
     if (typeof window === 'undefined') return false;
     return isTouchMobileDevice() && window.innerHeight > window.innerWidth;
@@ -382,6 +408,22 @@ export default function App() {
   const applyServerAccount = useCallback((acc: PublicPlayerAccount) => {
     setAccount(acc);
     voiceChatManager.setLocalAccountId(acc.id);
+    const mergedAvatar = normalizePlayerAvatarId(acc.avatarId ?? acc.character?.avatarId);
+    const mergedPeak = Math.max(
+      acc.rankPoints ?? 0,
+      acc.s1PeakRankPoints ?? 0,
+    );
+    const mergedUnlocked = Array.from(
+      new Set<PlayerAvatarId>([
+        ...FREE_PLAYER_AVATARS,
+        ...(acc.unlockedAvatars ?? []),
+        ...(mergedPeak >= MESTRE_MIN_PTS ? S1_MESTRE_AVATARS : []),
+      ]),
+    );
+    const safeAvatar: PlayerAvatarId = mergedUnlocked.includes(mergedAvatar)
+      ? mergedAvatar
+      : 'default';
+
     const mergedProfile: PlayerProfile = {
       nickname: acc.nickname,
       level: acc.level,
@@ -393,30 +435,36 @@ export default function App() {
       rankedMatches: acc.rankedMatches,
       rankedWins: acc.rankedWins,
       totalKills: acc.totalKills,
+      avatarId: safeAvatar,
+      unlockedAvatars: mergedUnlocked,
+      seasonId: acc.seasonId || CURRENT_RANKED_SEASON,
+      s1PeakRankPoints: mergedPeak,
+      s1ClaimedRewards: Array.isArray(acc.s1ClaimedRewards) ? acc.s1ClaimedRewards : [],
     };
     setProfile(mergedProfile);
     saveProfile(mergedProfile);
     engineRef.current?.setPlayerNickname(acc.nickname);
 
-    if (acc.character && acc.character.modelId) {
-      const preset = getCharacterPresetByModelId(acc.character.modelId);
-      const nextChar: CharacterConfig = {
-        ...characterRef.current,
-        ...acc.character,
-        id: preset.id,
-        name: preset.name,
-        modelId: preset.modelId,
-        hairStyle: preset.hairStyle,
-        vestEnabled: false,
-      };
-      setCharacter(nextChar);
-      saveCharacterConfig(nextChar);
-      engineRef.current?.updateCharacterConfig(nextChar);
-    }
+    const basePreset = getCharacterPresetByModelId(
+      acc.character?.modelId ?? characterRef.current.modelId,
+    );
+    const nextChar: CharacterConfig = {
+      ...characterRef.current,
+      ...(acc.character ?? {}),
+      id: basePreset.id,
+      name: basePreset.name,
+      modelId: basePreset.modelId,
+      avatarId: safeAvatar,
+      hairStyle: basePreset.hairStyle,
+      vestEnabled: false,
+    };
+    setCharacter(nextChar);
+    saveCharacterConfig(nextChar);
+    engineRef.current?.updateCharacterConfig(nextChar);
   }, []);
 
   const syncPartyConfigState = useCallback((nextParty: PartyState) => {
-    const nextMap: BrMapId = nextParty.mapId === 'joao_pessoa' ? 'joao_pessoa' : 'bermuda';
+    const nextMap: BrMapId = 'bermuda';
     setParty(nextParty);
     setBrMapId(nextMap);
     setMatchMode(nextParty.mode);
@@ -435,7 +483,13 @@ export default function App() {
     if (!engineRef.current) return;
     if (activeLaunchedRoomIdRef.current === joinInfo.roomId) return;
     activeLaunchedRoomIdRef.current = joinInfo.roomId;
-    setOnlineStarting(false);
+    if (offlineLaunchTimerRef.current !== null) {
+      window.clearTimeout(offlineLaunchTimerRef.current);
+      offlineLaunchTimerRef.current = null;
+    }
+    setSearchState({ active: false, startedAtMs: 0, poolKey: null, isOffline: false });
+    setSearchElapsedSec(0);
+    setShowSearchingModal(false);
     setShowAuthModal(false);
     setShowFriendsModal(false);
     setShowModeModal(false);
@@ -492,9 +546,15 @@ export default function App() {
                   rankedMatches: fsProf.rankedMatches,
                   rankedWins: fsProf.rankedWins,
                   totalKills: fsProf.totalKills,
+                  avatarId: fsProf.avatarId,
+                  unlockedAvatars: fsProf.unlockedAvatars,
+                  seasonId: fsProf.seasonId,
+                  s1PeakRankPoints: fsProf.s1PeakRankPoints,
+                  s1ClaimedRewards: fsProf.s1ClaimedRewards,
                   character: {
                     ...res.account.character,
                     modelId: fsProf.characterModelId,
+                    avatarId: fsProf.avatarId,
                   },
                 }
               : res.account;
@@ -521,9 +581,15 @@ export default function App() {
                 rankedMatches: fsProf.rankedMatches,
                 rankedWins: fsProf.rankedWins,
                 totalKills: fsProf.totalKills,
+                avatarId: fsProf.avatarId,
+                unlockedAvatars: fsProf.unlockedAvatars,
+                seasonId: fsProf.seasonId,
+                s1PeakRankPoints: fsProf.s1PeakRankPoints,
+                s1ClaimedRewards: fsProf.s1ClaimedRewards,
                 character: {
                   ...accountRef.current.character,
                   modelId: fsProf.characterModelId,
+                  avatarId: fsProf.avatarId,
                 },
               });
             }
@@ -537,11 +603,37 @@ export default function App() {
     const unsub = multiplayerClient.subscribe((ev) => {
       if (ev.type === 'party_update') {
         syncPartyConfigState(ev.party);
+        if (ev.party.status === 'matchmaking') {
+          setSearchState((cur) =>
+            cur.active
+              ? cur
+              : { active: true, startedAtMs: Date.now(), poolKey: null, isOffline: false },
+          );
+        } else if (ev.party.status === 'idle') {
+          setSearchState((cur) =>
+            cur.isOffline ? cur : { active: false, startedAtMs: 0, poolKey: null, isOffline: false },
+          );
+        }
       } else if (ev.type === 'party_invite') {
         setInvites((prev) => {
           if (prev.some((p) => p.inviteId === ev.invite.inviteId)) return prev;
           return [ev.invite, ...prev];
         });
+      } else if (ev.type === 'matchmaking_queue_update') {
+        setSearchingPools(ev.pools);
+      } else if (ev.type === 'matchmaking_status') {
+        if (ev.status.searching) {
+          setSearchState({
+            active: true,
+            startedAtMs: ev.status.startedAtMs ?? Date.now(),
+            poolKey: ev.status.poolKey ?? null,
+            isOffline: false,
+          });
+        } else {
+          setSearchState((cur) =>
+            cur.isOffline ? cur : { active: false, startedAtMs: 0, poolKey: null, isOffline: false },
+          );
+        }
       } else if (ev.type === 'match_found') {
         launchOnlineRoom(ev.joinInfo);
       }
@@ -551,6 +643,60 @@ export default function App() {
       unsubAuth();
     };
   }, [applyServerAccount, launchOnlineRoom, syncPartyConfigState]);
+
+  // Initial-lobby search timer ticker (0:00, 0:07...) & fallback status poll
+  useEffect(() => {
+    if (!searchState.active) {
+      setSearchElapsedSec(0);
+      return;
+    }
+    const tick = () => {
+      setSearchElapsedSec(Math.max(0, Math.floor((Date.now() - searchState.startedAtMs) / 1000)));
+    };
+    tick();
+    const timerId = window.setInterval(tick, 250);
+
+    let pollId: number | null = null;
+    if (!searchState.isOffline) {
+      pollId = window.setInterval(() => {
+        void multiplayerClient
+          .getMatchmakingStatus()
+          .then((res) => {
+            if (res.joinInfo) {
+              launchOnlineRoom(res.joinInfo);
+            } else if (!res.search.searching) {
+              setSearchState((cur) =>
+                cur.isOffline
+                  ? cur
+                  : { active: false, startedAtMs: 0, poolKey: null, isOffline: false },
+              );
+            }
+          })
+          .catch(() => undefined);
+      }, 1200);
+    }
+
+    return () => {
+      window.clearInterval(timerId);
+      if (pollId !== null) window.clearInterval(pollId);
+    };
+  }, [launchOnlineRoom, searchState.active, searchState.isOffline, searchState.startedAtMs]);
+
+  // Keep live list of searching players fresh while in initial lobby
+  const refreshSearchingPools = useCallback(() => {
+    void multiplayerClient
+      .getSearchingPlayers()
+      .then((res) => setSearchingPools(res.pools))
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (gameState !== GameState.LOBBY) return;
+    refreshSearchingPools();
+    const intervalMs = showSearchingModal ? 2000 : 5000;
+    const id = window.setInterval(refreshSearchingPools, intervalMs);
+    return () => window.clearInterval(id);
+  }, [gameState, refreshSearchingPools, showSearchingModal]);
 
   // Keep 3D Lobby Squad characters synced side-by-side with current party & mode
   useEffect(() => {
@@ -616,7 +762,7 @@ export default function App() {
     }
     prevBackpackOpenRef.current = isBackpackOpen;
 
-    if (isBackpackOpen || isPaused || isShopOpen) {
+    if (isBackpackOpen || isPaused || isShopOpen || showGgMacroModal || showSettingsModal || showHudEditor) {
       soundEngine.stopRunAudio();
       if (document.pointerLockElement) {
         document.exitPointerLock?.();
@@ -657,7 +803,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isBackpackOpen, isPaused, isShopOpen, gameState, settings.keyBindings?.backpack]);
+  }, [isBackpackOpen, isPaused, isShopOpen, showGgMacroModal, showSettingsModal, showHudEditor, gameState, settings.keyBindings?.backpack]);
 
   // Mount WebGLRenderer once inside isolated container
   useEffect(() => {
@@ -753,6 +899,18 @@ export default function App() {
           prevPoints: curProfile.rankPoints,
           newPoints: nextRankPts,
         });
+        const nextPeak = Math.max(
+          curProfile.s1PeakRankPoints ?? 0,
+          curProfile.rankPoints,
+          nextRankPts,
+        );
+        const nextUnlocked = Array.from(
+          new Set<PlayerAvatarId>([
+            ...FREE_PLAYER_AVATARS,
+            ...(curProfile.unlockedAvatars ?? []),
+            ...(nextPeak >= MESTRE_MIN_PTS ? S1_MESTRE_AVATARS : []),
+          ]),
+        );
         const updated: PlayerProfile = {
           ...curProfile,
           matchesPlayed: curProfile.matchesPlayed + 1,
@@ -762,11 +920,29 @@ export default function App() {
           rankedMatches: rankedActive ? curProfile.rankedMatches + 1 : curProfile.rankedMatches,
           rankedWins: rankedActive && isWin ? curProfile.rankedWins + 1 : curProfile.rankedWins,
           totalKills: curProfile.totalKills + snap.kills,
+          seasonId: CURRENT_RANKED_SEASON,
+          s1PeakRankPoints: nextPeak,
+          unlockedAvatars: nextUnlocked,
         };
         setProfile(updated);
         saveProfile(updated);
 
         if (accountRef.current) {
+          const activeRoomId = multiplayerClient.getLatestSnapshot()?.roomId ?? 'offline';
+          void multiplayerClient
+            .recordMatchResult({
+              roomId: activeRoomId,
+              mode: snap.matchMode,
+              mapId: snap.mapId,
+              isRanked: rankedActive,
+              placement,
+              kills: snap.kills,
+              damage: Math.round(snap.damageDealt),
+              survivalSec: Math.round(snap.matchSurvivalSec ?? 0),
+              booyah: isWin,
+              rankDelta: appliedDelta,
+            })
+            .catch(() => undefined);
           void multiplayerClient.leaveMatch();
           void multiplayerClient
             .updateProfile({
@@ -778,7 +954,7 @@ export default function App() {
               rankedWins: updated.rankedWins,
               totalKills: updated.totalKills,
             })
-            .then((res) => setAccount(res.account))
+            .then((res) => applyServerAccount(res.account))
             .catch(() => undefined);
         }
 
@@ -791,6 +967,9 @@ export default function App() {
             rankedMatches: updated.rankedMatches,
             rankedWins: updated.rankedWins,
             totalKills: updated.totalKills,
+            seasonId: CURRENT_RANKED_SEASON,
+            s1PeakRankPoints: updated.s1PeakRankPoints,
+            unlockedAvatars: updated.unlockedAvatars,
           }).catch(() => undefined);
         }
       }
@@ -858,6 +1037,107 @@ export default function App() {
     }
   };
 
+  const handleSelectAvatar = async (nextAvatarId: PlayerAvatarId) => {
+    const cleanAvatar = normalizePlayerAvatarId(nextAvatarId);
+    const peak = Math.max(profile.rankPoints, profile.s1PeakRankPoints ?? 0);
+    const unlockedSet = new Set<PlayerAvatarId>([
+      ...FREE_PLAYER_AVATARS,
+      ...(profile.unlockedAvatars ?? []),
+      ...(peak >= MESTRE_MIN_PTS ? S1_MESTRE_AVATARS : []),
+    ]);
+    if (!unlockedSet.has(cleanAvatar)) return;
+
+    soundEngine.playUiClick(740);
+    const nextChar: CharacterConfig = { ...character, avatarId: cleanAvatar };
+    const nextProf: PlayerProfile = {
+      ...profile,
+      avatarId: cleanAvatar,
+      unlockedAvatars: Array.from(unlockedSet),
+    };
+    setCharacter(nextChar);
+    saveCharacterConfig(nextChar);
+    setProfile(nextProf);
+    saveProfile(nextProf);
+
+    if (account) {
+      try {
+        const res = await multiplayerClient.updateProfile({
+          avatarId: cleanAvatar,
+          character: nextChar,
+        });
+        applyServerAccount(res.account);
+      } catch {
+        // ignore transient sync error
+      }
+    }
+    if (firebaseUserRef.current) {
+      void saveFirestoreProfile(firebaseUserRef.current, {
+        avatarId: cleanAvatar,
+      }).catch(() => undefined);
+    }
+  };
+
+  const handleClaimSeason1Reward = async (rewardId: string) => {
+    if (claimingRewardId) return;
+    const tier = SEASON_1_REWARDS.find((r) => r.id === rewardId);
+    if (!tier) return;
+    setSeasonClaimFeedback(null);
+    setClaimingRewardId(rewardId);
+
+    try {
+      if (account) {
+        const res = await multiplayerClient.claimSeason1Reward(rewardId);
+        applyServerAccount(res.account);
+        if (firebaseUserRef.current) {
+          void saveFirestoreProfile(firebaseUserRef.current, {
+            gold: res.account.gold,
+            gems: res.account.gems,
+            unlockedAvatars: res.account.unlockedAvatars,
+            s1ClaimedRewards: res.account.s1ClaimedRewards,
+          }).catch(() => undefined);
+        }
+        const extraAvatars =
+          res.grantedAvatars.length > 0
+            ? ' + Avatar Angelical & Avatar Olho de Águia desbloqueados!'
+            : '';
+        setSeasonClaimFeedback(
+          `Recompensa ${tier.tierName} resgatada: +${res.grantedGold} Ouro${
+            res.grantedGems > 0 ? ` e +${res.grantedGems} Diamantes` : ''
+          }${extraAvatars}`,
+        );
+      } else {
+        const peak = Math.max(profile.rankPoints, profile.s1PeakRankPoints ?? 0);
+        const already = (profile.s1ClaimedRewards ?? []).includes(rewardId);
+        if (peak < tier.minPts || already) return;
+        const unlockedSet = new Set<PlayerAvatarId>([
+          ...FREE_PLAYER_AVATARS,
+          ...(profile.unlockedAvatars ?? []),
+          ...(tier.avatarIds ?? []),
+        ]);
+        const nextProf: PlayerProfile = {
+          ...profile,
+          gold: profile.gold + tier.goldReward,
+          gems: profile.gems + (tier.gemsReward ?? 0),
+          s1ClaimedRewards: [...(profile.s1ClaimedRewards ?? []), rewardId],
+          unlockedAvatars: Array.from(unlockedSet),
+        };
+        setProfile(nextProf);
+        saveProfile(nextProf);
+        setSeasonClaimFeedback(
+          `Recompensa ${tier.tierName} resgatada: +${tier.goldReward} Ouro${
+            tier.gemsReward ? ` e +${tier.gemsReward} Diamantes` : ''
+          }${tier.avatarIds?.length ? ' + Avatares de Mestre S1!' : ''}`,
+        );
+      }
+    } catch (err) {
+      setSeasonClaimFeedback(
+        err instanceof Error ? err.message : 'Não foi possível resgatar a recompensa.',
+      );
+    } finally {
+      setClaimingRewardId(null);
+    }
+  };
+
   const handleChangeMatchMode = (mode: MatchMode) => {
     setMatchMode(mode);
     engineRef.current?.setMatchMode(mode);
@@ -922,24 +1202,97 @@ export default function App() {
 
   const handleStartMatch = async () => {
     if (!engineRef.current) return;
+    if (searchState.active) return;
     if (gameVariant === 'gladiadores') {
       engineRef.current.setGladiadoresFormat(gladiadoresFormat);
       engineRef.current.setGladiadoresTargetRounds(gladiadoresTargetRounds);
       engineRef.current.startGladiadoresMatch();
       return;
     }
-    if (account) {
-      setOnlineStarting(true);
-      try {
-        const res = await multiplayerClient.startMatchmaking();
-        launchOnlineRoom(res.joinInfo, autoFillBots);
-      } catch {
-        setOnlineStarting(false);
-        engineRef.current.startMatchmaking();
+    soundEngine.unlock();
+    soundEngine.playUiConfirm();
+    const startedAt = Date.now();
+    setSearchState({ active: true, startedAtMs: startedAt, poolKey: null, isOffline: false });
+    try {
+      if (!multiplayerClient.isAuthenticated()) {
+        const guest = await multiplayerClient.loginGuest({
+          nickname: profileRef.current.nickname,
+          character: characterRef.current,
+        });
+        applyServerAccount(guest.account);
+        syncPartyConfigState(guest.party);
+        setInvites(guest.invites);
       }
-      return;
+      await multiplayerClient
+        .setPartyConfig({
+          mode: matchMode,
+          mapId: brMapId,
+          isRanked,
+          autoFillBots,
+        })
+        .then((cfg) => syncPartyConfigState(cfg.party))
+        .catch(() => undefined);
+      const res = await multiplayerClient.startMatchmaking();
+      setSearchState({
+        active: true,
+        startedAtMs: res.search.startedAtMs ?? startedAt,
+        poolKey: res.search.poolKey ?? null,
+        isOffline: false,
+      });
+      refreshSearchingPools();
+    } catch {
+      // Offline fallback: gather for 10s right in the initial lobby, then launch bots
+      setSearchState({ active: true, startedAtMs: startedAt, poolKey: null, isOffline: true });
+      if (offlineLaunchTimerRef.current !== null) {
+        window.clearTimeout(offlineLaunchTimerRef.current);
+      }
+      offlineLaunchTimerRef.current = window.setTimeout(() => {
+        offlineLaunchTimerRef.current = null;
+        setSearchState({ active: false, startedAtMs: 0, poolKey: null, isOffline: false });
+        engineRef.current?.startOfflineBrMatch();
+      }, 10_000);
     }
-    engineRef.current.startMatchmaking();
+  };
+
+  const handleCancelSearch = () => {
+    soundEngine.playUiClick(480);
+    if (offlineLaunchTimerRef.current !== null) {
+      window.clearTimeout(offlineLaunchTimerRef.current);
+      offlineLaunchTimerRef.current = null;
+    }
+    setSearchState({ active: false, startedAtMs: 0, poolKey: null, isOffline: false });
+    setSearchElapsedSec(0);
+    void multiplayerClient.cancelMatchmaking().catch(() => undefined);
+  };
+
+  const handleJoinSearchingPool = async (poolKey: string) => {
+    setSearchJoinError(null);
+    setJoiningPoolKey(poolKey);
+    try {
+      if (!multiplayerClient.isAuthenticated()) {
+        const guest = await multiplayerClient.loginGuest({
+          nickname: profileRef.current.nickname,
+          character: characterRef.current,
+        });
+        applyServerAccount(guest.account);
+        syncPartyConfigState(guest.party);
+        setInvites(guest.invites);
+      }
+      const res = await multiplayerClient.joinMatchmakingQueue(poolKey);
+      syncPartyConfigState(res.party);
+      setSearchState({
+        active: true,
+        startedAtMs: res.search.startedAtMs ?? Date.now(),
+        poolKey: res.search.poolKey ?? poolKey,
+        isOffline: false,
+      });
+      setShowSearchingModal(false);
+      refreshSearchingPools();
+    } catch (err) {
+      setSearchJoinError(err instanceof Error ? err.message : 'Não foi possível entrar nesta busca.');
+    } finally {
+      setJoiningPoolKey(null);
+    }
   };
 
   const handleRespondInvite = async (inviteId: string, accept: boolean) => {
@@ -984,7 +1337,7 @@ export default function App() {
         <div className="fixed inset-0 z-0 pointer-events-none">
           <img
             src="/assets/lobby_bg_clean.jpg"
-            alt="Lobby Free Fire João Pessoa"
+            alt="Lobby Free Fire Bermuda"
             className="w-full h-full object-cover object-center"
           />
           <div className="absolute inset-0 bg-gradient-to-b from-black/35 via-transparent to-black/45" />
@@ -1087,10 +1440,12 @@ export default function App() {
           }}
           onOpenArsenal={() => {
             soundEngine.playUiClick();
+            setArsenalInitialTab('weapons');
             setShowArsenalModal(true);
           }}
           onOpenRankModal={() => {
             soundEngine.playUiClick();
+            setSeasonClaimFeedback(null);
             setShowRankModal(true);
           }}
           onOpenSettings={() => {
@@ -1126,20 +1481,19 @@ export default function App() {
           onLeaveParty={() => void handleLeaveParty()}
           onBackToMenu={() => {
             soundEngine.playUiClick(480);
+            if (searchState.active) {
+              handleCancelSearch();
+            }
             engineRef.current?.stateMachine.transition(GameState.MENU);
           }}
-        />
-      )}
-
-      {/* 5. MATCHMAKING */}
-      {(gameState === GameState.MATCHMAKING || onlineStarting) && (
-        <MatchmakingOverlay
-          playerCount={hud.matchmakingCount}
-          matchMode={matchMode}
-          isOnline={Boolean(account)}
-          onCancel={() => {
-            setOnlineStarting(false);
-            engineRef.current?.cancelMatchmaking();
+          isSearchingMatch={searchState.active}
+          searchElapsedSec={searchElapsedSec}
+          searchingPlayersCount={searchingPools.reduce((sum, p) => sum + p.players.length, 0)}
+          onCancelSearch={handleCancelSearch}
+          onOpenSearchingPlayers={() => {
+            setSearchJoinError(null);
+            refreshSearchingPools();
+            setShowSearchingModal(true);
           }}
         />
       )}
@@ -1159,6 +1513,8 @@ export default function App() {
           controlMode={settings.controlMode}
           keyBindings={settings.keyBindings}
           emulatorMode={settings.emulatorMode}
+          macros={settings.macros}
+          ggMousePro={settings.ggMousePro}
           hudLayout={settings.hudLayout}
           showFps={settings.showFps}
           isPaused={isPaused}
@@ -1225,6 +1581,10 @@ export default function App() {
             soundEngine.playUiClick();
             setShowHudEditor(true);
           }}
+          onOpenGgMacroModal={() => {
+            soundEngine.playUiClick();
+            setShowGgMacroModal(true);
+          }}
           onSelectScope={(sc) => engineRef.current?.setActiveWeaponScope(sc)}
           onSelectGlooSkin={(skin) => {
             const nextChar: CharacterConfig = { ...character, glooSkin: skin };
@@ -1239,7 +1599,7 @@ export default function App() {
             setIsBackpackOpen(false);
             setIsShopOpen(false);
             activeLaunchedRoomIdRef.current = null;
-            voiceChatManager.disconnect();
+            voiceChatManager.handleReturnToLobby();
             if (account) {
               void multiplayerClient.leaveMatch();
             }
@@ -1317,8 +1677,9 @@ export default function App() {
           rankDelta={lastRankDelta}
           playerNickname={profile.nickname}
           playerModelId={character.modelId}
+          playerAvatarId={profile.avatarId ?? character.avatarId}
           onReturnLobby={() => {
-            voiceChatManager.disconnect();
+            voiceChatManager.handleReturnToLobby();
             engineRef.current?.returnToLobby();
           }}
         />
@@ -1359,6 +1720,23 @@ export default function App() {
         />
       )}
 
+      {showSearchingModal && (
+        <SearchingPlayersModal
+          pools={searchingPools}
+          currentPoolKey={searchState.poolKey}
+          currentAccountId={account?.id ?? null}
+          isPartyLeader={!party || !account || party.leaderId === account.id}
+          joiningPoolKey={joiningPoolKey}
+          errorMsg={searchJoinError}
+          onRefresh={refreshSearchingPools}
+          onJoinPool={(poolKey) => void handleJoinSearchingPool(poolKey)}
+          onClose={() => {
+            setShowSearchingModal(false);
+            setSearchJoinError(null);
+          }}
+        />
+      )}
+
       {profileModalSubject && (
         <PlayerProfileModal
           subject={
@@ -1372,6 +1750,10 @@ export default function App() {
           }}
           onChangeNickname={handleUpdateNickname}
           onOpenCharacter={() => setShowCharModal(true)}
+          onOpenAvatars={() => {
+            setArsenalInitialTab('avatars');
+            setShowArsenalModal(true);
+          }}
           onOpenAuth={() => setShowAuthModal(true)}
           onInviteToParty={(accId) => {
             if (matchMode === 'solo') {
@@ -1419,6 +1801,9 @@ export default function App() {
       {showCharModal && (
         <CharacterModal
           config={character}
+          unlockedAvatars={profile.unlockedAvatars}
+          s1PeakRankPoints={Math.max(profile.rankPoints, profile.s1PeakRankPoints ?? 0)}
+          onSelectAvatar={(av) => void handleSelectAvatar(av)}
           onChange={handleUpdateCharacter}
           onClose={() => {
             soundEngine.playUiClick();
@@ -1429,6 +1814,11 @@ export default function App() {
 
       {showArsenalModal && (
         <ArsenalModal
+          initialTab={arsenalInitialTab}
+          activeAvatarId={normalizePlayerAvatarId(profile.avatarId ?? character.avatarId)}
+          unlockedAvatars={profile.unlockedAvatars}
+          s1PeakRankPoints={Math.max(profile.rankPoints, profile.s1PeakRankPoints ?? 0)}
+          onSelectAvatar={(av) => void handleSelectAvatar(av)}
           onClose={() => {
             soundEngine.playUiClick();
             setShowArsenalModal(false);
@@ -1439,6 +1829,10 @@ export default function App() {
       {showRankModal && (
         <RankModal
           profile={profile}
+          currentPublicId={account?.publicId}
+          claimingRewardId={claimingRewardId}
+          seasonClaimFeedback={seasonClaimFeedback}
+          onClaimSeason1Reward={(id) => void handleClaimSeason1Reward(id)}
           onClose={() => {
             soundEngine.playUiClick();
             setShowRankModal(false);
@@ -1456,6 +1850,12 @@ export default function App() {
             soundEngine.playUiClick();
             setShowSettingsModal(false);
             setShowHudEditor(true);
+          }}
+          onOpenGgMacroModal={() => {
+            soundEngine.playUiClick();
+            engineRef.current?.input.setRebinding(false);
+            setShowSettingsModal(false);
+            setShowGgMacroModal(true);
           }}
           onRebindingChange={(active) => {
             engineRef.current?.input.setRebinding(active);
@@ -1483,9 +1883,34 @@ export default function App() {
             });
             setShowHudEditor(false);
           }}
+          onOpenGgMacroModal={() => {
+            soundEngine.playUiClick();
+            setShowHudEditor(false);
+            setShowGgMacroModal(true);
+          }}
           onClose={() => {
             soundEngine.playUiClick();
             setShowHudEditor(false);
+          }}
+        />
+      )}
+
+      {showGgMacroModal && (
+        <GgMouseMacroModal
+          settings={settings}
+          onSave={(nextSettings) => {
+            soundEngine.playUiConfirm();
+            engineRef.current?.input.setRebinding(false);
+            handleUpdateSettings(nextSettings);
+            setShowGgMacroModal(false);
+          }}
+          onRebindingChange={(active) => {
+            engineRef.current?.input.setRebinding(active);
+          }}
+          onClose={() => {
+            soundEngine.playUiClick();
+            engineRef.current?.input.setRebinding(false);
+            setShowGgMacroModal(false);
           }}
         />
       )}

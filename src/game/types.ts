@@ -80,6 +80,14 @@ export interface WeaponSlotState {
 }
 
 export type CharacterModelId = 'adam' | 'eva' | 'maxim' | 'kelly';
+export type PlayerAvatarId =
+  | 'default'
+  | 'adam'
+  | 'eva'
+  | 'maxim'
+  | 'kelly'
+  | 'angelic'
+  | 'eagle_eye';
 export type GlooSkinId = 'classic' | 'ffwc';
 
 export function normalizeCharacterModelId(raw?: string | null): CharacterModelId {
@@ -91,6 +99,7 @@ export interface CharacterConfig {
   id: string;
   name: string;
   modelId?: CharacterModelId;
+  avatarId?: PlayerAvatarId;
   glooSkin?: GlooSkinId;
   skinColor: string;
   hairStyle: 'buzz' | 'spiky' | 'cap' | 'helmet';
@@ -111,7 +120,7 @@ export type ControlMode = 'auto' | 'desktop' | 'mobile';
 export type AimAssistMode = 'default' | 'precise';
 export type MatchMode = 'solo' | 'duo' | 'squad';
 export type GameVariant = 'br' | 'gladiadores';
-export type BrMapId = 'bermuda' | 'joao_pessoa';
+export type BrMapId = 'bermuda';
 export type GladiadoresFormat = '1v1' | '2v2';
 
 export type HudElementId =
@@ -256,6 +265,7 @@ export type KeyBindAction =
   | 'slot4'
   | 'interact'
   | 'gloo'
+  | 'quickGlooInstant'
   | 'grenade'
   | 'medkit'
   | 'smallMedkit'
@@ -288,6 +298,7 @@ export const DEFAULT_KEY_BINDINGS: KeyBindingsConfig = {
   slot4: 'Digit4',
   interact: 'KeyE',
   gloo: 'KeyG',
+  quickGlooInstant: '',
   grenade: 'KeyX',
   medkit: 'KeyH',
   smallMedkit: 'Digit7',
@@ -319,6 +330,7 @@ export const EMULATOR_KEY_BINDINGS: KeyBindingsConfig = {
   slot4: 'Digit4',
   interact: 'KeyF',
   gloo: 'KeyE',
+  quickGlooInstant: '',
   grenade: 'Digit5',
   medkit: 'KeyH',
   smallMedkit: 'Digit6',
@@ -380,7 +392,12 @@ export const KEY_BINDING_GROUPS: Array<{
     title: 'LOOT, GELO & UTILITÁRIOS',
     items: [
       { action: 'interact', label: 'Pegar Loot / Lojinha / Carro' },
-      { action: 'gloo', label: 'Parede de Gelo' },
+      { action: 'gloo', label: 'Parede de Gelo (Equipar)' },
+      {
+        action: 'quickGlooInstant',
+        label: 'Gelo Instantâneo (1 Clique)',
+        hint: 'Coloca o gelo imediatamente sem precisar clicar em atirar',
+      },
       { action: 'grenade', label: 'Granada Explosiva' },
       { action: 'medkit', label: 'Usar Kit Médico' },
       { action: 'smallMedkit', label: 'Usar Kit Pequeno' },
@@ -420,6 +437,257 @@ export function formatKeyCodeLabel(code: string): string {
   return code.toUpperCase();
 }
 
+export type NetworkSyncPreset = 'ultra' | 'fast' | 'economy';
+
+export type MacroStepAction =
+  | 'crouch'
+  | 'prone'
+  | 'jump'
+  | 'vault'
+  | 'aimToggle'
+  | 'aimOn'
+  | 'aimOff'
+  | 'fireTap'
+  | 'fireHoldStart'
+  | 'fireHoldEnd'
+  | 'gloo'
+  | 'quickGlooInstant'
+  | 'grenade'
+  | 'reload'
+  | 'quickSwap'
+  | 'cycleScope'
+  | 'slot1'
+  | 'slot2'
+  | 'slot3'
+  | 'slot4'
+  | 'interact'
+  | 'medkit'
+  | 'smallMedkit'
+  | 'sprintOn'
+  | 'sprintOff'
+  | 'wait';
+
+export interface MacroStep {
+  id: string;
+  action: MacroStepAction;
+  delayMs: number; // delay in ms AFTER this step before the next step
+}
+
+export interface MacroConfig {
+  id: string;
+  name: string;
+  emoji: string;
+  triggerKey: string; // PC keyboard / mouse code (optional '')
+  showFloatingBtn: boolean; // Android / touch / clickable button on HUD
+  enabled: boolean;
+  xPct: number;
+  yPct: number;
+  scale: number;
+  opacity: number;
+  steps: MacroStep[];
+}
+
+export const MACRO_ACTION_META: Record<
+  MacroStepAction,
+  { label: string; shortLabel: string; emoji: string }
+> = {
+  crouch: { label: 'Agachar / Levantar', shortLabel: 'Agachar', emoji: '🧎' },
+  prone: { label: 'Deitar / Levantar', shortLabel: 'Deitar', emoji: '🛌' },
+  jump: { label: 'Pular', shortLabel: 'Pular', emoji: '🦘' },
+  vault: { label: 'Pular Janela', shortLabel: 'Janela', emoji: '🪟' },
+  aimToggle: { label: 'Alternar Mira (Scope)', shortLabel: 'Mirar', emoji: '🎯' },
+  aimOn: { label: 'Abrir Mira (Ligar)', shortLabel: 'Mira ON', emoji: '🔭' },
+  aimOff: { label: 'Fechar Mira (Desligar)', shortLabel: 'Mira OFF', emoji: '👁️' },
+  fireTap: { label: 'Tiro Rápido (1 Clique)', shortLabel: 'Atirar', emoji: '🔫' },
+  fireHoldStart: { label: 'Segurar Tiro (Início)', shortLabel: 'Tiro ON', emoji: '🔥' },
+  fireHoldEnd: { label: 'Soltar Tiro (Fim)', shortLabel: 'Tiro OFF', emoji: '✋' },
+  gloo: { label: 'Equipar Parede de Gelo', shortLabel: 'Equip. Gelo', emoji: '🧱' },
+  quickGlooInstant: { label: 'Tacar Gelo Instantâneo', shortLabel: 'Gelo 1-Tap', emoji: '🧊' },
+  grenade: { label: 'Granada', shortLabel: 'Granada', emoji: '💣' },
+  reload: { label: 'Recarregar', shortLabel: 'Recarregar', emoji: '🔄' },
+  quickSwap: { label: 'Troca Rápida de Arma', shortLabel: 'Troca Rápida', emoji: '⇄' },
+  cycleScope: { label: 'Alternar Scope', shortLabel: 'Scope', emoji: '🔍' },
+  slot1: { label: 'Arma 1 (Slot 1)', shortLabel: 'Arma 1', emoji: '1️⃣' },
+  slot2: { label: 'Arma 2 (Slot 2)', shortLabel: 'Arma 2', emoji: '2️⃣' },
+  slot3: { label: 'Pistola (Slot 3)', shortLabel: 'Pistola', emoji: '3️⃣' },
+  slot4: { label: 'Punho / Soco (Slot 4)', shortLabel: 'Soco', emoji: '👊' },
+  interact: { label: 'Pegar Loot / Interagir', shortLabel: 'Interagir', emoji: '🖐️' },
+  medkit: { label: 'Usar Kit Médico', shortLabel: 'Kit Grande', emoji: '❤️‍🩹' },
+  smallMedkit: { label: 'Usar Kit Pequeno', shortLabel: 'Kit Peq.', emoji: '🩹' },
+  sprintOn: { label: 'Ativar Corrida', shortLabel: 'Correr ON', emoji: '🏃' },
+  sprintOff: { label: 'Parar Corrida', shortLabel: 'Correr OFF', emoji: '🛑' },
+  wait: { label: 'Esperar (Pausa ms)', shortLabel: 'Esperar', emoji: '⏱️' },
+};
+
+export const MACRO_EMOJI_PALETTE: readonly string[] = [
+  '🎯',
+  '🧊',
+  '⚡',
+  '🔥',
+  '👑',
+  '💀',
+  '🏃',
+  '🛡️',
+  '🔫',
+  '💣',
+  '❤️‍🩹',
+  '😎',
+  '🚀',
+  '🦅',
+  '🕹️',
+  '🌪️',
+  '❄️',
+  '💥',
+  '✨',
+  '🎮',
+  '👆',
+  '🦾',
+  '🐾',
+  '⚙️',
+];
+
+export const DEFAULT_MACROS: MacroConfig[] = [
+  {
+    id: 'macro_agacha_mira_levanta',
+    name: 'Agacha + Mira + Levanta',
+    emoji: '🎯',
+    triggerKey: '',
+    showFloatingBtn: false,
+    enabled: true,
+    xPct: 62,
+    yPct: 72,
+    scale: 1.0,
+    opacity: 0.92,
+    steps: [
+      { id: 's1', action: 'crouch', delayMs: 28 },
+      { id: 's2', action: 'aimToggle', delayMs: 32 },
+      { id: 's3', action: 'crouch', delayMs: 0 },
+    ],
+  },
+  {
+    id: 'macro_gelo_agachado',
+    name: 'Gelo Agachado Rápido',
+    emoji: '🧊',
+    triggerKey: '',
+    showFloatingBtn: false,
+    enabled: true,
+    xPct: 62,
+    yPct: 84,
+    scale: 1.0,
+    opacity: 0.92,
+    steps: [
+      { id: 'g1', action: 'crouch', delayMs: 25 },
+      { id: 'g2', action: 'quickGlooInstant', delayMs: 35 },
+      { id: 'g3', action: 'crouch', delayMs: 0 },
+    ],
+  },
+];
+
+export type GgKeyPinId =
+  | 'moveCluster'
+  | 'lookPad'
+  | 'fireBtn'
+  | 'aimBtn'
+  | 'jumpBtn'
+  | 'crouchBtn'
+  | 'proneBtn'
+  | 'reloadBtn'
+  | 'glooBtn'
+  | 'quickGlooBtn'
+  | 'grenadeBtn'
+  | 'medkitBtn'
+  | 'smallMedkitBtn'
+  | 'backpackBtn'
+  | 'interactBtn'
+  | 'quickSwapBtn'
+  | 'sprintBtn'
+  | 'toggleMouseBtn'
+  | 'resetMouseBtn'
+  | 'slot1Btn'
+  | 'slot2Btn'
+  | 'slot3Btn'
+  | 'slot4Btn';
+
+export interface GgOverlayPinConfig {
+  xPct: number;
+  yPct: number;
+  scale: number;
+  visible: boolean;
+}
+
+export interface GgMouseProConfig {
+  enabled: boolean;
+  showKeyBadges: boolean;
+  badgeOpacity: number;
+  aimDragBoost: number; // 0.6 .. 2.2
+  turboTouch: boolean; // Zero-delay instant click/touch
+  instantQuickGloo: boolean; // 1-tap instant gloo on quickGlooBtn
+  pins: Record<GgKeyPinId, GgOverlayPinConfig>;
+}
+
+export const GG_PIN_META: Record<
+  GgKeyPinId,
+  { label: string; kind: 'wasd' | 'look' | 'key'; action?: KeyBindAction; badgeText?: string }
+> = {
+  moveCluster: { label: 'Direcional WASD', kind: 'wasd' },
+  lookPad: { label: 'Pino Câmera / Mira (Mouse)', kind: 'look' },
+  fireBtn: { label: 'Atirar', kind: 'key', action: 'fire' },
+  aimBtn: { label: 'Mirar (Scope)', kind: 'key', action: 'aim' },
+  jumpBtn: { label: 'Pular / Janela', kind: 'key', action: 'jump' },
+  crouchBtn: { label: 'Agachar', kind: 'key', action: 'crouch' },
+  proneBtn: { label: 'Deitar', kind: 'key', action: 'prone' },
+  reloadBtn: { label: 'Recarregar', kind: 'key', action: 'reload' },
+  glooBtn: { label: 'Equipar Gelo', kind: 'key', action: 'gloo' },
+  quickGlooBtn: { label: 'Gelo Rápido 1-Clique', kind: 'key', action: 'quickGlooInstant' },
+  grenadeBtn: { label: 'Granada', kind: 'key', action: 'grenade' },
+  medkitBtn: { label: 'Kit Médico', kind: 'key', action: 'medkit' },
+  smallMedkitBtn: { label: 'Kit Pequeno', kind: 'key', action: 'smallMedkit' },
+  backpackBtn: { label: 'Mochila', kind: 'key', action: 'backpack' },
+  interactBtn: { label: 'Loot / Interagir', kind: 'key', action: 'interact' },
+  quickSwapBtn: { label: 'Troca Rápida', kind: 'key', action: 'quickSwap' },
+  sprintBtn: { label: 'Correr', kind: 'key', action: 'sprint' },
+  toggleMouseBtn: { label: 'Suspender Mouse (Seta)', kind: 'key', action: 'toggleMouse' },
+  resetMouseBtn: { label: 'Resetar Mouse', kind: 'key', action: 'resetMouse' },
+  slot1Btn: { label: 'Arma 1', kind: 'key', action: 'slot1' },
+  slot2Btn: { label: 'Arma 2', kind: 'key', action: 'slot2' },
+  slot3Btn: { label: 'Pistola', kind: 'key', action: 'slot3' },
+  slot4Btn: { label: 'Soco / Punho', kind: 'key', action: 'slot4' },
+};
+
+export const DEFAULT_GG_MOUSE_PRO: GgMouseProConfig = {
+  enabled: false,
+  showKeyBadges: true,
+  badgeOpacity: 0.85,
+  aimDragBoost: 1.15,
+  turboTouch: true,
+  instantQuickGloo: true,
+  pins: {
+    moveCluster: { xPct: 15, yPct: 76, scale: 1.0, visible: true },
+    lookPad: { xPct: 58, yPct: 48, scale: 1.0, visible: true },
+    fireBtn: { xPct: 84, yPct: 68, scale: 1.0, visible: true },
+    aimBtn: { xPct: 93, yPct: 56, scale: 1.0, visible: true },
+    jumpBtn: { xPct: 93, yPct: 40, scale: 1.0, visible: true },
+    crouchBtn: { xPct: 92, yPct: 81, scale: 1.0, visible: true },
+    proneBtn: { xPct: 81, yPct: 84, scale: 1.0, visible: true },
+    reloadBtn: { xPct: 73, yPct: 72, scale: 1.0, visible: true },
+    glooBtn: { xPct: 4.2, yPct: 59.5, scale: 1.0, visible: true },
+    quickGlooBtn: { xPct: 68, yPct: 93, scale: 1.0, visible: true },
+    grenadeBtn: { xPct: 4.2, yPct: 50, scale: 1.0, visible: true },
+    medkitBtn: { xPct: 4.2, yPct: 40.5, scale: 1.0, visible: true },
+    smallMedkitBtn: { xPct: 10.5, yPct: 40.5, scale: 1.0, visible: true },
+    backpackBtn: { xPct: 4.2, yPct: 31, scale: 1.0, visible: true },
+    interactBtn: { xPct: 78, yPct: 38, scale: 1.0, visible: true },
+    quickSwapBtn: { xPct: 77, yPct: 28, scale: 1.0, visible: true },
+    sprintBtn: { xPct: 13.5, yPct: 58, scale: 1.0, visible: true },
+    toggleMouseBtn: { xPct: 42, yPct: 12, scale: 0.95, visible: true },
+    resetMouseBtn: { xPct: 56, yPct: 12, scale: 0.95, visible: false },
+    slot1Btn: { xPct: 82, yPct: 22, scale: 0.9, visible: true },
+    slot2Btn: { xPct: 87, yPct: 22, scale: 0.9, visible: true },
+    slot3Btn: { xPct: 92, yPct: 22, scale: 0.9, visible: true },
+    slot4Btn: { xPct: 94, yPct: 16, scale: 0.9, visible: false },
+  },
+};
+
 export interface GameSettings {
   sensitivity: number; // 0.2 .. 2.5 (Geral)
   redDotSensitivity: number; // 0.2 .. 2.5 (1x / Red Dot)
@@ -440,7 +708,12 @@ export interface GameSettings {
   autoLootSpeed: AutoLootSpeed;
   emulatorMode?: boolean;
   aimToggleMode?: boolean;
+  networkSyncPreset?: NetworkSyncPreset;
+  networkLowLatency?: boolean;
+  networkHighPingSmoothing?: boolean;
   keyBindings?: KeyBindingsConfig;
+  macros?: MacroConfig[];
+  ggMousePro?: GgMouseProConfig;
   hudLayout: HudLayoutConfig;
   activeHudSlot?: HudSlotId;
   hudSlots?: Record<HudSlotId, HudLayoutConfig>;
@@ -457,7 +730,75 @@ export interface PlayerProfile {
   rankedMatches: number;
   rankedWins: number;
   totalKills: number;
+  avatarId?: PlayerAvatarId;
+  unlockedAvatars?: PlayerAvatarId[];
+  seasonId?: string;
+  s1PeakRankPoints?: number;
+  s1ClaimedRewards?: string[];
 }
+
+export const CURRENT_RANKED_SEASON = 'S1';
+export const CURRENT_RANKED_SEASON_LABEL = 'TEMPORADA 1 · S1';
+export const MESTRE_MIN_PTS = 3100;
+
+export interface SeasonRewardTier {
+  id: string;
+  tierName: string;
+  minPts: number;
+  goldReward: number;
+  gemsReward?: number;
+  avatarIds?: PlayerAvatarId[];
+  badgeLabel: string;
+}
+
+export const SEASON_1_REWARDS: readonly SeasonRewardTier[] = [
+  {
+    id: 's1_bronze_2',
+    tierName: 'Bronze II',
+    minPts: 150,
+    goldReward: 150,
+    badgeLabel: 'Iniciante S1',
+  },
+  {
+    id: 's1_prata_1',
+    tierName: 'Prata I',
+    minPts: 450,
+    goldReward: 300,
+    badgeLabel: 'Sobrevivente de Prata',
+  },
+  {
+    id: 's1_ouro_1',
+    tierName: 'Ouro I',
+    minPts: 900,
+    goldReward: 500,
+    badgeLabel: 'Guerreiro de Ouro',
+  },
+  {
+    id: 's1_platina_1',
+    tierName: 'Platina I',
+    minPts: 1600,
+    goldReward: 800,
+    gemsReward: 15,
+    badgeLabel: 'Elite de Platina',
+  },
+  {
+    id: 's1_diamante_1',
+    tierName: 'Diamante I',
+    minPts: 2300,
+    goldReward: 1200,
+    gemsReward: 30,
+    badgeLabel: 'Lenda de Diamante',
+  },
+  {
+    id: 's1_mestre',
+    tierName: 'Mestre',
+    minPts: MESTRE_MIN_PTS,
+    goldReward: 2500,
+    gemsReward: 50,
+    avatarIds: ['angelic', 'eagle_eye'],
+    badgeLabel: 'Mestre Temporada S1',
+  },
+];
 
 export type RankTierId =
   | 'bronze'
@@ -465,32 +806,41 @@ export type RankTierId =
   | 'ouro'
   | 'platina'
   | 'diamante'
-  | 'mestre'
-  | 'desafiante';
+  | 'mestre';
 
 export interface RankTierInfo {
   id: RankTierId;
   name: string;
   sub: string;
+  iconUrl: string;
   minPts: number;
   nextPts: number | null;
   color: string;
   accent: string;
 }
 
+const PATENTE_ICON_BASE = 'https://kalidade-br.github.io/freefire-2017/patentes';
+
 export const RANK_LADDER: RankTierInfo[] = [
-  { id: 'bronze', name: 'Bronze I', sub: 'Recruta', minPts: 0, nextPts: 300, color: '#a16207', accent: '#d97706' },
-  { id: 'bronze', name: 'Bronze II', sub: 'Sobrevivente', minPts: 300, nextPts: 550, color: '#a16207', accent: '#f59e0b' },
-  { id: 'prata', name: 'Prata I', sub: 'Tático', minPts: 550, nextPts: 800, color: '#64748b', accent: '#cbd5e1' },
-  { id: 'prata', name: 'Prata II', sub: 'Atirador', minPts: 800, nextPts: 1000, color: '#64748b', accent: '#e2e8f0' },
-  { id: 'ouro', name: 'Ouro I', sub: 'Veterano', minPts: 1000, nextPts: 1250, color: '#ca8a04', accent: '#fde047' },
-  { id: 'ouro', name: 'Ouro II', sub: 'Caçador', minPts: 1250, nextPts: 1550, color: '#ca8a04', accent: '#facc15' },
-  { id: 'platina', name: 'Platina I', sub: 'Avançado', minPts: 1550, nextPts: 1850, color: '#0284c7', accent: '#38bdf8' },
-  { id: 'platina', name: 'Platina II', sub: 'Elite', minPts: 1850, nextPts: 2150, color: '#0284c7', accent: '#7dd3fc' },
-  { id: 'diamante', name: 'Diamante I', sub: 'Sniper', minPts: 2150, nextPts: 2500, color: '#7c3aed', accent: '#c4b5fd' },
-  { id: 'diamante', name: 'Diamante II', sub: 'Comandante', minPts: 2500, nextPts: 2900, color: '#7c3aed', accent: '#ddd6fe' },
-  { id: 'mestre', name: 'Mestre', sub: 'Alta Patente', minPts: 2900, nextPts: 3400, color: '#dc2626', accent: '#fca5a5' },
-  { id: 'desafiante', name: 'Desafiante', sub: 'Top Ilha', minPts: 3400, nextPts: null, color: '#ea580c', accent: '#fde047' },
+  { id: 'bronze', name: 'Bronze I', sub: 'Divisão I', iconUrl: `${PATENTE_ICON_BASE}/bronze-1.png`, minPts: 0, nextPts: 150, color: '#92400e', accent: '#d97706' },
+  { id: 'bronze', name: 'Bronze II', sub: 'Divisão II', iconUrl: `${PATENTE_ICON_BASE}/bronze-2.png`, minPts: 150, nextPts: 300, color: '#92400e', accent: '#f59e0b' },
+  { id: 'bronze', name: 'Bronze III', sub: 'Divisão III', iconUrl: `${PATENTE_ICON_BASE}/bronze-3.png`, minPts: 300, nextPts: 450, color: '#78350f', accent: '#fbbf24' },
+  { id: 'prata', name: 'Prata I', sub: 'Divisão I', iconUrl: `${PATENTE_ICON_BASE}/prata-1.png`, minPts: 450, nextPts: 600, color: '#64748b', accent: '#cbd5e1' },
+  { id: 'prata', name: 'Prata II', sub: 'Divisão II', iconUrl: `${PATENTE_ICON_BASE}/prata-2.png`, minPts: 600, nextPts: 750, color: '#475569', accent: '#e2e8f0' },
+  { id: 'prata', name: 'Prata III', sub: 'Divisão III', iconUrl: `${PATENTE_ICON_BASE}/prata-3.png`, minPts: 750, nextPts: 900, color: '#334155', accent: '#f8fafc' },
+  { id: 'ouro', name: 'Ouro I', sub: 'Divisão I', iconUrl: `${PATENTE_ICON_BASE}/ouro-1.png`, minPts: 900, nextPts: 1075, color: '#ca8a04', accent: '#fde047' },
+  { id: 'ouro', name: 'Ouro II', sub: 'Divisão II', iconUrl: `${PATENTE_ICON_BASE}/ouro-2.png`, minPts: 1075, nextPts: 1250, color: '#ca8a04', accent: '#facc15' },
+  { id: 'ouro', name: 'Ouro III', sub: 'Divisão III', iconUrl: `${PATENTE_ICON_BASE}/ouro-3.png`, minPts: 1250, nextPts: 1425, color: '#a16207', accent: '#fef08a' },
+  { id: 'ouro', name: 'Ouro IV', sub: 'Divisão IV', iconUrl: `${PATENTE_ICON_BASE}/ouro-4.png`, minPts: 1425, nextPts: 1600, color: '#854d0e', accent: '#fde047' },
+  { id: 'platina', name: 'Platina I', sub: 'Divisão I', iconUrl: `${PATENTE_ICON_BASE}/platina-1.png`, minPts: 1600, nextPts: 1775, color: '#0284c7', accent: '#38bdf8' },
+  { id: 'platina', name: 'Platina II', sub: 'Divisão II', iconUrl: `${PATENTE_ICON_BASE}/platina-2.png`, minPts: 1775, nextPts: 1950, color: '#0369a1', accent: '#7dd3fc' },
+  { id: 'platina', name: 'Platina III', sub: 'Divisão III', iconUrl: `${PATENTE_ICON_BASE}/platina-3.png`, minPts: 1950, nextPts: 2125, color: '#075985', accent: '#bae6fd' },
+  { id: 'platina', name: 'Platina IV', sub: 'Divisão IV', iconUrl: `${PATENTE_ICON_BASE}/platina-4.png`, minPts: 2125, nextPts: 2300, color: '#0c4a6e', accent: '#e0f2fe' },
+  { id: 'diamante', name: 'Diamante I', sub: 'Divisão I', iconUrl: `${PATENTE_ICON_BASE}/diamante-1.png`, minPts: 2300, nextPts: 2500, color: '#7c3aed', accent: '#c4b5fd' },
+  { id: 'diamante', name: 'Diamante II', sub: 'Divisão II', iconUrl: `${PATENTE_ICON_BASE}/diamante-2.png`, minPts: 2500, nextPts: 2700, color: '#6d28d9', accent: '#ddd6fe' },
+  { id: 'diamante', name: 'Diamante III', sub: 'Divisão III', iconUrl: `${PATENTE_ICON_BASE}/diamante-3.png`, minPts: 2700, nextPts: 2900, color: '#5b21b6', accent: '#ede9fe' },
+  { id: 'diamante', name: 'Diamante IV', sub: 'Divisão IV', iconUrl: `${PATENTE_ICON_BASE}/diamante-4.png`, minPts: 2900, nextPts: 3100, color: '#4c1d95', accent: '#f5f3ff' },
+  { id: 'mestre', name: 'Mestre', sub: 'Patente Máxima', iconUrl: `${PATENTE_ICON_BASE}/mestre.png`, minPts: 3100, nextPts: null, color: '#dc2626', accent: '#fde047' },
 ];
 
 export function getRankInfo(points: number): RankTierInfo {
@@ -908,16 +1258,7 @@ export interface MinimapBuilding {
     | 'shed'
     | 'container'
     | 'tower'
-    | 'bridge'
-    | 'hotelTambau'
-    | 'skyscraper'
-    | 'farol'
-    | 'estacao'
-    | 'igreja'
-    | 'letreiro'
-    | 'quiosque'
-    | 'lagoa'
-    | 'pier';
+    | 'bridge';
 }
 
 export interface MinimapRoad {
@@ -1145,14 +1486,14 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     name: 'ESPINGARDA M10-17',
     shortName: 'M10-17',
     category: 'SG',
-    damage: 19,
-    fireRateMs: 540,
+    damage: 31,
+    fireRateMs: 410,
     magSize: 6,
     reloadTimeSec: 0.42,
     range: 48,
-    spread: 0.042,
-    pellets: 6,
-    automatic: false,
+    spread: 0.056,
+    pellets: 8,
+    automatic: true,
     defaultScope: 'none',
     allowsCustomScope: false,
     allowsAttachments: false,

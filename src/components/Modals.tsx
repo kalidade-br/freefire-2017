@@ -1,6 +1,12 @@
 import React from 'react';
-import { X, Check, RotateCcw, Keyboard, MousePointerClick } from 'lucide-react';
-import { getCharacterAvatar } from '../game/avatars';
+import { X, Check, RotateCcw, Keyboard, MousePointerClick, Wifi, RefreshCw, Lock, Sparkles } from 'lucide-react';
+import {
+  FREE_PLAYER_AVATARS,
+  PLAYER_AVATARS,
+  getCharacterAvatar,
+  normalizePlayerAvatarId,
+} from '../game/avatars';
+import { multiplayerClient } from '../game/multiplayerClient';
 import {
   CharacterConfig,
   CharacterModelId,
@@ -14,7 +20,10 @@ import {
   GraphicsQuality,
   KEY_BINDING_GROUPS,
   KeyBindAction,
+  MESTRE_MIN_PTS,
+  NetworkSyncPreset,
   normalizeCharacterModelId,
+  PlayerAvatarId,
   ShadowQuality,
   TextureQuality,
   WEAPONS,
@@ -28,18 +37,132 @@ import {
 } from '../game/storage';
 import { WeaponIcon } from './WeaponIcon';
 
+interface AvatarCollectionGridProps {
+  activeAvatarId: PlayerAvatarId;
+  unlockedAvatars?: PlayerAvatarId[];
+  s1PeakRankPoints?: number;
+  onSelectAvatar?: (avatarId: PlayerAvatarId) => void;
+}
+
+const AvatarCollectionGrid: React.FC<AvatarCollectionGridProps> = ({
+  activeAvatarId,
+  unlockedAvatars,
+  s1PeakRankPoints = 0,
+  onSelectAvatar,
+}) => {
+  const unlockedSet = new Set<PlayerAvatarId>([
+    ...FREE_PLAYER_AVATARS,
+    ...(unlockedAvatars ?? []),
+  ]);
+  const isMestreUnlocked = s1PeakRankPoints >= MESTRE_MIN_PTS;
+
+  return (
+    <div className="space-y-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="font-bold uppercase tracking-wider text-neutral-300">
+          AVATAR DE PERFIL (LOBBY, RANK E AMIGOS)
+        </div>
+        <span className="text-[10px] font-mono text-amber-300">
+          TEMPORADA S1
+        </span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        {PLAYER_AVATARS.map((av) => {
+          const unlocked =
+            av.unlockSource === 'free' ||
+            unlockedSet.has(av.id) ||
+            (av.unlockSource === 's1_mestre' && isMestreUnlocked);
+          const selected = normalizePlayerAvatarId(activeAvatarId) === av.id;
+          return (
+            <button
+              key={av.id}
+              type="button"
+              disabled={!unlocked || !onSelectAvatar}
+              onClick={() => {
+                if (unlocked && onSelectAvatar) {
+                  onSelectAvatar(av.id);
+                }
+              }}
+              className={`p-2 text-left border-2 flex items-center gap-3 transition-colors ${
+                selected
+                  ? 'bg-amber-500/20 border-amber-400 text-amber-200 cursor-pointer'
+                  : unlocked
+                    ? 'bg-[#1a2028] border-neutral-700 hover:border-neutral-500 text-neutral-200 cursor-pointer'
+                    : 'bg-[#11151b] border-neutral-800 text-neutral-400 opacity-75 cursor-not-allowed'
+              }`}
+            >
+              <div className="relative w-14 h-14 bg-black/70 border border-white/20 shrink-0 overflow-hidden">
+                <img
+                  src={av.url}
+                  alt={av.name}
+                  className={`w-full h-full object-cover ${
+                    unlocked ? '' : 'grayscale opacity-60'
+                  }`}
+                />
+                {!unlocked && (
+                  <div className="absolute inset-0 bg-black/45 flex items-center justify-center">
+                    <Lock className="w-4 h-4 text-amber-300" />
+                  </div>
+                )}
+                {selected && (
+                  <div className="absolute top-0.5 right-0.5 w-4 h-4 bg-amber-400 text-black flex items-center justify-center">
+                    <Check className="w-3 h-3" />
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-black text-xs uppercase truncate text-white">
+                    {av.name}
+                  </span>
+                  {av.unlockSource === 's1_mestre' && (
+                    <span className="px-1 py-0.5 bg-purple-600/40 border border-purple-400/60 text-[8px] font-black text-purple-200 shrink-0">
+                      S1 MESTRE
+                    </span>
+                  )}
+                </div>
+                <div className="text-[10px] text-neutral-400 leading-tight mt-0.5">
+                  {av.subtitle}
+                </div>
+                <div className="text-[9px] font-mono uppercase mt-1">
+                  {selected ? (
+                    <span className="text-amber-300 font-bold">EQUIPADO</span>
+                  ) : unlocked ? (
+                    <span className="text-emerald-300">Clique para equipar</span>
+                  ) : (
+                    <span className="text-amber-200/80">
+                      Desbloqueia ao pegar Mestre ({MESTRE_MIN_PTS} PTS)
+                    </span>
+                  )}
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 interface CharacterModalProps {
   config: CharacterConfig;
+  unlockedAvatars?: PlayerAvatarId[];
+  s1PeakRankPoints?: number;
+  onSelectAvatar?: (avatarId: PlayerAvatarId) => void;
   onChange: (next: CharacterConfig) => void;
   onClose: () => void;
 }
 
 export const CharacterModal: React.FC<CharacterModalProps> = ({
   config,
+  unlockedAvatars,
+  s1PeakRankPoints = 0,
+  onSelectAvatar,
   onChange,
   onClose,
 }) => {
   const activeModel = normalizeCharacterModelId(config.modelId);
+  const activeAvatarId = normalizePlayerAvatarId(config.avatarId);
 
   const characters: ReadonlyArray<{ id: CharacterModelId; title: string; sub: string }> = [
     { id: 'adam', title: 'ADAM', sub: 'Personagem Masculino Clássico' },
@@ -196,6 +319,18 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({
               })}
             </div>
           </div>
+
+          {/* Profile Avatar Selector */}
+          {onSelectAvatar && (
+            <div className="border-t border-neutral-700 pt-3">
+              <AvatarCollectionGrid
+                activeAvatarId={activeAvatarId}
+                unlockedAvatars={unlockedAvatars}
+                s1PeakRankPoints={s1PeakRankPoints}
+                onSelectAvatar={onSelectAvatar}
+              />
+            </div>
+          )}
         </div>
 
         <div className="px-4 py-3 bg-[#1d232c] border-t border-neutral-700 flex justify-end">
@@ -218,6 +353,7 @@ interface SettingsModalProps {
   onChangeNickname: (name: string) => void;
   onChangeSettings: (next: GameSettings) => void;
   onOpenHudEditor: () => void;
+  onOpenGgMacroModal?: () => void;
   onRebindingChange?: (active: boolean) => void;
   onClose: () => void;
 }
@@ -228,11 +364,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onChangeNickname,
   onChangeSettings,
   onOpenHudEditor,
+  onOpenGgMacroModal,
   onRebindingChange,
   onClose,
 }) => {
-  const [tab, setTab] = React.useState<'sens' | 'controls' | 'keys' | 'general'>('sens');
+  const [tab, setTab] = React.useState<'sens' | 'controls' | 'keys' | 'network' | 'general'>('sens');
   const [listeningAction, setListeningAction] = React.useState<KeyBindAction | null>(null);
+  const [livePing, setLivePing] = React.useState(() => multiplayerClient.getPingInfo());
+  const [testingPing, setTestingPing] = React.useState(false);
+
+  React.useEffect(() => {
+    if (tab !== 'network') return;
+    setLivePing(multiplayerClient.getPingInfo());
+    const id = window.setInterval(() => {
+      setLivePing(multiplayerClient.getPingInfo());
+    }, 350);
+    return () => window.clearInterval(id);
+  }, [tab]);
 
   const keyBindings = React.useMemo(
     () => normalizeKeyBindings(settings.keyBindings),
@@ -360,7 +508,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {/* Category Tabs */}
-        <div className="grid grid-cols-4 bg-[#0f1318] border-b border-neutral-700 text-[10px] sm:text-[11px] font-black uppercase">
+        <div className="grid grid-cols-5 bg-[#0f1318] border-b border-neutral-700 text-[9px] sm:text-[11px] font-black uppercase">
           <button
             type="button"
             onClick={() => {
@@ -402,7 +550,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             }`}
           >
             <Keyboard className="w-3.5 h-3.5 hidden sm:inline" />
-            <span>TECLAS / EMU</span>
+            <span>TECLAS</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setListeningAction(null);
+              setTab('network');
+            }}
+            className={`py-2.5 cursor-pointer border-b-2 flex items-center justify-center gap-1 ${
+              tab === 'network'
+                ? 'border-amber-400 text-amber-400 bg-[#181e27]'
+                : 'border-transparent text-neutral-400 hover:text-white'
+            }`}
+          >
+            <Wifi className="w-3.5 h-3.5 hidden sm:inline" />
+            <span>REDE</span>
           </button>
           <button
             type="button"
@@ -656,6 +819,69 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     MIRA: CLICAR / ALTERNAR
                   </button>
                 </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const cur = settings.ggMousePro;
+                      onChangeSettings({
+                        ...settings,
+                        ggMousePro: {
+                          enabled: cur?.enabled ?? false,
+                          showKeyBadges: cur?.showKeyBadges ?? true,
+                          badgeOpacity: cur?.badgeOpacity ?? 0.85,
+                          aimDragBoost: cur?.aimDragBoost ?? 1.15,
+                          turboTouch: !(cur?.turboTouch ?? true),
+                          instantQuickGloo: cur?.instantQuickGloo ?? true,
+                          pins: cur?.pins ?? ({} as NonNullable<GameSettings['ggMousePro']>['pins']),
+                        },
+                      });
+                    }}
+                    className={`py-1.5 px-2 border text-[10px] font-black uppercase cursor-pointer ${
+                      (settings.ggMousePro?.turboTouch ?? true)
+                        ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+                        : 'bg-[#1a2028] border-neutral-700 text-neutral-400'
+                    }`}
+                  >
+                    TOQUE & ANIMAÇÃO TURBO: {(settings.ggMousePro?.turboTouch ?? true) ? 'ON' : 'OFF'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const cur = settings.ggMousePro;
+                      onChangeSettings({
+                        ...settings,
+                        ggMousePro: {
+                          enabled: cur?.enabled ?? false,
+                          showKeyBadges: cur?.showKeyBadges ?? true,
+                          badgeOpacity: cur?.badgeOpacity ?? 0.85,
+                          aimDragBoost: cur?.aimDragBoost ?? 1.15,
+                          turboTouch: cur?.turboTouch ?? true,
+                          instantQuickGloo: !(cur?.instantQuickGloo ?? true),
+                          pins: cur?.pins ?? ({} as NonNullable<GameSettings['ggMousePro']>['pins']),
+                        },
+                      });
+                    }}
+                    className={`py-1.5 px-2 border text-[10px] font-black uppercase cursor-pointer ${
+                      (settings.ggMousePro?.instantQuickGloo ?? true)
+                        ? 'bg-sky-500/20 border-sky-400 text-sky-200'
+                        : 'bg-[#1a2028] border-neutral-700 text-neutral-400'
+                    }`}
+                  >
+                    GELO RÁPIDO 1-CLIQUE: {(settings.ggMousePro?.instantQuickGloo ?? true) ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+
+                {onOpenGgMacroModal && (
+                  <button
+                    type="button"
+                    onClick={onOpenGgMacroModal}
+                    className="w-full py-2.5 px-3 bg-gradient-to-r from-cyan-500 to-amber-400 hover:brightness-110 text-black font-black text-[11px] uppercase tracking-wider cursor-pointer"
+                  >
+                    ABRIR GG MOUSE PRO & MACROS (PC / BOTÃO EMOJI ANDROID)
+                  </button>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -726,21 +952,45 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 </div>
                               )}
                             </div>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setListeningAction((cur) =>
-                                  cur === item.action ? null : item.action,
-                                )
-                              }
-                              className={`shrink-0 min-w-[92px] px-2.5 py-1 border font-mono font-black text-[10px] uppercase cursor-pointer transition-colors ${
-                                isWaiting
-                                  ? 'bg-amber-400 text-black border-white animate-pulse'
-                                  : 'bg-[#0e1218] hover:bg-[#232c3a] text-amber-300 border-neutral-600'
-                              }`}
-                            >
-                              {isWaiting ? 'TECLE...' : formatKeyCodeLabel(boundCode)}
-                            </button>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setListeningAction((cur) =>
+                                    cur === item.action ? null : item.action,
+                                  )
+                                }
+                                className={`min-w-[84px] px-2.5 py-1 border font-mono font-black text-[10px] uppercase cursor-pointer ${
+                                  isWaiting
+                                    ? 'bg-amber-400 text-black border-white animate-pulse'
+                                    : 'bg-[#0e1218] hover:bg-[#232c3a] text-amber-300 border-neutral-600'
+                                }`}
+                              >
+                                {isWaiting
+                                  ? 'TECLE...'
+                                  : boundCode
+                                    ? formatKeyCodeLabel(boundCode)
+                                    : '---'}
+                              </button>
+                              {item.action === 'quickGlooInstant' && boundCode && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onChangeSettings({
+                                      ...settings,
+                                      keyBindings: {
+                                        ...keyBindings,
+                                        quickGlooInstant: '',
+                                      },
+                                    })
+                                  }
+                                  title="Limpar tecla"
+                                  className="px-1.5 py-1 bg-[#141920] hover:bg-red-900/60 border border-neutral-600 text-[10px] font-black text-neutral-300 cursor-pointer"
+                                >
+                                  ×
+                                </button>
+                              )}
+                            </div>
                           </div>
                         );
                       })}
@@ -748,6 +998,155 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 ))}
               </div>
+            </>
+          )}
+
+          {tab === 'network' && (
+            <>
+              <div className="bg-[#0e1218] border border-cyan-500/40 p-3 flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[10px] font-mono uppercase text-neutral-400">
+                    STATUS DA CONEXÃO MULTIPLAYER
+                  </div>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span
+                      className={`text-base font-black font-mono tabular-nums ${
+                        livePing.disconnected
+                          ? 'text-red-400'
+                          : livePing.pingMs <= 80
+                            ? 'text-emerald-400'
+                            : livePing.pingMs <= 160
+                              ? 'text-amber-300'
+                              : 'text-orange-400'
+                      }`}
+                    >
+                      {livePing.label}
+                    </span>
+                    <span className="text-[10px] font-mono text-neutral-300">
+                      · {multiplayerClient.getNetworkConfig().wsConnected ? 'WebSocket Tempo Real' : 'HTTP Rápido'}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={testingPing}
+                  onClick={() => {
+                    setTestingPing(true);
+                    void multiplayerClient
+                      .probePing()
+                      .finally(() => {
+                        setLivePing(multiplayerClient.getPingInfo());
+                        setTestingPing(false);
+                      });
+                  }}
+                  className="px-3 py-2 bg-[#1a2230] hover:bg-amber-500 hover:text-black border border-neutral-600 font-black uppercase text-[10px] flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${testingPing ? 'animate-spin' : ''}`} />
+                  <span>TESTAR PING</span>
+                </button>
+              </div>
+
+              <div>
+                <div className="font-bold uppercase text-neutral-300 mb-1.5">
+                  TAXA DE REQUISIÇÃO E ATUALIZAÇÃO (TICK MULTIPLAYER)
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      {
+                        id: 'ultra' as NetworkSyncPreset,
+                        title: 'Ultra Rápida',
+                        desc: '33ms (30Hz) · Resposta máxima',
+                      },
+                      {
+                        id: 'fast' as NetworkSyncPreset,
+                        title: 'Rápida (Padrão)',
+                        desc: '50ms (20Hz) · Equilibrado',
+                      },
+                      {
+                        id: 'economy' as NetworkSyncPreset,
+                        title: 'Estável / 4G',
+                        desc: '95ms (10Hz) · Menos dados',
+                      },
+                    ]
+                  ).map((opt) => {
+                    const active = (settings.networkSyncPreset ?? 'fast') === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() =>
+                          onChangeSettings({ ...settings, networkSyncPreset: opt.id })
+                        }
+                        className={`py-2 px-2 border cursor-pointer flex flex-col items-center text-center gap-0.5 ${
+                          active
+                            ? 'bg-amber-500 text-black border-amber-400'
+                            : 'bg-[#1a2028] border-neutral-700 hover:border-neutral-500 text-neutral-200'
+                        }`}
+                      >
+                        <span className="font-black uppercase text-[11px]">{opt.title}</span>
+                        <span
+                          className={`text-[9px] leading-tight ${
+                            active ? 'text-black/80 font-bold' : 'text-neutral-400'
+                          }`}
+                        >
+                          {opt.desc}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() =>
+                  onChangeSettings({
+                    ...settings,
+                    networkLowLatency: !(settings.networkLowLatency ?? true),
+                  })
+                }
+                className={`w-full py-2.5 px-3 border flex items-center justify-between gap-2 cursor-pointer text-left ${
+                  (settings.networkLowLatency ?? true)
+                    ? 'bg-emerald-900/40 border-emerald-500 text-emerald-300'
+                    : 'bg-[#1a2028] border-neutral-700 text-neutral-400'
+                }`}
+              >
+                <div>
+                  <div className="font-bold uppercase">MODO BAIXA LATÊNCIA (REQUISIÇÃO RÁPIDA)</div>
+                  <div className="text-[10px] font-mono text-neutral-400">
+                    Envia tiros/gelo/dano na hora sem esperar o próximo ciclo e cancela pacotes travados.
+                  </div>
+                </div>
+                <span className="font-black shrink-0">
+                  {(settings.networkLowLatency ?? true) ? 'LIGADO' : 'DESLIGADO'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  onChangeSettings({
+                    ...settings,
+                    networkHighPingSmoothing: !(settings.networkHighPingSmoothing ?? true),
+                  })
+                }
+                className={`w-full py-2.5 px-3 border flex items-center justify-between gap-2 cursor-pointer text-left ${
+                  (settings.networkHighPingSmoothing ?? true)
+                    ? 'bg-emerald-900/40 border-emerald-500 text-emerald-300'
+                    : 'bg-[#1a2028] border-neutral-700 text-neutral-400'
+                }`}
+              >
+                <div>
+                  <div className="font-bold uppercase">SUAVIZAÇÃO PARA PING ALTO / LAG</div>
+                  <div className="text-[10px] font-mono text-neutral-400">
+                    Prevê o movimento dos jogadores online entre pacotes para reduzir teleporte e engasgos.
+                  </div>
+                </div>
+                <span className="font-black shrink-0">
+                  {(settings.networkHighPingSmoothing ?? true) ? 'LIGADO' : 'DESLIGADO'}
+                </span>
+              </button>
             </>
           )}
 
@@ -1045,7 +1444,24 @@ export const CreditsModal: React.FC<{ onClose: () => void }> = ({ onClose }) => 
   </div>
 );
 
-export const ArsenalModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+interface ArsenalModalProps {
+  initialTab?: 'weapons' | 'avatars';
+  activeAvatarId?: PlayerAvatarId;
+  unlockedAvatars?: PlayerAvatarId[];
+  s1PeakRankPoints?: number;
+  onSelectAvatar?: (avatarId: PlayerAvatarId) => void;
+  onClose: () => void;
+}
+
+export const ArsenalModal: React.FC<ArsenalModalProps> = ({
+  initialTab = 'weapons',
+  activeAvatarId = 'default',
+  unlockedAvatars,
+  s1PeakRankPoints = 0,
+  onSelectAvatar,
+  onClose,
+}) => {
+  const [tab, setTab] = React.useState<'weapons' | 'avatars'>(initialTab);
   const weaponsList = Object.values(WEAPONS);
   return (
     <div
@@ -1058,7 +1474,7 @@ export const ArsenalModal: React.FC<{ onClose: () => void }> = ({ onClose }) => 
       >
         <div className="flex items-center justify-between px-4 py-3 bg-[#1d232c] border-b border-neutral-700">
           <h2 className="font-black text-sm tracking-widest uppercase text-amber-400">
-            COFRE DE ARMAS · ARSENAL DA ILHA
+            COFRE · ARSENAL & AVATARES S1
           </h2>
           <button
             type="button"
@@ -1069,73 +1485,108 @@ export const ArsenalModal: React.FC<{ onClose: () => void }> = ({ onClose }) => 
           </button>
         </div>
 
+        <div className="grid grid-cols-2 bg-[#0f1318] border-b border-neutral-700 text-xs font-black uppercase">
+          <button
+            type="button"
+            onClick={() => setTab('weapons')}
+            className={`py-2.5 border-b-2 cursor-pointer ${
+              tab === 'weapons'
+                ? 'border-amber-400 text-amber-400 bg-[#181e27]'
+                : 'border-transparent text-neutral-400 hover:text-white'
+            }`}
+          >
+            ARSENAL DE ARMAS ({weaponsList.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('avatars')}
+            className={`py-2.5 border-b-2 cursor-pointer flex items-center justify-center gap-1.5 ${
+              tab === 'avatars'
+                ? 'border-amber-400 text-amber-400 bg-[#181e27]'
+                : 'border-transparent text-neutral-400 hover:text-white'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+            <span>AVATARES ({PLAYER_AVATARS.length})</span>
+          </button>
+        </div>
+
         <div className="p-4 space-y-2.5 overflow-y-auto flex-1">
-          {weaponsList.map((w) => {
-            const dmgPct = Math.min(100, Math.round((w.damage / 155) * 100));
-            const rngPct = Math.min(100, Math.round((w.range / 390) * 100));
-            const rpm = Math.round(60000 / w.fireRateMs);
-            const rofPct = Math.min(100, Math.round((rpm / 780) * 100));
-            return (
-              <div
-                key={w.id}
-                className="bg-[#181e27] border border-neutral-700 p-3 flex flex-col sm:flex-row items-center gap-3"
-              >
-                <div className="w-32 h-14 bg-black/55 border border-white/10 flex items-center justify-center p-1.5 shrink-0">
-                  <WeaponIcon weaponId={w.id} className="w-28 h-10" />
-                </div>
-                <div className="flex-1 w-full space-y-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="font-black text-xs uppercase text-white">
-                      {w.name}
+          {tab === 'avatars' ? (
+            <AvatarCollectionGrid
+              activeAvatarId={activeAvatarId}
+              unlockedAvatars={unlockedAvatars}
+              s1PeakRankPoints={s1PeakRankPoints}
+              onSelectAvatar={onSelectAvatar}
+            />
+          ) : (
+            weaponsList.map((w) => {
+              const dmgPct = Math.min(100, Math.round((w.damage / 155) * 100));
+              const rngPct = Math.min(100, Math.round((w.range / 390) * 100));
+              const rpm = Math.round(60000 / w.fireRateMs);
+              const rofPct = Math.min(100, Math.round((rpm / 780) * 100));
+              return (
+                <div
+                  key={w.id}
+                  className="bg-[#181e27] border border-neutral-700 p-3 flex flex-col sm:flex-row items-center gap-3"
+                >
+                  <div className="w-32 h-14 bg-black/55 border border-white/10 flex items-center justify-center p-1.5 shrink-0">
+                    <WeaponIcon weaponId={w.id} className="w-28 h-10" />
+                  </div>
+                  <div className="flex-1 w-full space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-black text-xs uppercase text-white">
+                        {w.name}
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[10px] font-mono">
+                        <span className="px-1.5 py-0.5 bg-amber-500/20 border border-amber-400/40 text-amber-300 font-bold">
+                          {w.category}
+                        </span>
+                        <span className="px-1.5 py-0.5 bg-black/60 border border-white/15 text-neutral-300">
+                          PENTE {w.magSize}
+                        </span>
+                        <span className="px-1.5 py-0.5 bg-black/60 border border-white/15 text-neutral-300">
+                          RECARGA{' '}
+                          {w.reloadTimeSec < 0.75
+                            ? `${Math.round(w.reloadTimeSec * 1000)}ms`
+                            : `${w.reloadTimeSec.toFixed(2)}s`}
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1.5 text-[10px] font-mono">
-                      <span className="px-1.5 py-0.5 bg-amber-500/20 border border-amber-400/40 text-amber-300 font-bold">
-                        {w.category}
-                      </span>
-                      <span className="px-1.5 py-0.5 bg-black/60 border border-white/15 text-neutral-300">
-                        PENTE {w.magSize}
-                      </span>
-                      <span className="px-1.5 py-0.5 bg-black/60 border border-white/15 text-neutral-300">
-                        RECARGA{' '}
-                        {w.reloadTimeSec < 0.75
-                          ? `${Math.round(w.reloadTimeSec * 1000)}ms`
-                          : `${w.reloadTimeSec.toFixed(2)}s`}
-                      </span>
+                    <div className="grid grid-cols-3 gap-2 text-[10px] font-mono">
+                      <div>
+                        <div className="flex justify-between text-neutral-400 mb-0.5">
+                          <span>DANO</span>
+                          <span className="text-amber-300 font-bold">{w.damage * w.pellets}</span>
+                        </div>
+                        <div className="h-1.5 bg-neutral-800">
+                          <div className="h-full bg-amber-400" style={{ width: `${dmgPct}%` }} />
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex justify-between text-neutral-400 mb-0.5">
+                          <span>ALCANCE</span>
+                          <span className="text-sky-300 font-bold">{w.range}m</span>
+                        </div>
+                        <div className="h-1.5 bg-neutral-800">
+                          <div className="h-full bg-sky-400" style={{ width: `${rngPct}%` }} />
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex justify-between text-neutral-400 mb-0.5">
+                          <span>CADÊNCIA</span>
+                          <span className="text-emerald-300 font-bold">{rpm} RPM</span>
+                        </div>
+                        <div className="h-1.5 bg-neutral-800">
+                          <div className="h-full bg-emerald-400" style={{ width: `${rofPct}%` }} />
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  <div className="grid grid-cols-3 gap-2 text-[10px] font-mono">
-                    <div>
-                      <div className="flex justify-between text-neutral-400 mb-0.5">
-                        <span>DANO</span>
-                        <span className="text-amber-300 font-bold">{w.damage * w.pellets}</span>
-                      </div>
-                      <div className="h-1.5 bg-neutral-800">
-                        <div className="h-full bg-amber-400" style={{ width: `${dmgPct}%` }} />
-                      </div>
-                    </div>
-                    <div>
-                      <div className="flex justify-between text-neutral-400 mb-0.5">
-                        <span>ALCANCE</span>
-                        <span className="text-sky-300 font-bold">{w.range}m</span>
-                      </div>
-                      <div className="h-1.5 bg-neutral-800">
-                        <div className="h-full bg-sky-400" style={{ width: `${rngPct}%` }} />
-                      </div>
-                    </div>
-                    <div>
-                      <div className="flex justify-between text-neutral-400 mb-0.5">
-                        <span>CADÊNCIA</span>
-                        <span className="text-emerald-300 font-bold">{rpm} RPM</span>
-                      </div>
-                      <div className="h-1.5 bg-neutral-800">
-                        <div className="h-full bg-emerald-400" style={{ width: `${rofPct}%` }} />
-                      </div>
-                    </div>
-                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
         </div>
 
         <div className="px-4 py-3 bg-[#1d232c] border-t border-neutral-700 flex justify-end">

@@ -630,7 +630,12 @@ function createAdamCharacterRig(
     if (clip.name === 'Death01') {
       act.setLoop(THREE.LoopOnce, 1);
       act.clampWhenFinished = true;
-    } else if (clip.name === 'Punch_Jab' || clip.name === 'Punch_Cross') {
+    } else if (
+      clip.name === 'Punch_Jab' ||
+      clip.name === 'Punch_Cross' ||
+      clip.name === 'Punch_Jab_Upper' ||
+      clip.name === 'Punch_Cross_Upper'
+    ) {
       act.setLoop(THREE.LoopOnce, 1);
     } else {
       act.setLoop(THREE.LoopRepeat, Infinity);

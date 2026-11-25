@@ -4,17 +4,22 @@ import { MatchMode } from '../game/types';
 
 interface MatchmakingOverlayProps {
   playerCount: number;
+  totalPlayers?: number;
   matchMode: MatchMode;
+  mapName?: string;
   isOnline?: boolean;
   onCancel: () => void;
 }
 
 export const MatchmakingOverlay: React.FC<MatchmakingOverlayProps> = ({
   playerCount,
+  totalPlayers = 51,
   matchMode,
+  mapName = 'BERMUDA',
   isOnline = false,
   onCancel,
 }) => {
+  const displayTotal = Math.max(51, totalPlayers, playerCount);
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/55 p-4 text-white">
       <div className="w-full max-w-sm bg-[#14181e]/95 border-2 border-amber-500 p-5 text-center space-y-4 shadow-2xl">
@@ -27,10 +32,10 @@ export const MatchmakingOverlay: React.FC<MatchmakingOverlayProps> = ({
 
         <div className="bg-[#0e1217] border border-neutral-700 py-3 px-4">
           <div className="text-3xl font-black font-mono tabular-nums text-amber-400">
-            {playerCount} / 51
+            {playerCount} / {displayTotal}
           </div>
           <div className="text-[11px] font-mono text-neutral-400 mt-1">
-            JOÃO PESSOA · {matchMode.toUpperCase()} {isOnline ? '· MULTIPLAYER ONLINE' : '(BOTS)'}
+            {mapName} · {matchMode.toUpperCase()} {isOnline ? '· AGUARDANDO ONLINE (10s–20s)' : '(BOTS)'}
           </div>
         </div>
 

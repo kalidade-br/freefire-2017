@@ -67,7 +67,7 @@ const SAMPLE_SHOT_PROFILES: Partial<Record<WeaponId, SampleShotProfile>> = {
   xm8: { offset: 0.273, duration: 0.48, gain: 0.88, fadeStart: 0.26 },
   scar: { offset: 0.355, duration: 0.52, gain: 6.5, fadeStart: 0.34 },
   ak47: { offset: 0.475, duration: 0.54, gain: 6.8, fadeStart: 0.35 },
-  m1014: { offset: 0.0, duration: 0.56, gain: 2.1, fadeStart: 0.34 },
+  m1014: { offset: 0.0, duration: 0.72, gain: 2.25, fadeStart: 0.48 },
   awm: { offset: 0.38, duration: 0.61, gain: 1.15, fadeStart: 0.45 },
 };
 
@@ -368,10 +368,16 @@ class SoundEngine {
       const localUrl = SFX_URLS[key];
       const fileName = localUrl.split('/').pop() || '';
       const rawGithubUrl = `https://raw.githubusercontent.com/kalidade-br/freefire-soms/main/${encodeURIComponent(fileName)}`;
+      const ghPagesSomsUrl = `https://kalidade-br.github.io/freefire-soms/${encodeURIComponent(fileName)}`;
       const netlifyUrl = `https://freefire-soms.netlify.app/${encodeURIComponent(fileName)}`;
       const headGithubUrl = 'https://kalidade-br.github.io/freefire-2017/som/head.mp3';
-      void fetchAudioBuffer(localUrl)
+      const primaryPromise =
+        key === 'm1014'
+          ? fetchAudioBuffer(ghPagesSomsUrl).catch(() => fetchAudioBuffer(localUrl))
+          : fetchAudioBuffer(localUrl);
+      void primaryPromise
         .catch(() => (key === 'headshot' ? fetchAudioBuffer(headGithubUrl) : Promise.reject()))
+        .catch(() => fetchAudioBuffer(ghPagesSomsUrl))
         .catch(() => fetchAudioBuffer(rawGithubUrl))
         .catch(() => fetchAudioBuffer(netlifyUrl))
         .then((arr) => ctx.decodeAudioData(arr))
@@ -882,6 +888,57 @@ class SoundEngine {
     filter.frequency.value = isSprint ? 520 : 380;
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(isSprint ? 0.12 : 0.075, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
+    noise.connect(filter);
+    filter.connect(g);
+    g.connect(this.masterGain);
+    noise.start(now, Math.random() * 0.5, 0.08);
+  }
+
+  public playSpatialFootstep(
+    distanceMeters: number,
+    isSprint: boolean,
+    stance: PlayerStance = 'stand',
+  ): void {
+    if (!this.ready() || !this.ctx || !this.masterGain || !this.noiseBuffer) {
+      return;
+    }
+    const dist = Math.max(0.5, distanceMeters);
+    if (dist > 34) return;
+    const atten = Math.max(0, 1 - dist / 34);
+    const stanceMult = stance === 'prone' ? 0.35 : stance === 'crouch' ? 0.62 : 1.0;
+    const gainScale = atten * atten * stanceMult * (isSprint ? 1.0 : 0.72);
+    if (gainScale < 0.015) return;
+
+    const now = this.ctx.currentTime;
+    const runBuf = this.sfxBuffers.get('run');
+    if (runBuf && runBuf.duration > 0.65) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = runBuf;
+      src.playbackRate.value = isSprint ? 1.04 + Math.random() * 0.08 : 0.88 + Math.random() * 0.06;
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = Math.max(650, 4200 * Math.exp(-dist / 18));
+      const g = this.ctx.createGain();
+      const peak = 0.65 * gainScale;
+      g.gain.setValueAtTime(0.001, now);
+      g.gain.linearRampToValueAtTime(peak, now + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+      src.connect(lp);
+      lp.connect(g);
+      g.connect(this.masterGain);
+      const sliceOffset = Math.random() < 0.5 ? 0.11 : 0.42;
+      src.start(now, sliceOffset, 0.16);
+      return;
+    }
+
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = isSprint ? 520 : 380;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.16 * gainScale, now);
     g.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
     noise.connect(filter);
     filter.connect(g);

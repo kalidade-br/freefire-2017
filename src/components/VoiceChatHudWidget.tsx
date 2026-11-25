@@ -36,6 +36,7 @@ export const VoiceChatHudWidget: React.FC<VoiceChatHudWidgetProps> = ({ compact 
   }, []);
 
   const handleToggleCall = async () => {
+    voiceChatManager.resumeAudioPlayback();
     if (!callActive) {
       const ok = await voiceChatManager.startCall();
       if (ok) {
@@ -55,6 +56,7 @@ export const VoiceChatHudWidget: React.FC<VoiceChatHudWidgetProps> = ({ compact 
   };
 
   const handleToggleMuteCall = () => {
+    voiceChatManager.resumeAudioPlayback();
     const nextMuted = voiceChatManager.toggleSpeakerMuted();
     setCallAudioMuted(nextMuted);
   };
