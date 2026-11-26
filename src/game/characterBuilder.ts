@@ -51,6 +51,9 @@ export interface CharacterRig {
   weaponMount: THREE.Group;
   backMount1: THREE.Group;
   backMount2: THREE.Group;
+  spineMount?: THREE.Group;
+  headMount?: THREE.Group;
+  helmetOffsetY?: number;
   muzzleFlash: THREE.Mesh;
   parachuteGroup: THREE.Group;
   surfboardGroup: THREE.Group;
@@ -778,6 +781,9 @@ function createAdamCharacterRig(
     weaponMount,
     backMount1,
     backMount2,
+    spineMount,
+    headMount,
+    helmetOffsetY: pack.helmetOffsetY,
     muzzleFlash,
     parachuteGroup,
     surfboardGroup: surfboard.group,
@@ -1222,6 +1228,9 @@ function createProceduralCharacterRig(
     weaponMount,
     backMount1,
     backMount2,
+    spineMount: torso,
+    headMount: headGroup,
+    helmetOffsetY: 0.08,
     muzzleFlash,
     parachuteGroup,
     surfboardGroup: surfboard.group,

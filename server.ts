@@ -35,6 +35,7 @@ import {
 import type {
   AirplaneRouteSync,
   ClientMatchStatePush,
+  GladiadoresRoomSync,
   MatchRoomAction,
   MatchRoomJoinInfo,
   MatchRoomSnapshot,
@@ -54,7 +55,7 @@ import type {
   SearchingPlayerInfo,
   SearchingPoolInfo,
 } from './src/shared/multiplayerTypes.ts';
-import type { BrMapId, MatchMode } from './src/game/types.ts';
+import type { BrMapId, GameVariant, GladiadoresFormat, MatchMode } from './src/game/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -91,6 +92,8 @@ interface MatchmakingPoolEntry {
 
 interface MatchmakingPool {
   poolKey: string;
+  gameVariant: GameVariant;
+  gladiadoresFormat: GladiadoresFormat;
   mode: MatchMode;
   mapId: BrMapId;
   isRanked: boolean;
@@ -106,6 +109,8 @@ const pendingMatchFound = new Map<number, { joinInfo: MatchRoomJoinInfo; expires
 interface ServerMatchRoom {
   roomId: string;
   seed: number;
+  gameVariant: GameVariant;
+  gladiadoresFormat: GladiadoresFormat;
   mode: MatchMode;
   mapId: BrMapId;
   isRanked: boolean;
@@ -127,7 +132,12 @@ interface ServerMatchRoom {
   nextKillFeedId: number;
   aliveCount: number;
   winnerTeamId: number | null;
+  gladiadores?: GladiadoresRoomSync | null;
   lastRequestMs: Map<number, number>;
+  lastBotSentMs: Map<number, number>;
+  lastWorldSentMs: Map<number, number>;
+  sentWorldVersion: Map<number, number>;
+  worldVersion: number;
 }
 
 function getPresence(accountId: number): PresenceStatus {
@@ -220,6 +230,8 @@ function ensurePartyForAccount(acc: PublicPlayerAccount): PartyState {
   const party: PartyState = {
     partyId,
     leaderId: acc.id,
+    gameVariant: 'br',
+    gladiadoresFormat: '1v1',
     mode: 'solo',
     mapId: 'bermuda',
     isRanked: false,
@@ -233,7 +245,16 @@ function ensurePartyForAccount(acc: PublicPlayerAccount): PartyState {
   return party;
 }
 
-function makePoolKey(mode: MatchMode, mapId: BrMapId, isRanked: boolean): string {
+function makePoolKey(
+  gameVariant: GameVariant,
+  gladiadoresFormat: GladiadoresFormat,
+  mode: MatchMode,
+  mapId: BrMapId,
+  isRanked: boolean,
+): string {
+  if (gameVariant === 'gladiadores') {
+    return `gladiadores:${gladiadoresFormat}`;
+  }
   return `${mode}:${mapId}:${isRanked ? 'ranked' : 'classic'}`;
 }
 
@@ -259,6 +280,8 @@ function buildSearchingPoolsList(): SearchingPoolInfo[] {
     if (players.length === 0) continue;
     result.push({
       poolKey: pool.poolKey,
+      gameVariant: pool.gameVariant,
+      gladiadoresFormat: pool.gladiadoresFormat,
       mode: pool.mode,
       mapId: pool.mapId,
       isRanked: pool.isRanked,
@@ -320,6 +343,8 @@ function getSearchStatusForParty(party: PartyState): MatchmakingSearchStatus {
     poolKey: pool.poolKey,
     startedAtMs: entry?.joinedAtMs ?? pool.startedAtMs,
     launchAtMs: pool.launchAtMs,
+    gameVariant: pool.gameVariant,
+    gladiadoresFormat: pool.gladiadoresFormat,
     mode: pool.mode,
     mapId: pool.mapId,
     isRanked: pool.isRanked,
@@ -328,17 +353,21 @@ function getSearchStatusForParty(party: PartyState): MatchmakingSearchStatus {
 
 function joinPoolForParty(
   party: PartyState,
+  gameVariant: GameVariant,
+  gladiadoresFormat: GladiadoresFormat,
   mode: MatchMode,
   mapId: BrMapId,
   isRanked: boolean,
 ): MatchmakingSearchStatus {
   const now = Date.now();
   removePartyFromMatchmaking(party.partyId, false);
-  const poolKey = makePoolKey(mode, mapId, isRanked);
+  const poolKey = makePoolKey(gameVariant, gladiadoresFormat, mode, mapId, isRanked);
   let pool = matchmakingPools.get(poolKey);
   if (!pool) {
     pool = {
       poolKey,
+      gameVariant,
+      gladiadoresFormat,
       mode,
       mapId,
       isRanked,
@@ -359,6 +388,16 @@ function joinPoolForParty(
     joinedAtMs: now,
     lastPollAtMs: now,
   });
+  if (gameVariant === 'gladiadores') {
+    let totalHumans = 0;
+    for (const e of pool.entries) {
+      totalHumans += parties.get(e.partyId)?.members.length ?? 0;
+    }
+    const targetHumans = gladiadoresFormat === '2v2' ? 4 : 2;
+    if (totalHumans >= targetHumans) {
+      pool.launchAtMs = Math.min(pool.launchAtMs, now + 1_200);
+    }
+  }
   partyPoolKeyMap.set(party.partyId, poolKey);
   party.status = 'matchmaking';
   party.roomId = null;
@@ -369,6 +408,8 @@ function joinPoolForParty(
     poolKey: pool.poolKey,
     startedAtMs: now,
     launchAtMs: pool.launchAtMs,
+    gameVariant: pool.gameVariant,
+    gladiadoresFormat: pool.gladiadoresFormat,
     mode: pool.mode,
     mapId: pool.mapId,
     isRanked: pool.isRanked,
@@ -406,6 +447,13 @@ function maxMembersForMode(mode: MatchMode): number {
   if (mode === 'solo') return 1;
   if (mode === 'duo') return 2;
   return 4;
+}
+
+function maxMembersForParty(party: PartyState): number {
+  if ((party.gameVariant ?? 'br') === 'gladiadores') {
+    return (party.gladiadoresFormat ?? '1v1') === '2v2' ? 2 : 1;
+  }
+  return maxMembersForMode(party.mode);
 }
 
 function computeServerSafeZone(room: ServerMatchRoom, nowMs: number): SafeZoneSyncState {
@@ -538,6 +586,8 @@ function buildJoinInfo(room: ServerMatchRoom, yourAccountId: number): MatchRoomJ
   return {
     roomId: room.roomId,
     seed: room.seed,
+    gameVariant: room.gameVariant,
+    gladiadoresFormat: room.gladiadoresFormat,
     mode: room.mode,
     mapId: room.mapId,
     isRanked: room.isRanked,
@@ -553,8 +603,74 @@ function buildJoinInfo(room: ServerMatchRoom, yourAccountId: number): MatchRoomJ
   };
 }
 
-function buildRoomSnapshot(room: ServerMatchRoom): MatchRoomSnapshot {
+function buildRoomSnapshot(
+  room: ServerMatchRoom,
+  recipientAccountId?: number,
+  forceFullWorld = false,
+): MatchRoomSnapshot {
   const nowMs = Date.now();
+  const isHost = recipientAccountId !== undefined && recipientAccountId === room.hostAccountId;
+
+  let botsOut: RemoteBotSync[] = [];
+  if (!isHost) {
+    if (recipientAccountId === undefined || forceFullWorld) {
+      botsOut = room.bots;
+      if (recipientAccountId !== undefined) {
+        room.lastBotSentMs.set(recipientAccountId, nowMs);
+      }
+    } else {
+      const prevBotAt = room.lastBotSentMs.get(recipientAccountId) ?? 0;
+      if (nowMs - prevBotAt >= 90) {
+        botsOut = room.bots;
+        room.lastBotSentMs.set(recipientAccountId, nowMs);
+      }
+    }
+  }
+
+  let includeWorld = forceFullWorld || recipientAccountId === undefined;
+  if (!includeWorld && recipientAccountId !== undefined) {
+    const prevVer = room.sentWorldVersion.get(recipientAccountId) ?? -1;
+    const prevWorldAt = room.lastWorldSentMs.get(recipientAccountId) ?? 0;
+    if (prevVer !== room.worldVersion || nowMs - prevWorldAt >= 1800) {
+      includeWorld = true;
+    }
+  }
+  if (includeWorld && recipientAccountId !== undefined) {
+    room.sentWorldVersion.set(recipientAccountId, room.worldVersion);
+    room.lastWorldSentMs.set(recipientAccountId, nowMs);
+  }
+
+  const passengersByVeh = new Map<string, number[]>();
+  for (const h of room.humans.values()) {
+    if (!h.eliminated && h.activeVehicleId) {
+      let arr = passengersByVeh.get(h.activeVehicleId);
+      if (!arr) {
+        arr = [];
+        passengersByVeh.set(h.activeVehicleId, arr);
+      }
+      arr.push(h.accountId);
+    }
+  }
+
+  const vehiclesOut: RemoteVehicleSync[] = [];
+  for (const v of room.vehicles.values()) {
+    let driverId = v.driverAccountId;
+    if (driverId !== null) {
+      const drv = room.humans.get(driverId);
+      if (!drv || drv.eliminated || drv.activeVehicleId !== v.id || drv.vehicleSeat === 'passenger') {
+        driverId = null;
+        v.driverAccountId = null;
+      }
+    }
+    const allOccupants = passengersByVeh.get(v.id) ?? [];
+    const passengers = driverId !== null ? allOccupants.filter((id) => id !== driverId) : allOccupants;
+    vehiclesOut.push({
+      ...v,
+      driverAccountId: driverId,
+      passengerAccountIds: passengers,
+    });
+  }
+
   return {
     roomId: room.roomId,
     hostAccountId: room.hostAccountId,
@@ -565,13 +681,14 @@ function buildRoomSnapshot(room: ServerMatchRoom): MatchRoomSnapshot {
     airplane: room.airplane,
     safeZone: computeServerSafeZone(room, nowMs),
     humans: Array.from(room.humans.values()),
-    vehicles: Array.from(room.vehicles.values()),
-    bots: room.bots,
-    collectedLootIds: Array.from(room.collectedLootIds),
-    glooWalls: Array.from(room.glooWalls.values()),
+    vehicles: vehiclesOut,
+    bots: botsOut,
+    collectedLootIds: includeWorld ? Array.from(room.collectedLootIds) : [],
+    glooWalls: includeWorld ? Array.from(room.glooWalls.values()) : [],
     killFeed: room.killFeed.slice(-8),
     aliveCount: room.aliveCount,
     winnerTeamId: room.winnerTeamId,
+    gladiadores: room.gladiadores ?? null,
   };
 }
 
@@ -589,9 +706,18 @@ function removeHumanFromRoom(accountId: number): void {
     p.eliminated = true;
     p.hp = 0;
   }
+  for (const v of room.vehicles.values()) {
+    if (v.driverAccountId === accountId) {
+      v.driverAccountId = null;
+      v.speed = 0;
+    }
+  }
   room.humans.delete(accountId);
   room.humanMeta.delete(accountId);
   room.lastRequestMs.delete(accountId);
+  room.lastBotSentMs.delete(accountId);
+  room.lastWorldSentMs.delete(accountId);
+  room.sentWorldVersion.delete(accountId);
 
   if (room.humans.size === 0) {
     rooms.delete(roomId);
@@ -630,6 +756,7 @@ function applyClientStatePush(
 
   const nowMs = Date.now();
   room.lastRequestMs.set(accountId, nowMs);
+  const prevVehId = existing.activeVehicleId;
   // Preserve server-authoritative health/elimination unless client hasn't synced yet or healed legitimately
   existing.x = push.x;
   existing.y = push.y;
@@ -671,14 +798,37 @@ function applyClientStatePush(
     existing.healingDone = Math.max(existing.healingDone ?? 0, push.healingDone);
   }
   existing.activeVehicleId = push.activeVehicleId;
+  existing.vehicleSeat = push.activeVehicleId ? (push.vehicleSeat ?? 'driver') : null;
   existing.updatedAtMs = nowMs;
 
-  if (push.vehicleState) {
-    room.vehicles.set(push.vehicleState.id, {
-      ...push.vehicleState,
-      driverAccountId: push.activeVehicleId === push.vehicleState.id ? accountId : null,
-      updatedAtMs: nowMs,
-    });
+  if (prevVehId && prevVehId !== push.activeVehicleId) {
+    const oldVeh = room.vehicles.get(prevVehId);
+    if (oldVeh && oldVeh.driverAccountId === accountId) {
+      oldVeh.driverAccountId = null;
+      oldVeh.updatedAtMs = nowMs;
+    }
+  }
+
+  if (push.vehicleState && push.vehicleSeat !== 'passenger') {
+    const curVeh = room.vehicles.get(push.vehicleState.id);
+    const prevDriverId = curVeh?.driverAccountId ?? null;
+    const prevDriverHuman = prevDriverId !== null ? room.humans.get(prevDriverId) : undefined;
+    const prevDriverActive = Boolean(
+      prevDriverHuman &&
+        !prevDriverHuman.eliminated &&
+        prevDriverHuman.activeVehicleId === push.vehicleState.id &&
+        prevDriverHuman.vehicleSeat !== 'passenger' &&
+        nowMs - (curVeh?.updatedAtMs ?? 0) <= 1500,
+    );
+    if (prevDriverId === null || prevDriverId === accountId || !prevDriverActive) {
+      const isDrivingNow = push.activeVehicleId === push.vehicleState.id;
+      room.vehicles.set(push.vehicleState.id, {
+        ...push.vehicleState,
+        driverAccountId: isDrivingNow ? accountId : null,
+        passengerAccountIds: curVeh?.passengerAccountIds ?? [],
+        updatedAtMs: nowMs,
+      });
+    }
   }
 
   if (accountId === room.hostAccountId && Array.isArray(push.bots)) {
@@ -686,6 +836,9 @@ function applyClientStatePush(
   }
   if (accountId === room.hostAccountId && typeof push.aliveCountHint === 'number') {
     room.aliveCount = Math.max(1, push.aliveCountHint);
+  }
+  if (accountId === room.hostAccountId && push.gladiadores !== undefined) {
+    room.gladiadores = push.gladiadores;
   }
 }
 
@@ -782,6 +935,7 @@ function handleRoomAction(
   if (action.type === 'collect_loot') {
     if (room.collectedLootIds.has(action.lootId)) return;
     room.collectedLootIds.add(action.lootId);
+    room.worldVersion += 1;
     broadcastRoom(room, { type: 'loot_collected', lootId: action.lootId }, actorAccountId);
     return;
   }
@@ -798,6 +952,7 @@ function handleRoomAction(
       skin: action.skin === 'ffwc' ? 'ffwc' : 'classic',
     };
     room.glooWalls.set(wall.id, wall);
+    room.worldVersion += 1;
     broadcastRoom(room, { type: 'gloo_spawned', wall }, actorAccountId);
     return;
   }
@@ -808,6 +963,7 @@ function handleRoomAction(
     wall.hp -= action.damage;
     if (wall.hp <= 0) {
       room.glooWalls.delete(action.id);
+      room.worldVersion += 1;
     }
     return;
   }
@@ -855,38 +1011,40 @@ function handleRoomAction(
       },
       actorAccountId,
     );
-  }
-}
-
-function launchMatchmakingPool(pool: MatchmakingPool): void {
-  matchmakingPools.delete(pool.poolKey);
-  const activeParties: PartyState[] = [];
-  for (const entry of pool.entries) {
-    partyPoolKeyMap.delete(entry.partyId);
-    const p = parties.get(entry.partyId);
-    if (p && p.members.length > 0 && p.status === 'matchmaking') {
-      activeParties.push(p);
-    }
-  }
-  if (activeParties.length === 0) {
-    broadcastSearchingQueue();
     return;
   }
 
+  if (action.type === 'glad_ready') {
+    sendWs(room.hostAccountId, {
+      type: 'glad_ready',
+      accountId: actorAccountId,
+      round: action.round,
+    });
+  }
+}
+
+function launchSingleRoomBatch(
+  pool: MatchmakingPool,
+  batchParties: PartyState[],
+  batchIndex: number,
+): void {
   const now = Date.now();
   const seed = Math.floor(100000 + Math.random() * 899999);
-  const roomId = `rm_${now.toString(36)}_${seed.toString(36)}`;
-  const waitingEndsAtMs = now + ROOM_BRIEF_WARMUP_MS;
+  const roomId = `rm_${now.toString(36)}_${batchIndex}_${seed.toString(36)}`;
+  const isGlad = pool.gameVariant === 'gladiadores';
+  const waitingEndsAtMs = isGlad ? now : now + ROOM_BRIEF_WARMUP_MS;
   const planeStartedAtMs = waitingEndsAtMs;
-  const firstParty = activeParties[0];
+  const firstParty = batchParties[0];
 
   const matchedRoom: ServerMatchRoom = {
     roomId,
     seed,
-    mode: pool.mode,
+    gameVariant: pool.gameVariant,
+    gladiadoresFormat: pool.gladiadoresFormat,
+    mode: isGlad ? (pool.gladiadoresFormat === '2v2' ? 'duo' : 'solo') : pool.mode,
     mapId: pool.mapId,
-    isRanked: pool.isRanked,
-    autoFillBots: firstParty.autoFillBots,
+    isRanked: isGlad ? false : pool.isRanked,
+    autoFillBots: isGlad ? true : firstParty.autoFillBots,
     hostAccountId: firstParty.members[0].accountId,
     createdAtMs: now,
     waitingEndsAtMs,
@@ -902,21 +1060,60 @@ function launchMatchmakingPool(pool: MatchmakingPool): void {
     glooWalls: new Map(),
     killFeed: [],
     nextKillFeedId: 1,
-    aliveCount: 51,
+    aliveCount: isGlad ? (pool.gladiadoresFormat === '2v2' ? 4 : 2) : 51,
     winnerTeamId: null,
+    gladiadores: isGlad
+      ? {
+          round: 1,
+          phase: 'intro',
+          phaseTimerSec: 10,
+          scoreTeam1: 0,
+          scoreTeam2: 0,
+          winnerTeamId: null,
+          banner: 'RODADA 1 · ESCOLHA SUAS ARMAS (10s)',
+        }
+      : null,
     lastRequestMs: new Map(),
+    lastBotSentMs: new Map(),
+    lastWorldSentMs: new Map(),
+    sentWorldVersion: new Map(),
+    worldVersion: 1,
   };
 
-  for (const party of activeParties) {
-    const assignedTeamId = matchedRoom.nextTeamId;
-    matchedRoom.nextTeamId += 1;
+  let gladTeam1Count = 0;
+  let gladTeam2Count = 0;
+  const gladTeamCap = pool.gladiadoresFormat === '2v2' ? 2 : 1;
+
+  for (const party of batchParties) {
+    let assignedTeamId = matchedRoom.nextTeamId;
+    if (isGlad) {
+      const pLen = party.members.length;
+      if (gladTeam1Count === 0) {
+        assignedTeamId = 1;
+      } else if (gladTeam2Count + pLen <= gladTeamCap && (gladTeam2Count <= gladTeam1Count || gladTeam1Count + pLen > gladTeamCap)) {
+        assignedTeamId = 2;
+      } else if (gladTeam1Count + pLen <= gladTeamCap) {
+        assignedTeamId = 1;
+      } else {
+        assignedTeamId = 2;
+      }
+    } else {
+      matchedRoom.nextTeamId += 1;
+    }
+
     party.members.forEach((m, idx) => {
       removeHumanFromRoom(m.accountId);
-      const slotInTeam = idx + 1;
-      const isTeamLeader = m.accountId === party.leaderId;
+      const slotInTeam = isGlad
+        ? assignedTeamId === 1
+          ? ++gladTeam1Count
+          : ++gladTeam2Count
+        : idx + 1;
+      const isTeamLeader = isGlad ? slotInTeam === 1 : m.accountId === party.leaderId;
       const spawnSlotIdx = matchedRoom.humans.size;
       const spawnDx = ((spawnSlotIdx % 12) - 5.5) * 1.35;
       const spawnDz = Math.floor(spawnSlotIdx / 12) * 1.35;
+      const gladX = slotInTeam === 2 ? -2613.5 : -2617.5;
+      const gladZ = assignedTeamId === 1 ? -2619.5 : -2580.5;
       const meta: RoomHumanSlot = {
         accountId: m.accountId,
         publicId: m.publicId,
@@ -942,11 +1139,11 @@ function launchMatchmakingPool(pool: MatchmakingPool): void {
         slotInTeam,
         isTeamLeader,
         character: m.character,
-        x: 2598 + spawnDx,
-        y: 18.12,
-        z: 2596 + spawnDz,
-        yaw: 0,
-        pitch: -0.14,
+        x: isGlad ? gladX : 2598 + spawnDx,
+        y: isGlad ? 18.57 : 18.12,
+        z: isGlad ? gladZ : 2596 + spawnDz,
+        yaw: isGlad ? (assignedTeamId === 1 ? Math.PI : 0) : 0,
+        pitch: isGlad ? -0.05 : -0.14,
         stance: 'stand',
         isSprinting: false,
         isAiming: false,
@@ -960,14 +1157,14 @@ function launchMatchmakingPool(pool: MatchmakingPool): void {
         inWater: false,
         isSwimming: false,
         isOnSurfboard: false,
-        flightPhase: 'waiting',
-        weaponId: 'g18',
-        ammoInMag: 15,
-        reserveAmmo: 45,
+        flightPhase: isGlad ? 'landed' : 'waiting',
+        weaponId: isGlad ? 'scar' : 'g18',
+        ammoInMag: isGlad ? 30 : 15,
+        reserveAmmo: isGlad ? 180 : 45,
         hp: 200,
         maxHp: 200,
-        vestLevel: 0,
-        helmetLevel: 0,
+        vestLevel: isGlad ? 2 : 0,
+        helmetLevel: isGlad ? 2 : 0,
         isDowned: false,
         bleedHp: 100,
         eliminated: false,
@@ -979,10 +1176,12 @@ function launchMatchmakingPool(pool: MatchmakingPool): void {
     });
   }
 
-  matchedRoom.aliveCount = Math.max(51, matchedRoom.humans.size);
+  if (!isGlad) {
+    matchedRoom.aliveCount = Math.max(51, matchedRoom.humans.size);
+  }
   rooms.set(roomId, matchedRoom);
 
-  for (const party of activeParties) {
+  for (const party of batchParties) {
     party.status = 'in_match';
     party.roomId = matchedRoom.roomId;
     broadcastParty(party);
@@ -998,10 +1197,49 @@ function launchMatchmakingPool(pool: MatchmakingPool): void {
       });
     }
   }
-  broadcastRoom(matchedRoom, {
-    type: 'room_snapshot',
-    snapshot: buildRoomSnapshot(matchedRoom),
-  });
+  for (const accId of matchedRoom.humans.keys()) {
+    sendWs(accId, {
+      type: 'room_snapshot',
+      snapshot: buildRoomSnapshot(matchedRoom, accId, true),
+    });
+  }
+}
+
+function launchMatchmakingPool(pool: MatchmakingPool): void {
+  matchmakingPools.delete(pool.poolKey);
+  const activeParties: PartyState[] = [];
+  for (const entry of pool.entries) {
+    partyPoolKeyMap.delete(entry.partyId);
+    const p = parties.get(entry.partyId);
+    if (p && p.members.length > 0 && p.status === 'matchmaking') {
+      activeParties.push(p);
+    }
+  }
+  if (activeParties.length === 0) {
+    broadcastSearchingQueue();
+    return;
+  }
+
+  if (pool.gameVariant === 'gladiadores') {
+    const maxHumans = pool.gladiadoresFormat === '2v2' ? 4 : 2;
+    let curBatch: PartyState[] = [];
+    let curCount = 0;
+    let batchIdx = 0;
+    for (const party of activeParties) {
+      if (curBatch.length > 0 && curCount + party.members.length > maxHumans) {
+        launchSingleRoomBatch(pool, curBatch, batchIdx++);
+        curBatch = [];
+        curCount = 0;
+      }
+      curBatch.push(party);
+      curCount += party.members.length;
+    }
+    if (curBatch.length > 0) {
+      launchSingleRoomBatch(pool, curBatch, batchIdx);
+    }
+  } else {
+    launchSingleRoomBatch(pool, activeParties, 0);
+  }
   broadcastSearchingQueue();
 }
 
@@ -1528,7 +1766,26 @@ export async function createExpressApp(
     if (party.status === 'matchmaking') {
       return res.status(400).json({ error: 'Cancele a busca de partida antes de alterar o modo.' });
     }
-    const { mode, mapId, isRanked, autoFillBots } = req.body ?? {};
+    const { gameVariant, gladiadoresFormat, mode, mapId, isRanked, autoFillBots } = req.body ?? {};
+    if (gameVariant === 'br' || gameVariant === 'gladiadores') {
+      if (gameVariant === 'gladiadores' && party.members.length > 2) {
+        return res.status(400).json({ error: 'Gladiadores aceita no máximo 2 jogadores na equipe (2v2).' });
+      }
+      party.gameVariant = gameVariant;
+      if (gameVariant === 'gladiadores' && party.members.length === 2) {
+        party.gladiadoresFormat = '2v2';
+      }
+    }
+    if (gladiadoresFormat === '1v1' || gladiadoresFormat === '2v2') {
+      if (
+        (party.gameVariant ?? 'br') === 'gladiadores' &&
+        gladiadoresFormat === '1v1' &&
+        party.members.length > 1
+      ) {
+        return res.status(400).json({ error: 'Saia do grupo para jogar Gladiadores 1v1.' });
+      }
+      party.gladiadoresFormat = gladiadoresFormat;
+    }
     if (mode === 'solo' || mode === 'duo' || mode === 'squad') {
       if (mode === 'solo' && party.members.length > 1) {
         return res.status(400).json({ error: 'Saia do grupo com amigos para jogar Solo.' });
@@ -1557,12 +1814,21 @@ export async function createExpressApp(
     if (party.leaderId !== acc.id) {
       return res.status(403).json({ error: 'Somente o líder pode convidar jogadores.' });
     }
-    if (party.mode === 'solo') {
+    if ((party.gameVariant ?? 'br') === 'gladiadores') {
+      if ((party.gladiadoresFormat ?? '1v1') === '1v1') {
+        party.gladiadoresFormat = '2v2';
+      }
+    } else if (party.mode === 'solo') {
       party.mode = 'duo';
     }
-    const maxM = maxMembersForMode(party.mode);
+    const maxM = maxMembersForParty(party);
     if (party.members.length >= maxM) {
-      return res.status(400).json({ error: `Grupo cheio (máx. ${maxM} jogadores no modo ${party.mode.toUpperCase()}).` });
+      return res.status(400).json({
+        error:
+          (party.gameVariant ?? 'br') === 'gladiadores'
+            ? 'Grupo cheio (máx. 2 jogadores no Gladiadores 2v2).'
+            : `Grupo cheio (máx. ${maxM} jogadores no modo ${party.mode.toUpperCase()}).`,
+      });
     }
     if (party.members.some((m) => m.accountId === targetAccountId)) {
       return res.status(400).json({ error: 'Jogador já está no seu grupo.' });
@@ -1575,6 +1841,8 @@ export async function createExpressApp(
       fromPublicId: acc.publicId,
       fromNickname: acc.nickname,
       fromRankPoints: acc.rankPoints,
+      gameVariant: party.gameVariant ?? 'br',
+      gladiadoresFormat: party.gladiadoresFormat ?? '1v1',
       mode: party.mode,
       mapId: party.mapId ?? 'bermuda',
       isRanked: party.isRanked,
@@ -1690,11 +1958,16 @@ export async function createExpressApp(
     if (partySize > 4) {
       return res.status(400).json({ error: 'Máximo de 4 jogadores por esquadrão.' });
     }
+    const gv: GameVariant = party.gameVariant ?? 'br';
+    const gf: GladiadoresFormat = party.gladiadoresFormat ?? '1v1';
+    if (gv === 'gladiadores' && partySize > (gf === '2v2' ? 2 : 1)) {
+      return res.status(400).json({ error: 'Equipe excede o limite de jogadores deste formato de Gladiadores.' });
+    }
     for (const m of party.members) {
       removeHumanFromRoom(m.accountId);
     }
     const partyMapId: BrMapId = 'bermuda';
-    const search = joinPoolForParty(party, party.mode, partyMapId, party.isRanked);
+    const search = joinPoolForParty(party, gv, gf, party.mode, partyMapId, party.isRanked);
     return res.json({ search });
   });
 
@@ -1709,18 +1982,33 @@ export async function createExpressApp(
     if (!targetPool || targetPool.entries.length === 0) {
       return res.status(404).json({ error: 'Essa busca já foi iniciada ou encerrada.' });
     }
-    if (party.members.length > maxMembersForMode(targetPool.mode)) {
+    const poolMax =
+      targetPool.gameVariant === 'gladiadores'
+        ? targetPool.gladiadoresFormat === '2v2'
+          ? 2
+          : 1
+        : maxMembersForMode(targetPool.mode);
+    if (party.members.length > poolMax) {
       return res.status(400).json({
-        error: `Seu grupo tem ${party.members.length} jogadores; o modo ${targetPool.mode.toUpperCase()} comporta até ${maxMembersForMode(targetPool.mode)}.`,
+        error: `Seu grupo tem ${party.members.length} jogadores; esta fila comporta até ${poolMax} por equipe.`,
       });
     }
     for (const m of party.members) {
       removeHumanFromRoom(m.accountId);
     }
+    party.gameVariant = targetPool.gameVariant;
+    party.gladiadoresFormat = targetPool.gladiadoresFormat;
     party.mode = targetPool.mode;
     party.mapId = targetPool.mapId;
     party.isRanked = targetPool.isRanked;
-    const search = joinPoolForParty(party, targetPool.mode, targetPool.mapId, targetPool.isRanked);
+    const search = joinPoolForParty(
+      party,
+      targetPool.gameVariant,
+      targetPool.gladiadoresFormat,
+      targetPool.mode,
+      targetPool.mapId,
+      targetPool.isRanked,
+    );
     return res.json({ search, party });
   });
 
@@ -1760,7 +2048,7 @@ export async function createExpressApp(
         handleRoomAction(room, acc.id, act);
       }
     }
-    return res.json({ snapshot: buildRoomSnapshot(room) });
+    return res.json({ snapshot: buildRoomSnapshot(room, acc.id) });
   });
 
   // --- VITE / STATIC ASSET SERVING ---
@@ -1891,7 +2179,7 @@ export async function startServer(): Promise<void> {
       ws.send(
         JSON.stringify({
           type: 'room_snapshot',
-          snapshot: buildRoomSnapshot(activeRoom),
+          snapshot: buildRoomSnapshot(activeRoom, accountId, true),
         }),
       );
     }
@@ -1995,7 +2283,7 @@ export async function startServer(): Promise<void> {
         ws.send(
           JSON.stringify({
             type: 'room_snapshot',
-            snapshot: buildRoomSnapshot(room),
+            snapshot: buildRoomSnapshot(room, accountId),
           }),
         );
         return;

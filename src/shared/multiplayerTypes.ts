@@ -1,6 +1,8 @@
 import type {
   BrMapId,
   CharacterConfig,
+  GameVariant,
+  GladiadoresFormat,
   GlooSkinId,
   MatchMode,
   PlayerAvatarId,
@@ -60,6 +62,8 @@ export interface PartyMemberInfo {
 export interface PartyState {
   partyId: string;
   leaderId: number;
+  gameVariant?: GameVariant;
+  gladiadoresFormat?: GladiadoresFormat;
   mode: MatchMode;
   mapId?: BrMapId;
   isRanked: boolean;
@@ -76,6 +80,8 @@ export interface PartyInvitePayload {
   fromPublicId: string;
   fromNickname: string;
   fromRankPoints: number;
+  gameVariant?: GameVariant;
+  gladiadoresFormat?: GladiadoresFormat;
   mode: MatchMode;
   mapId?: BrMapId;
   isRanked: boolean;
@@ -121,6 +127,8 @@ export interface RoomHumanSlot {
 export interface MatchRoomJoinInfo {
   roomId: string;
   seed: number;
+  gameVariant?: GameVariant;
+  gladiadoresFormat?: GladiadoresFormat;
   mode: MatchMode;
   mapId?: BrMapId;
   isRanked: boolean;
@@ -147,6 +155,8 @@ export interface SearchingPlayerInfo {
 
 export interface SearchingPoolInfo {
   poolKey: string;
+  gameVariant?: GameVariant;
+  gladiadoresFormat?: GladiadoresFormat;
   mode: MatchMode;
   mapId: BrMapId;
   isRanked: boolean;
@@ -160,6 +170,8 @@ export interface MatchmakingSearchStatus {
   poolKey?: string;
   startedAtMs?: number;
   launchAtMs?: number;
+  gameVariant?: GameVariant;
+  gladiadoresFormat?: GladiadoresFormat;
   mode?: MatchMode;
   mapId?: BrMapId;
   isRanked?: boolean;
@@ -211,6 +223,7 @@ export interface RemotePlayerSync {
   damageDealt?: number;
   healingDone?: number;
   activeVehicleId: string | null;
+  vehicleSeat?: 'driver' | 'passenger' | null;
   updatedAtMs: number;
 }
 
@@ -224,6 +237,7 @@ export interface RemoteVehicleSync {
   hp: number;
   destroyed: boolean;
   driverAccountId: number | null;
+  passengerAccountIds?: number[];
   updatedAtMs: number;
 }
 
@@ -276,6 +290,16 @@ export interface RemoteKillFeedEvent {
   killerAccountId?: number;
 }
 
+export interface GladiadoresRoomSync {
+  round: number;
+  phase: 'intro' | 'fight' | 'round_end';
+  phaseTimerSec: number;
+  scoreTeam1: number;
+  scoreTeam2: number;
+  winnerTeamId: number | null;
+  banner: string | null;
+}
+
 export interface MatchRoomSnapshot {
   roomId: string;
   hostAccountId: number;
@@ -293,6 +317,7 @@ export interface MatchRoomSnapshot {
   killFeed: RemoteKillFeedEvent[];
   aliveCount: number;
   winnerTeamId: number | null;
+  gladiadores?: GladiadoresRoomSync | null;
 }
 
 export interface ClientMatchStatePush {
@@ -329,6 +354,7 @@ export interface ClientMatchStatePush {
   damageDealt?: number;
   healingDone?: number;
   activeVehicleId: string | null;
+  vehicleSeat?: 'driver' | 'passenger' | null;
   vehicleState?: {
     id: string;
     x: number;
@@ -341,6 +367,7 @@ export interface ClientMatchStatePush {
   } | null;
   bots?: RemoteBotSync[];
   aliveCountHint?: number;
+  gladiadores?: GladiadoresRoomSync | null;
 }
 
 export type MatchRoomAction =
@@ -404,4 +431,8 @@ export type MatchRoomAction =
       weaponShort: string;
       attackerX: number;
       attackerZ: number;
+    }
+  | {
+      type: 'glad_ready';
+      round: number;
     };

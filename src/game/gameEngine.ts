@@ -21,12 +21,14 @@ import { createProceduralTextures, ProceduralTextureSet } from './textures';
 import type {
   AirplaneRouteSync,
   ClientMatchStatePush,
+  GladiadoresRoomSync,
   MatchRoomAction,
   MatchRoomJoinInfo,
   MatchRoomSnapshot,
   RemoteBotSync,
   RemoteFlightPhase,
   RemotePlayerSync,
+  RemoteVehicleSync,
   RoomHumanSlot,
 } from '../shared/multiplayerTypes';
 import {
@@ -392,6 +394,7 @@ interface RemoteHumanEntity {
   lastNetAtMs: number;
   lastState: RemotePlayerSync | null;
   lastWeaponId: WeaponId | null;
+  disconnected?: boolean;
 }
 
 interface AirDropCrate {
@@ -601,6 +604,7 @@ export class BattleRoyaleEngine {
   private recentUpDragSum = 0;
   private recentUpDragPeak = 0;
   private pendingSemiFireUntilMs = 0;
+  private firstShotDelayUntilMs = 0;
   private isDead = false;
   private isPlayerDowned = false;
   private playerBleedHp = 100;
@@ -732,6 +736,9 @@ export class BattleRoyaleEngine {
   private gladPhaseTimer = 0;
   private gladBanner: string | null = null;
   private gladPendingWinner: 'player' | 'enemy' | null = null;
+  private gladWinnerTeamId: number | null = null;
+  private gladReadyAccounts = new Set<number>();
+  private gladLocalReadyRound = 0;
   private gladSpinReloadState = new Map<
     string,
     { phase: 'shoot' | 'reload_spin'; spinDir: number }
@@ -740,6 +747,8 @@ export class BattleRoyaleEngine {
   private autoFillBots = true;
   private ffCoins = 100;
   private activeVehicleId: string | null = null;
+  private localVehicleSeat: 'driver' | 'passenger' | null = null;
+  private lastExitedVehicleState: Omit<RemoteVehicleSync, 'driverAccountId' | 'passengerAccountIds'> | null = null;
   private prevCharYawForTurn = 0;
   private onLoadProgress?: (pct: number, label: string) => void;
   private loadTimers: number[] = [];
@@ -1525,9 +1534,12 @@ export class BattleRoyaleEngine {
     this.gladPlayerScore = 0;
     this.gladEnemyScore = 0;
     this.gladPhase = 'intro';
-    this.gladPhaseTimer = 1.8;
-    this.gladBanner = 'RODADA 1 · PREPARE-SE!';
+    this.gladPhaseTimer = 10.0;
+    this.gladBanner = 'RODADA 1 · ESCOLHA SUAS ARMAS (10s)';
     this.gladPendingWinner = null;
+    this.gladWinnerTeamId = null;
+    this.gladReadyAccounts.clear();
+    this.gladLocalReadyRound = 0;
     this.beginMatchLoading('gladiadores');
   }
 
@@ -1535,7 +1547,8 @@ export class BattleRoyaleEngine {
     soundEngine.unlock();
     soundEngine.playUiConfirm();
     this.clearOnlineRoomState();
-    this.gameVariant = 'br';
+    const isGlad = joinInfo.gameVariant === 'gladiadores';
+    this.gameVariant = isGlad ? 'gladiadores' : 'br';
 
     this.onlineRoomId = joinInfo.roomId;
     this.onlineAccountId = joinInfo.yourAccountId;
@@ -1550,9 +1563,28 @@ export class BattleRoyaleEngine {
     if (joinInfo.mapId) {
       this.setBrMapId(joinInfo.mapId);
     }
-    this.matchMode = joinInfo.mode;
-    this.isRanked = joinInfo.isRanked;
-    this.autoFillBots = partyAutoFill ?? joinInfo.autoFillBots;
+    if (isGlad) {
+      const gladFmt: GladiadoresFormat = joinInfo.gladiadoresFormat === '2v2' ? '2v2' : '1v1';
+      this.gladiadoresFormat = gladFmt;
+      this.gladiadoresTargetRounds = 5;
+      this.gladRound = 1;
+      this.gladPlayerScore = 0;
+      this.gladEnemyScore = 0;
+      this.gladPhase = 'intro';
+      this.gladPhaseTimer = 10.0;
+      this.gladBanner = 'RODADA 1 · ESCOLHA SUAS ARMAS (10s)';
+      this.gladPendingWinner = null;
+      this.gladWinnerTeamId = null;
+      this.gladReadyAccounts.clear();
+      this.gladLocalReadyRound = 0;
+      this.matchMode = gladFmt === '2v2' ? 'duo' : 'solo';
+      this.isRanked = false;
+      this.autoFillBots = true;
+    } else {
+      this.matchMode = joinInfo.mode;
+      this.isRanked = joinInfo.isRanked;
+      this.autoFillBots = partyAutoFill ?? joinInfo.autoFillBots;
+    }
 
     // Create 3D Adam/Eva rigs for up to 3 other online humans in this room
     for (let i = 0; i < joinInfo.humans.length; i++) {
@@ -1561,7 +1593,7 @@ export class BattleRoyaleEngine {
       this.createRemotePlayerEntity(slot);
     }
 
-    this.beginMatchLoading('waiting');
+    this.beginMatchLoading(isGlad ? 'gladiadores' : 'waiting');
   }
 
   public cancelMatchmaking(): void {
@@ -1589,9 +1621,14 @@ export class BattleRoyaleEngine {
     this.syncedServerLootIds.clear();
     this.syncedServerGlooIds.clear();
     this.seenRemoteKillIds.clear();
+    this.gladWinnerTeamId = null;
+    this.gladReadyAccounts.clear();
+    this.gladLocalReadyRound = 0;
     this.isSpectating = false;
     this.spectateTargetRef = null;
     this.spectateSnapNext = false;
+    this.localVehicleSeat = null;
+    this.lastExitedVehicleState = null;
 
     for (const entity of this.onlineRemotePlayers.values()) {
       this.world.scene.remove(entity.rig.root);
@@ -1620,29 +1657,48 @@ export class BattleRoyaleEngine {
       this.textures.camoParachute,
       this.textures.contactShadow,
     );
+    const isGlad = this.gameVariant === 'gladiadores';
+    const is2v2 = this.gladiadoresFormat === '2v2';
     const humanSlotIdx = this.onlineHumanSlots.findIndex((s) => s.accountId === slot.accountId);
     const spawnIdx = humanSlotIdx >= 0 ? humanSlotIdx : this.onlineRemotePlayers.size + 1;
-    const spawnX = WAIT_SPAWN.x + ((spawnIdx % 12) - 5.5) * 1.35;
-    const spawnY = WAIT_LOBBY_ORIGIN.y + 0.12;
-    const spawnZ = WAIT_SPAWN.z + Math.floor(spawnIdx / 12) * 1.35;
+    const rIsNorth = slot.teamId === 1 ? this.gladRound % 2 === 1 : this.gladRound % 2 === 0;
+    const spawnX = isGlad
+      ? is2v2
+        ? slot.slotInTeam === 2
+          ? GLADIADORES_ORIGIN.x - 13.5
+          : GLADIADORES_ORIGIN.x - 17.5
+        : GLADIADORES_ORIGIN.x - 16.0
+      : WAIT_SPAWN.x + ((spawnIdx % 12) - 5.5) * 1.35;
+    const spawnZ = isGlad
+      ? GLADIADORES_ORIGIN.z + (rIsNorth ? -19.5 : 19.5)
+      : WAIT_SPAWN.z + Math.floor(spawnIdx / 12) * 1.35;
+    const spawnY = isGlad
+      ? this.resolveFloorHeight(spawnX, spawnZ, GLADIADORES_FLOOR_Y + 0.8)
+      : WAIT_LOBBY_ORIGIN.y + 0.12;
 
-    rig.setWeapon('g18');
+    rig.setWeapon(isGlad ? 'scar' : 'g18');
     rig.setBackWeapons(null, null);
     rig.root.position.set(spawnX, spawnY, spawnZ);
-    rig.root.visible = this.stateMachine.getState() === GameState.WAITING;
+    rig.root.visible = isGlad
+      ? this.stateMachine.getState() === GameState.PLAYING
+      : this.stateMachine.getState() === GameState.WAITING;
 
     const hitMat = new THREE.MeshBasicMaterial({ visible: false });
-    const chestHit = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.98, 0.56), hitMat);
-    chestHit.position.set(0, 1.05, 0);
+    const chestHit = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.84, 0.50), hitMat);
+    chestHit.position.set(0, rig.spineMount && rig.isAdam ? -0.06 : 0.16, 0);
     chestHit.userData.remoteAccountId = slot.accountId;
     chestHit.userData.isHeadshot = false;
-    rig.root.add(chestHit);
+    (rig.spineMount ?? rig.torso).add(chestHit);
 
     const headHit = new THREE.Mesh(new THREE.SphereGeometry(0.26, 8, 6), hitMat);
-    headHit.position.set(0, 1.66, 0);
+    headHit.position.set(
+      0,
+      rig.headMount && rig.isAdam ? (rig.helmetOffsetY ?? 0.14) + 0.005 : 0.08,
+      0.01,
+    );
     headHit.userData.remoteAccountId = slot.accountId;
     headHit.userData.isHeadshot = true;
-    rig.root.add(headHit);
+    (rig.headMount ?? rig.headGroup).add(headHit);
 
     this.world.scene.add(rig.root);
 
@@ -1660,12 +1716,13 @@ export class BattleRoyaleEngine {
       animator: new CharacterAnimator(),
       hitMeshes: [chestHit, headHit],
       targetPos: new THREE.Vector3(spawnX, spawnY, spawnZ),
-      targetYaw: 0,
+      targetYaw: isGlad ? (rIsNorth ? 0 : Math.PI) : 0,
       velX: 0,
       velZ: 0,
       lastNetAtMs: performance.now(),
       lastState: null,
-      lastWeaponId: 'g18',
+      lastWeaponId: isGlad ? 'scar' : 'g18',
+      disconnected: false,
     };
     this.onlineRemotePlayers.set(slot.accountId, entity);
     return entity;
@@ -2044,6 +2101,17 @@ export class BattleRoyaleEngine {
         this.headshotFlashTimer = 0.45;
       }
       soundEngine.playHitmarker(ev.isHeadshot);
+      return;
+    }
+
+    if (ev.type === 'glad_ready' && this.onlineAccountId === this.onlineHostAccountId) {
+      if (
+        this.gameVariant === 'gladiadores' &&
+        this.gladPhase === 'intro' &&
+        ev.round === this.gladRound
+      ) {
+        this.gladReadyAccounts.add(ev.accountId);
+      }
     }
   }
 
@@ -2094,6 +2162,7 @@ export class BattleRoyaleEngine {
           character: rh.character,
         });
       }
+      entity.disconnected = false;
       const inWaitingState = this.stateMachine.getState() === GameState.WAITING;
       const inWaitArea =
         Math.hypot(rh.x - WAIT_LOBBY_ORIGIN.x, rh.z - WAIT_LOBBY_ORIGIN.z) <= 120;
@@ -2149,6 +2218,7 @@ export class BattleRoyaleEngine {
     }
     for (const [accId, ent] of this.onlineRemotePlayers.entries()) {
       if (!presentAccounts.has(accId)) {
+        ent.disconnected = true;
         ent.rig.root.visible = false;
         if (ent.lastState) {
           ent.lastState.eliminated = true;
@@ -2156,20 +2226,70 @@ export class BattleRoyaleEngine {
       }
     }
 
-    // 2. Shared Vehicles (driven by other remote humans)
+    // 2. Shared Vehicles (driver ownership, smooth interpolation & parked final state)
+    const nowSnapMs = performance.now();
     for (let i = 0; i < snap.vehicles.length; i++) {
       const rv = snap.vehicles[i];
-      if (rv.id === this.activeVehicleId) continue;
       const veh = this.world.vehicles.find((v) => v.id === rv.id);
       if (!veh) continue;
-      if (rv.driverAccountId !== null && rv.driverAccountId !== this.onlineAccountId) {
+
+      veh.netDriverAccountId = rv.driverAccountId;
+      veh.netPassengerAccountIds = rv.passengerAccountIds ?? [];
+
+      // Resolve rare simultaneous driver race: lower accountId keeps driver seat, other yields to passenger
+      if (
+        this.activeVehicleId === rv.id &&
+        this.localVehicleSeat === 'driver' &&
+        rv.driverAccountId !== null &&
+        rv.driverAccountId !== this.onlineAccountId &&
+        this.onlineAccountId > rv.driverAccountId
+      ) {
+        this.localVehicleSeat = 'passenger';
+        veh.driverIsPlayer = false;
+        this.hudDirty = true;
+      }
+
+      // Skip overwriting the vehicle that the local player is actively driving
+      if (rv.id === this.activeVehicleId && this.localVehicleSeat === 'driver') {
+        veh.netTarget = null;
+        continue;
+      }
+
+      const distSnap = Math.hypot(rv.x - veh.x, rv.z - veh.z);
+      const shouldSnapImmediate = !veh.netTarget || distSnap > 12;
+
+      veh.netTarget = {
+        x: rv.x,
+        y: rv.y,
+        z: rv.z,
+        yaw: rv.yaw,
+        speed: rv.speed,
+        hp: rv.hp,
+        destroyed: rv.destroyed,
+        driverAccountId: rv.driverAccountId,
+        updatedAtMs: nowSnapMs,
+      };
+      veh.driverIsPlayer = false;
+      veh.hp = rv.hp;
+      if (rv.destroyed && !veh.destroyed) {
+        veh.destroyed = true;
+        veh.speed = 0;
+        veh.chassisGroup.visible = false;
+        veh.burnedGroup.visible = true;
+        veh.smokeMeshes.forEach((sm) => {
+          sm.visible = false;
+        });
+        if (this.activeVehicleId === veh.id) {
+          this.exitVehicle();
+        }
+      }
+
+      if (shouldSnapImmediate) {
         veh.x = rv.x;
         veh.y = rv.y;
         veh.z = rv.z;
         veh.yaw = rv.yaw;
         veh.speed = rv.speed;
-        veh.hp = rv.hp;
-        veh.destroyed = rv.destroyed;
         veh.group.position.set(rv.x, rv.y, rv.z);
         veh.group.rotation.y = rv.yaw;
         veh.collider.cx = rv.x;
@@ -2327,6 +2447,46 @@ export class BattleRoyaleEngine {
         );
       }
     }
+
+    // 8. Gladiadores host-authoritative round & score sync on guest clients
+    if (
+      this.gameVariant === 'gladiadores' &&
+      this.onlineAccountId !== this.onlineHostAccountId &&
+      snap.gladiadores
+    ) {
+      const g = snap.gladiadores;
+      if (g.round > this.gladRound && this.stateMachine.getState() === GameState.PLAYING) {
+        this.gladRound = g.round;
+        this.setupGladiadoresRound();
+      }
+      this.gladPhase = g.phase;
+      this.gladPhaseTimer = g.phaseTimerSec;
+      this.gladPlayerScore = this.onlineTeamId === 1 ? g.scoreTeam1 : g.scoreTeam2;
+      this.gladEnemyScore = this.onlineTeamId === 1 ? g.scoreTeam2 : g.scoreTeam1;
+      const hostEnt = this.onlineRemotePlayers.get(this.onlineHostAccountId);
+      const hostIsMyAlly = hostEnt ? hostEnt.teamId === this.onlineTeamId : false;
+      let resolvedBanner = g.banner;
+      if (g.phase === 'round_end' && resolvedBanner && !hostIsMyAlly) {
+        if (resolvedBanner === 'VITÓRIA NA ARENA!') resolvedBanner = 'DERROTA NA ARENA';
+        else if (resolvedBanner === 'DERROTA NA ARENA') resolvedBanner = 'VITÓRIA NA ARENA!';
+        else if (resolvedBanner === 'VITÓRIA NA RODADA!') resolvedBanner = 'DERROTA NA RODADA';
+        else if (resolvedBanner === 'DERROTA NA RODADA') resolvedBanner = 'VITÓRIA NA RODADA!';
+      } else if (g.phase === 'intro' && this.gladLocalReadyRound === this.gladRound) {
+        resolvedBanner = `PRONTO! AGUARDANDO (${Math.max(1, Math.ceil(g.phaseTimerSec))}s)`;
+      }
+      this.gladBanner = resolvedBanner;
+      this.hudDirty = true;
+
+      if (
+        g.winnerTeamId !== null &&
+        this.stateMachine.getState() === GameState.PLAYING
+      ) {
+        this.gladBanner = null;
+        this.stateMachine.forceState(
+          g.winnerTeamId === this.onlineTeamId ? GameState.WIN : GameState.GAMEOVER,
+        );
+      }
+    }
   }
 
   private pushOnlineSyncState(dt: number): void {
@@ -2337,9 +2497,9 @@ export class BattleRoyaleEngine {
     const state = this.stateMachine.getState();
     const activeW = this.getActiveWeaponState();
     const isFiringNow = this.input.isFiring || this.combatPoseTimer > 0.12;
-    const criticalSig = `${state}:${isFiringNow ? 1 : 0}:${this.isReloading ? 1 : 0}:${this.usingMedkit ? 1 : 0}:${this.isPlayerDowned ? 1 : 0}:${this.isDead ? 1 : 0}:${this.vaultTimer > 0 ? 1 : 0}:${activeW ? activeW.weaponId : 'none'}:${this.activeVehicleId ?? 'foot'}`;
+    const criticalSig = `${state}:${isFiringNow ? 1 : 0}:${this.isReloading ? 1 : 0}:${this.usingMedkit ? 1 : 0}:${this.isPlayerDowned ? 1 : 0}:${this.isDead ? 1 : 0}:${this.vaultTimer > 0 ? 1 : 0}:${activeW ? activeW.weaponId : 'none'}:${this.activeVehicleId ?? 'foot'}:${this.localVehicleSeat ?? 'none'}:${this.gladRound}:${this.gladPhase}:${this.gladPlayerScore}:${this.gladEnemyScore}`;
     const preset = this.settings.networkSyncPreset ?? 'fast';
-    const syncIntervalSec = preset === 'ultra' ? 0.033 : preset === 'economy' ? 0.095 : 0.05;
+    const syncIntervalSec = preset === 'ultra' ? 0.035 : preset === 'economy' ? 0.095 : 0.05;
     const lowLatency = this.settings.networkLowLatency !== false;
     const criticalChanged = lowLatency && criticalSig !== this.lastPushedCriticalSig && this.onlineSyncAccum >= 0.016;
 
@@ -2363,7 +2523,7 @@ export class BattleRoyaleEngine {
       : null;
 
     let botsPayload: RemoteBotSync[] | undefined;
-    if (this.onlineAccountId === this.onlineHostAccountId && this.onlineBotSyncAccum >= 0.08) {
+    if (this.onlineAccountId === this.onlineHostAccountId && this.onlineBotSyncAccum >= 0.095) {
       this.onlineBotSyncAccum = 0;
       botsPayload = this.world.targets.map((b) => {
         const bSurf = this.sampleEntitySurface(b.group.position.x, b.group.position.z);
@@ -2387,7 +2547,16 @@ export class BattleRoyaleEngine {
         const bSprinting = bMoveSpd > 3.5 && !bInWater && !b.isDowned && !bHealing && !bReviving;
         return {
           id: b.id,
-          teamId: b.isAlly ? this.onlineTeamId : 10000 + b.teamId,
+          teamId:
+            this.gameVariant === 'gladiadores'
+              ? b.isAlly
+                ? this.onlineTeamId
+                : this.onlineTeamId === 1
+                  ? 2
+                  : 1
+              : b.isAlly
+                ? this.onlineTeamId
+                : 10000 + b.teamId,
           x: Math.round(b.group.position.x * 100) / 100,
           y: Math.round(b.group.position.y * 100) / 100,
           z: Math.round(b.group.position.z * 100) / 100,
@@ -2453,18 +2622,20 @@ export class BattleRoyaleEngine {
       damageDealt: Math.round(this.damageDealt),
       healingDone: Math.round(this.healingDone),
       activeVehicleId: this.activeVehicleId,
-      vehicleState: activeVeh
-        ? {
-            id: activeVeh.id,
-            x: Math.round(activeVeh.x * 100) / 100,
-            y: Math.round(activeVeh.y * 100) / 100,
-            z: Math.round(activeVeh.z * 100) / 100,
-            yaw: Math.round(activeVeh.yaw * 1000) / 1000,
-            speed: Math.round(activeVeh.speed * 100) / 100,
-            hp: Math.round(activeVeh.hp),
-            destroyed: activeVeh.destroyed,
-          }
-        : null,
+      vehicleSeat: this.activeVehicleId ? (this.localVehicleSeat ?? 'driver') : null,
+      vehicleState:
+        activeVeh && this.localVehicleSeat !== 'passenger'
+          ? {
+              id: activeVeh.id,
+              x: Math.round(activeVeh.x * 100) / 100,
+              y: Math.round(activeVeh.y * 100) / 100,
+              z: Math.round(activeVeh.z * 100) / 100,
+              yaw: Math.round(activeVeh.yaw * 1000) / 1000,
+              speed: Math.round(activeVeh.speed * 100) / 100,
+              hp: Math.round(activeVeh.hp),
+              destroyed: activeVeh.destroyed,
+            }
+          : this.lastExitedVehicleState,
       bots: botsPayload,
       aliveCountHint:
         this.onlineAccountId === this.onlineHostAccountId
@@ -2472,14 +2643,40 @@ export class BattleRoyaleEngine {
             ? this.aliveCount
             : this.recomputeOnlineAliveCount()
           : undefined,
+      gladiadores:
+        this.gameVariant === 'gladiadores' && this.onlineAccountId === this.onlineHostAccountId
+          ? {
+              round: this.gladRound,
+              phase: this.gladPhase,
+              phaseTimerSec: Math.max(0, Math.ceil(this.gladPhaseTimer)),
+              scoreTeam1: this.onlineTeamId === 1 ? this.gladPlayerScore : this.gladEnemyScore,
+              scoreTeam2: this.onlineTeamId === 1 ? this.gladEnemyScore : this.gladPlayerScore,
+              winnerTeamId: this.gladWinnerTeamId,
+              banner: this.gladBanner,
+            }
+          : undefined,
     };
 
     const sentWs = multiplayerClient.sendWsState(push);
-    if (!sentWs && !this.onlineSyncInFlight) {
+    if (sentWs) {
+      this.lastExitedVehicleState = null;
+      if (this.pendingRoomActions.length > 0) {
+        const acts = this.pendingRoomActions.splice(0, this.pendingRoomActions.length);
+        for (let i = 0; i < acts.length; i++) {
+          multiplayerClient.sendWsAction(acts[i]);
+        }
+      }
+    } else if (!this.onlineSyncInFlight) {
       this.onlineSyncInFlight = true;
+      const hadExitedVeh = Boolean(this.lastExitedVehicleState);
       const acts = this.pendingRoomActions.splice(0, this.pendingRoomActions.length);
       void multiplayerClient
         .syncRoomHttp(this.onlineRoomId, push, acts.length > 0 ? acts : undefined)
+        .then(() => {
+          if (hadExitedVeh) {
+            this.lastExitedVehicleState = null;
+          }
+        })
         .catch((err: unknown) => {
           const status = (err as { status?: number } | null)?.status;
           if (status === 404 && this.onlineRoomId) {
@@ -2489,11 +2686,6 @@ export class BattleRoyaleEngine {
         .finally(() => {
           this.onlineSyncInFlight = false;
         });
-    } else if (sentWs && this.pendingRoomActions.length > 0) {
-      const acts = this.pendingRoomActions.splice(0, this.pendingRoomActions.length);
-      for (let i = 0; i < acts.length; i++) {
-        multiplayerClient.sendWsAction(acts[i]);
-      }
     }
   }
 
@@ -2540,6 +2732,9 @@ export class BattleRoyaleEngine {
         });
         continue;
       }
+      const attachedVeh = st.activeVehicleId
+        ? this.world.vehicles.find((v) => v.id === st.activeVehicleId) ?? null
+        : null;
       const maxRemoteDist =
         entity.teamId === this.onlineTeamId
           ? Math.max(this.getEnemyRenderDist(), 165)
@@ -2547,44 +2742,87 @@ export class BattleRoyaleEngine {
       const nearRemote360 = entity.teamId === this.onlineTeamId ? 40 : 30;
       const isAirDropState =
         state === GameState.DROPPING || state === GameState.PARACHUTE;
+      const refPosX = attachedVeh ? attachedVeh.group.position.x : entity.targetPos.x;
+      const refPosZ = attachedVeh ? attachedVeh.group.position.z : entity.targetPos.z;
       entity.rig.root.visible =
         isAirDropState ||
         this.isInCameraViewCone(
-          entity.targetPos.x,
-          entity.targetPos.z,
+          refPosX,
+          refPosZ,
           maxRemoteDist,
           nearRemote360,
         );
       const prevPos = entity.rig.root.position;
-      const useExtrapolation =
-        this.settings.networkHighPingSmoothing !== false &&
-        (st.flightPhase === 'landed' || st.flightPhase === 'waiting');
-      const ageSec = useExtrapolation
-        ? Math.min(0.14, Math.max(0, (performance.now() - entity.lastNetAtMs) * 0.001) * 0.65)
-        : 0;
-      const aimX = entity.targetPos.x + entity.velX * ageSec;
-      const aimZ = entity.targetPos.z + entity.velZ * ageSec;
-      _v1.set(aimX, entity.targetPos.y, aimZ);
-      const dx = aimX - prevPos.x;
-      const dz = aimZ - prevPos.z;
-      const moveSpeed = Math.min(18, Math.hypot(dx, dz) / Math.max(0.016, dt));
-      const remoteSmooth = useExtrapolation ? 1 - Math.exp(-19 * dt) : smooth;
-      prevPos.lerp(_v1, remoteSmooth);
-      const prevVisualYaw = entity.rig.root.rotation.y;
-      entity.rig.root.rotation.y = lerpAngle(prevVisualYaw, entity.targetYaw + Math.PI, remoteSmooth);
-      let turnDeltaRad = entity.rig.root.rotation.y - prevVisualYaw;
-      while (turnDeltaRad > Math.PI) turnDeltaRad -= Math.PI * 2;
-      while (turnDeltaRad < -Math.PI) turnDeltaRad += Math.PI * 2;
+      let moveSpeed = 0;
+      let turnDeltaRad = 0;
+      let moveLocalX = 0;
+      let moveLocalZ = 1;
 
-      const charFwdX = -Math.sin(entity.targetYaw);
-      const charFwdZ = -Math.cos(entity.targetYaw);
-      const charRightX = Math.cos(entity.targetYaw);
-      const charRightZ = -Math.sin(entity.targetYaw);
-      const velDenom = Math.max(0.04, Math.hypot(dx, dz));
-      const moveLocalX = moveSpeed > 0.35 ? (dx * charRightX + dz * charRightZ) / velDenom : 0;
-      const moveLocalZ = moveSpeed > 0.35 ? (dx * charFwdX + dz * charFwdZ) / velDenom : 1;
+      if (attachedVeh) {
+        // Rigidly lock remote driver & passengers directly inside the rendered vehicle cabin (zero floating)
+        const isVehDriver =
+          st.vehicleSeat !== 'passenger' &&
+          (attachedVeh.netDriverAccountId === entity.accountId ||
+            attachedVeh.netDriverAccountId === null ||
+            attachedVeh.netDriverAccountId === undefined);
+        let side = -0.34;
+        let fwd = 0.12;
+        if (!isVehDriver) {
+          const pIdx = Math.max(
+            0,
+            (attachedVeh.netPassengerAccountIds ?? []).indexOf(entity.accountId),
+          );
+          const seatOffsets: ReadonlyArray<[number, number]> = [
+            [0.36, 0.12],
+            [-0.34, -0.58],
+            [0.36, -0.58],
+          ];
+          const chosen = seatOffsets[pIdx % seatOffsets.length];
+          side = chosen[0];
+          fwd = chosen[1];
+        }
+        const vYaw = attachedVeh.group.rotation.y;
+        const cosV = Math.cos(vYaw);
+        const sinV = Math.sin(vYaw);
+        prevPos.set(
+          attachedVeh.group.position.x + cosV * side + sinV * fwd,
+          attachedVeh.group.position.y + 0.30,
+          attachedVeh.group.position.z - sinV * side + cosV * fwd,
+        );
+        entity.rig.root.rotation.y = vYaw;
+        moveSpeed = Math.abs(attachedVeh.speed);
+      } else {
+        const useExtrapolation =
+          this.settings.networkHighPingSmoothing !== false &&
+          (st.flightPhase === 'landed' || st.flightPhase === 'waiting');
+        const ageSec = useExtrapolation
+          ? Math.min(0.14, Math.max(0, (performance.now() - entity.lastNetAtMs) * 0.001) * 0.65)
+          : 0;
+        const aimX = entity.targetPos.x + entity.velX * ageSec;
+        const aimZ = entity.targetPos.z + entity.velZ * ageSec;
+        _v1.set(aimX, entity.targetPos.y, aimZ);
+        const dx = aimX - prevPos.x;
+        const dz = aimZ - prevPos.z;
+        moveSpeed = Math.min(18, Math.hypot(dx, dz) / Math.max(0.016, dt));
+        const remoteSmooth = useExtrapolation ? 1 - Math.exp(-19 * dt) : smooth;
+        prevPos.lerp(_v1, remoteSmooth);
+        const prevVisualYaw = entity.rig.root.rotation.y;
+        entity.rig.root.rotation.y = lerpAngle(prevVisualYaw, entity.targetYaw + Math.PI, remoteSmooth);
+        turnDeltaRad = entity.rig.root.rotation.y - prevVisualYaw;
+        while (turnDeltaRad > Math.PI) turnDeltaRad -= Math.PI * 2;
+        while (turnDeltaRad < -Math.PI) turnDeltaRad += Math.PI * 2;
+
+        const charFwdX = -Math.sin(entity.targetYaw);
+        const charFwdZ = -Math.cos(entity.targetYaw);
+        const charRightX = Math.cos(entity.targetYaw);
+        const charRightZ = -Math.sin(entity.targetYaw);
+        const velDenom = Math.max(0.04, Math.hypot(dx, dz));
+        moveLocalX = moveSpeed > 0.35 ? (dx * charRightX + dz * charRightZ) / velDenom : 0;
+        moveLocalZ = moveSpeed > 0.35 ? (dx * charFwdX + dz * charFwdZ) / velDenom : 1;
+      }
 
       const hasRemoteWeapon =
+        !attachedVeh &&
         st.weaponId !== null &&
         !st.isDowned &&
         !st.isSwimming &&
@@ -2844,7 +3082,7 @@ export class BattleRoyaleEngine {
       }
     }
 
-    if (this.gameVariant === 'gladiadores' && this.gladPhase === 'fight') {
+    if (!this.onlineRoomId && this.gameVariant === 'gladiadores' && this.gladPhase === 'fight') {
       const anyAllyAlive = this.hasStandingTeammate(0, 'player');
       if (!anyAllyAlive && !this.gladPendingWinner) {
         this.gladEnemyScore += 1;
@@ -3753,18 +3991,31 @@ export class BattleRoyaleEngine {
     });
     soundEngine.stopVehicleAudio();
     this.activeVehicleId = null;
+    this.localVehicleSeat = null;
+    this.lastExitedVehicleState = null;
 
-    const spawnX = GLADIADORES_ORIGIN.x - 27.0;
-    const spawnZ =
-      this.gladiadoresFormat === '2v2'
-        ? GLADIADORES_ORIGIN.z - 2.6
-        : GLADIADORES_ORIGIN.z;
+    // Symmetrical North/South arena ends along clear lanes (alternates sides each round)
+    this.gladReadyAccounts.clear();
+    this.gladLocalReadyRound = 0;
+    const isOnline = Boolean(this.onlineRoomId);
+    const isHost = !isOnline || this.onlineAccountId === this.onlineHostAccountId;
+    const is2v2 = this.gladiadoresFormat === '2v2';
+    const localTeam = isOnline ? this.onlineTeamId : 1;
+    const playerIsNorth = localTeam === 1 ? this.gladRound % 2 === 1 : this.gladRound % 2 === 0;
+    const slotInTeam = isOnline ? this.onlineSlotInTeam : 1;
+    const spawnX = is2v2
+      ? slotInTeam === 2
+        ? GLADIADORES_ORIGIN.x - 13.5
+        : GLADIADORES_ORIGIN.x - 17.5
+      : GLADIADORES_ORIGIN.x - 16.0;
+    const spawnZ = GLADIADORES_ORIGIN.z + (playerIsNorth ? -19.5 : 19.5);
+    const pYaw = playerIsNorth ? Math.PI : 0;
     const startY = this.resolveFloorHeight(spawnX, spawnZ, GLADIADORES_FLOOR_Y + 0.8);
 
     this.pos.set(spawnX, startY, spawnZ);
     this.vel.set(0, 0, 0);
-    this.yaw = -Math.PI / 2;
-    this.characterYaw = -Math.PI / 2;
+    this.yaw = pYaw;
+    this.characterYaw = pYaw;
     this.pitch = -0.05;
     this.stance = 'stand';
     this.isGrounded = true;
@@ -3872,13 +4123,58 @@ export class BattleRoyaleEngine {
     this.animator.reset();
     this.healRingMesh.visible = false;
 
-    const is2v2 = this.gladiadoresFormat === '2v2';
-    const enemyCount = is2v2 ? 2 : 1;
-    const allyCount = is2v2 ? 1 : 0;
-    this.aliveCount = 1 + allyCount + enemyCount;
+    if (isOnline) {
+      for (const ent of this.onlineRemotePlayers.values()) {
+        if (ent.disconnected) continue;
+        const rIsNorth = ent.teamId === 1 ? this.gladRound % 2 === 1 : this.gladRound % 2 === 0;
+        const rx = is2v2
+          ? ent.slotInTeam === 2
+            ? GLADIADORES_ORIGIN.x - 13.5
+            : GLADIADORES_ORIGIN.x - 17.5
+          : GLADIADORES_ORIGIN.x - 16.0;
+        const rz = GLADIADORES_ORIGIN.z + (rIsNorth ? -19.5 : 19.5);
+        const ry = this.resolveFloorHeight(rx, rz, GLADIADORES_FLOOR_Y + 0.8);
+        ent.targetPos.set(rx, ry, rz);
+        ent.targetYaw = rIsNorth ? 0 : Math.PI;
+        ent.rig.root.position.set(rx, ry, rz);
+        ent.rig.root.visible = true;
+        if (ent.lastState) {
+          ent.lastState.eliminated = false;
+          ent.lastState.isDowned = false;
+          ent.lastState.hp = ent.lastState.maxHp;
+        }
+      }
+    }
+
+    const targetPerTeam = is2v2 ? 2 : 1;
+    let localTeamHumans = 1;
+    let enemyTeamHumans = 0;
+    const usedLocalSlots = new Set<number>([slotInTeam]);
+    const usedEnemySlots = new Set<number>();
+    if (isOnline) {
+      for (const ent of this.onlineRemotePlayers.values()) {
+        if (ent.disconnected) continue;
+        if (ent.teamId === localTeam) {
+          localTeamHumans++;
+          usedLocalSlots.add(ent.slotInTeam);
+        } else {
+          enemyTeamHumans++;
+          usedEnemySlots.add(ent.slotInTeam);
+        }
+      }
+    }
+    const allyCount = isHost ? Math.max(0, targetPerTeam - localTeamHumans) : 0;
+    const enemyCount = isHost ? Math.max(0, targetPerTeam - enemyTeamHumans) : 0;
+    this.aliveCount = targetPerTeam * 2;
     this.gladSpinReloadState.clear();
 
     const gladEnemyNicks = ['BOT_GLADIADOR_01', 'BOT_GLADIADOR_02'];
+    const freeLocalX = usedLocalSlots.has(1) ? GLADIADORES_ORIGIN.x - 13.5 : GLADIADORES_ORIGIN.x - 17.5;
+    const freeEnemyXList = is2v2
+      ? [1, 2]
+          .filter((s) => !usedEnemySlots.has(s))
+          .map((s) => (s === 2 ? GLADIADORES_ORIGIN.x - 13.5 : GLADIADORES_ORIGIN.x - 17.5))
+      : [GLADIADORES_ORIGIN.x - 15.0];
     let assignedAlly = 0;
     let assignedEnemy = 0;
 
@@ -3902,10 +4198,12 @@ export class BattleRoyaleEngine {
       if (b.parachuteMesh) b.parachuteMesh.visible = false;
 
       if (assignedAlly < allyCount) {
-        const ax = GLADIADORES_ORIGIN.x - 27.0;
-        const az = GLADIADORES_ORIGIN.z + 2.6;
+        const ax = freeLocalX;
+        const az = GLADIADORES_ORIGIN.z + (playerIsNorth ? -19.5 : 19.5);
         const ay = this.resolveFloorHeight(ax, az, GLADIADORES_FLOOR_Y + 0.8);
+        const allyRotY = playerIsNorth ? 0 : Math.PI;
         b.eliminated = false;
+        b.waitingActive = true;
         b.isAlly = true;
         b.teamId = 0;
         b.nick = ALLY_NAME_POOL[this.gladRound % ALLY_NAME_POOL.length];
@@ -3924,9 +4222,10 @@ export class BattleRoyaleEngine {
         b.medkits = 2;
         b.gloos = 2;
         b.airState = 'ground';
-        b.aiState = 'roam';
+        b.aiState = 'combat';
+        b.fireCooldown = 0.25 + assignedAlly * 0.18;
         b.group.position.set(ax, ay, az);
-        b.group.rotation.set(0, Math.PI / 2, 0);
+        b.group.rotation.set(0, allyRotY, 0);
         b.group.visible = true;
         setBotWeaponVisual(b, b.weaponId, b.secondaryWeaponId);
         if (b.rig) {
@@ -3934,16 +4233,23 @@ export class BattleRoyaleEngine {
           b.rig.setParachuteVisible(false);
           b.rig.setBandageVisible?.(false);
         }
-        b.goalX = ax + 8;
+        b.goalX = ax;
         b.goalY = ay;
-        b.goalZ = az;
+        b.goalZ = az + (playerIsNorth ? 6 : -6);
         assignedAlly++;
       } else if (assignedEnemy < enemyCount) {
-        const ezOffset = is2v2 ? (assignedEnemy === 0 ? -4.0 : 4.0) : 0;
-        const ex = GLADIADORES_ORIGIN.x - 5.2;
-        const ez = GLADIADORES_ORIGIN.z + ezOffset;
+        const ex =
+          freeEnemyXList[assignedEnemy] ??
+          (is2v2
+            ? assignedEnemy === 0
+              ? GLADIADORES_ORIGIN.x - 17.5
+              : GLADIADORES_ORIGIN.x - 13.5
+            : GLADIADORES_ORIGIN.x - 15.0);
+        const ez = GLADIADORES_ORIGIN.z + (playerIsNorth ? 19.5 : -19.5);
         const ey = this.resolveFloorHeight(ex, ez, GLADIADORES_FLOOR_Y + 0.8);
+        const enemyRotY = playerIsNorth ? Math.PI : 0;
         b.eliminated = false;
+        b.waitingActive = true;
         b.isAlly = false;
         b.teamId = 1;
         b.nick = gladEnemyNicks[assignedEnemy] ?? `BOT_GLADIADOR_${assignedEnemy + 1}`;
@@ -3965,7 +4271,7 @@ export class BattleRoyaleEngine {
         b.aiState = 'combat';
         b.fireCooldown = 0.25 + assignedEnemy * 0.18;
         b.group.position.set(ex, ey, ez);
-        b.group.rotation.set(0, -Math.PI / 2, 0);
+        b.group.rotation.set(0, enemyRotY, 0);
         b.group.visible = true;
         setBotWeaponVisual(b, b.weaponId, null);
         if (b.rig) {
@@ -3983,6 +4289,7 @@ export class BattleRoyaleEngine {
         assignedEnemy++;
       } else {
         b.eliminated = true;
+        b.waitingActive = false;
         b.downTimer = 0;
         b.isAlly = false;
         b.teamId = 99;
@@ -3991,11 +4298,11 @@ export class BattleRoyaleEngine {
     }
 
     this.gladPhase = 'intro';
-    this.gladPhaseTimer = 1.6;
+    this.gladPhaseTimer = 10.0;
     this.gladPendingWinner = null;
-    this.gladBanner = `RODADA ${this.gladRound} · PREPARE-SE!`;
+    this.gladBanner = `RODADA ${this.gladRound} · ESCOLHA SUAS ARMAS (10s)`;
 
-    this.camPosCurrent.set(spawnX - 3.6, startY + 2.2, spawnZ);
+    this.camPosCurrent.set(spawnX, startY + 2.2, spawnZ + (playerIsNorth ? -3.6 : 3.6));
     this.camLookCurrent.set(spawnX, startY + 1.4, spawnZ);
     this.updateThirdPersonCamera(0.016, 3.75, 1.55, 'none', false, true);
     this.hudDirty = true;
@@ -4003,29 +4310,123 @@ export class BattleRoyaleEngine {
 
   private updateGladiadoresRound(dt: number): void {
     if (this.gameVariant !== 'gladiadores') return;
+    const isOnline = Boolean(this.onlineRoomId);
+    const isHost = !isOnline || this.onlineAccountId === this.onlineHostAccountId;
+
+    if (!isHost) {
+      if (this.gladPhase === 'intro') {
+        this.gladPhaseTimer = Math.max(0, this.gladPhaseTimer - dt);
+        const secLeft = Math.max(1, Math.ceil(this.gladPhaseTimer));
+        const nextBanner =
+          this.gladLocalReadyRound === this.gladRound
+            ? `PRONTO! AGUARDANDO (${secLeft}s)`
+            : `RODADA ${this.gladRound} · ESCOLHA SUAS ARMAS (${secLeft}s)`;
+        if (this.gladBanner !== nextBanner) {
+          this.gladBanner = nextBanner;
+          this.hudDirty = true;
+        }
+      }
+      return;
+    }
+
     if (this.gladPhase === 'intro') {
       this.gladPhaseTimer = Math.max(0, this.gladPhaseTimer - dt);
-      if (this.gladPhaseTimer <= 0) {
+      const secLeft = Math.max(1, Math.ceil(this.gladPhaseTimer));
+      const nextBanner =
+        this.gladLocalReadyRound === this.gladRound
+          ? `PRONTO! AGUARDANDO (${secLeft}s)`
+          : `RODADA ${this.gladRound} · ESCOLHA SUAS ARMAS (${secLeft}s)`;
+      if (this.gladBanner !== nextBanner) {
+        this.gladBanner = nextBanner;
+        this.hudDirty = true;
+      }
+      let connectedHumans = 1;
+      if (isOnline) {
+        for (const ent of this.onlineRemotePlayers.values()) {
+          if (!ent.disconnected) connectedHumans++;
+        }
+      }
+      const allHumansReady = isOnline && this.gladReadyAccounts.size >= connectedHumans;
+      if (this.gladPhaseTimer <= 0 || allHumansReady) {
+        this.gladPhaseTimer = 0;
         this.gladPhase = 'fight';
         this.gladBanner = null;
         soundEngine.playUiConfirm();
         this.hudDirty = true;
       }
+    } else if (this.gladPhase === 'fight') {
+      if (!this.gladPendingWinner) {
+        let localTeamAlive = !this.isDead;
+        let enemyTeamAlive = false;
+        for (let i = 0; i < this.world.targets.length; i++) {
+          const b = this.world.targets[i];
+          if (b.eliminated || b.downTimer > 0) continue;
+          if (b.isAlly) localTeamAlive = true;
+          else enemyTeamAlive = true;
+        }
+        if (isOnline) {
+          for (const ent of this.onlineRemotePlayers.values()) {
+            if (ent.disconnected || ent.lastState?.eliminated) continue;
+            if (ent.teamId === this.onlineTeamId) localTeamAlive = true;
+            else enemyTeamAlive = true;
+          }
+        }
+        const gladWinThreshold = this.getGladiadoresWinThreshold();
+        if (!enemyTeamAlive) {
+          this.gladPlayerScore += 1;
+          this.gladPendingWinner = 'player';
+          this.gladPhase = 'round_end';
+          this.gladPhaseTimer = 2.2;
+          this.gladBanner =
+            this.gladPlayerScore >= gladWinThreshold ||
+            this.gladRound >= this.gladiadoresTargetRounds
+              ? 'VITÓRIA NA ARENA!'
+              : 'VITÓRIA NA RODADA!';
+          soundEngine.playUiConfirm();
+          this.hudDirty = true;
+        } else if (!localTeamAlive) {
+          this.gladEnemyScore += 1;
+          this.gladPendingWinner = 'enemy';
+          this.gladPhase = 'round_end';
+          this.gladPhaseTimer = 2.2;
+          this.gladBanner =
+            this.gladEnemyScore >= gladWinThreshold ||
+            this.gladRound >= this.gladiadoresTargetRounds
+              ? 'DERROTA NA ARENA'
+              : 'DERROTA NA RODADA';
+          this.hudDirty = true;
+        }
+      }
     } else if (this.gladPhase === 'round_end') {
       this.gladPhaseTimer = Math.max(0, this.gladPhaseTimer - dt);
       if (this.gladPhaseTimer <= 0) {
         const gladWinThreshold = this.getGladiadoresWinThreshold();
+        const enemyTeamId = this.onlineTeamId === 1 ? 2 : 1;
         if (this.gladPlayerScore >= gladWinThreshold) {
           this.gladBanner = null;
+          this.gladWinnerTeamId = isOnline ? this.onlineTeamId : null;
+          if (isOnline) {
+            this.onlineSyncAccum = 1;
+            this.pushOnlineSyncState(0.1);
+          }
           this.stateMachine.forceState(GameState.WIN);
         } else if (this.gladEnemyScore >= gladWinThreshold) {
           this.gladBanner = null;
+          this.gladWinnerTeamId = isOnline ? enemyTeamId : null;
+          if (isOnline) {
+            this.onlineSyncAccum = 1;
+            this.pushOnlineSyncState(0.1);
+          }
           this.stateMachine.forceState(GameState.GAMEOVER);
         } else if (this.gladRound >= this.gladiadoresTargetRounds) {
+          const hostWon = this.gladPlayerScore >= this.gladEnemyScore;
           this.gladBanner = null;
-          this.stateMachine.forceState(
-            this.gladPlayerScore >= this.gladEnemyScore ? GameState.WIN : GameState.GAMEOVER,
-          );
+          this.gladWinnerTeamId = isOnline ? (hostWon ? this.onlineTeamId : enemyTeamId) : null;
+          if (isOnline) {
+            this.onlineSyncAccum = 1;
+            this.pushOnlineSyncState(0.1);
+          }
+          this.stateMachine.forceState(hostWon ? GameState.WIN : GameState.GAMEOVER);
         } else {
           this.gladRound += 1;
           this.setupGladiadoresRound();
@@ -4182,6 +4583,9 @@ export class BattleRoyaleEngine {
     this.weaponDamageMap.clear();
     this.ffCoins = 100;
     this.activeVehicleId = null;
+    this.localVehicleSeat = null;
+    this.lastExitedVehicleState = null;
+    this.firstShotDelayUntilMs = 0;
     this.prevCharYawForTurn = 0;
     this.headshotFlashTimer = 0;
     this.combatIconPopup = null;
@@ -5169,6 +5573,9 @@ export class BattleRoyaleEngine {
             this.spectateTargetRef = null;
             soundEngine.stopRunAudio();
             soundEngine.stopVehicleAudio();
+            if (this.gameVariant === 'gladiadores') {
+              return;
+            }
             this.stateMachine.forceState(GameState.GAMEOVER);
             return;
           }
@@ -5346,7 +5753,11 @@ export class BattleRoyaleEngine {
       }
 
       if (this.activeVehicleId) {
-        this.updateDrivingPlayer(dt);
+        if (this.localVehicleSeat === 'passenger') {
+          this.updatePassengerPlayer(dt);
+        } else {
+          this.updateDrivingPlayer(dt);
+        }
       } else {
         this.updateGroundPlayer(dt);
       }
@@ -5649,7 +6060,141 @@ export class BattleRoyaleEngine {
     return out.set(bx, by + (part === 'head' ? bot.headOffsetY : bot.chestOffsetY), bz);
   }
 
-  private findAimAssistTarget(maxAngleRad: number, maxRange: number): TargetDummy | null {
+  private getRemoteBodyPoint(
+    ent: RemoteHumanEntity,
+    part: 'chest' | 'head',
+    out: THREE.Vector3,
+  ): THREE.Vector3 {
+    if (ent.hitMeshes.length >= 2) {
+      ent.rig.root.updateMatrixWorld(true);
+      const hitMesh = part === 'head' ? ent.hitMeshes[1] : ent.hitMeshes[0];
+      if (hitMesh) {
+        hitMesh.getWorldPosition(out);
+        return out;
+      }
+    }
+    const p = ent.rig.root.position;
+    const st = ent.lastState;
+    const isLow = Boolean(st?.isDowned || st?.stance === 'prone');
+    const isCrouch = st?.stance === 'crouch';
+    if (part === 'head') {
+      return out.set(p.x, p.y + (isLow ? 0.48 : isCrouch ? 1.15 : 1.62), p.z);
+    }
+    return out.set(p.x, p.y + (isLow ? 0.34 : isCrouch ? 0.78 : 1.12), p.z);
+  }
+
+  private getResolvedAimTarget(id: string | null): {
+    id: string;
+    isDowned: boolean;
+    isLowPose: boolean;
+    getChest: (out: THREE.Vector3) => THREE.Vector3;
+    getHead: (out: THREE.Vector3) => THREE.Vector3;
+  } | null {
+    if (!id) return null;
+    if (id.startsWith('human:')) {
+      const accId = Number(id.slice(6));
+      const ent = this.onlineRemotePlayers.get(accId);
+      if (
+        !ent ||
+        ent.disconnected ||
+        ent.teamId === this.onlineTeamId ||
+        !ent.rig.root.visible ||
+        ent.lastState?.eliminated
+      ) {
+        return null;
+      }
+      const isDowned = Boolean(ent.lastState?.isDowned);
+      const isLowPose = isDowned || ent.lastState?.stance === 'prone';
+      return {
+        id,
+        isDowned,
+        isLowPose,
+        getChest: (out) => this.getRemoteBodyPoint(ent, 'chest', out),
+        getHead: (out) => this.getRemoteBodyPoint(ent, 'head', out),
+      };
+    }
+    const bot = this.targetById.get(id);
+    if (!bot || bot.isAlly || bot.eliminated || !bot.group.visible) return null;
+    if (bot.downTimer > 0 && !bot.isDowned) return null;
+    return {
+      id: bot.id,
+      isDowned: bot.isDowned,
+      isLowPose: bot.isDowned,
+      getChest: (out) => this.getBotBodyPoint(bot, 'chest', out),
+      getHead: (out) => this.getBotBodyPoint(bot, 'head', out),
+    };
+  }
+
+  private convergeCrosshairOnScopeToggle(
+    prevShoulder: number,
+    newShoulder: number,
+    camHeight: number,
+  ): void {
+    const cp = Math.cos(this.pitch);
+    const fx = -Math.sin(this.yaw) * cp;
+    const fy = Math.sin(this.pitch);
+    const fz = -Math.cos(this.yaw) * cp;
+
+    _rayOrigin.set(
+      this.pos.x + Math.cos(this.yaw) * prevShoulder,
+      this.pos.y + camHeight,
+      this.pos.z - Math.sin(this.yaw) * prevShoulder,
+    );
+    _rayDir.set(fx, fy, fz);
+
+    let bestDist = 85;
+    this.fillActiveTargetMeshes();
+    this.raycaster.set(_rayOrigin, _rayDir);
+    this.raycaster.far = bestDist;
+    if (this.scratchTargetMeshes.length > 0) {
+      const tHits = this.raycaster.intersectObjects(this.scratchTargetMeshes, false);
+      for (let i = 0; i < tHits.length; i++) {
+        if (tHits[i].distance >= 0.4 && tHits[i].distance < bestDist) {
+          bestDist = tHits[i].distance;
+          break;
+        }
+      }
+    }
+
+    this.raycaster.far = bestDist;
+    const obsHits = this.raycaster.intersectObjects(this.solidObstaclesActive, false);
+    for (let i = 0; i < obsHits.length; i++) {
+      if (obsHits[i].object.userData.vehicleId === this.activeVehicleId) continue;
+      if (obsHits[i].distance >= 0.4 && obsHits[i].distance < bestDist) {
+        bestDist = obsHits[i].distance;
+        break;
+      }
+    }
+
+    const glbDist = this.raycastActiveGlbWall(_rayOrigin, _rayDir, bestDist);
+    if (glbDist !== null && glbDist >= 0.4 && glbDist < bestDist) {
+      bestDist = glbDist;
+    }
+
+    const terrDist = this.raycastTerrainDist(_rayOrigin, _rayDir, bestDist);
+    if (terrDist >= 0.4 && terrDist < bestDist) {
+      bestDist = terrDist;
+    }
+
+    bestDist = Math.max(2.2, bestDist);
+    const hitX = _rayOrigin.x + fx * bestDist;
+    const hitY = _rayOrigin.y + fy * bestDist;
+    const hitZ = _rayOrigin.z + fz * bestDist;
+    const conv = this.computeExactAnglesToTarget(hitX, hitY, hitZ, camHeight, newShoulder);
+    this.yaw = conv.yaw;
+    this.pitch = conv.pitch;
+  }
+
+  private findAimAssistTarget(
+    maxAngleRad: number,
+    maxRange: number,
+  ): {
+    id: string;
+    isDowned: boolean;
+    isLowPose: boolean;
+    getChest: (out: THREE.Vector3) => THREE.Vector3;
+    getHead: (out: THREE.Vector3) => THREE.Vector3;
+  } | null {
     const cam = this.world.camera;
     const camPos = cam.position;
     const cp = Math.cos(this.pitch);
@@ -5657,39 +6202,33 @@ export class BattleRoyaleEngine {
     const fy = Math.sin(this.pitch);
     const fz = -Math.cos(this.yaw) * cp;
 
-    // Player eye origin for reliable LOS even at very close range or behind low cover
-    _rayOrigin.set(this.pos.x, this.pos.y + 1.42, this.pos.z);
+    // Player eye origin matching current stance for accurate LOS over low cover
+    const eyeY = this.stance === 'prone' ? 0.65 : this.stance === 'crouch' ? 1.15 : 1.42;
+    _rayOrigin.set(this.pos.x, this.pos.y + eyeY, this.pos.z);
 
-    let best: TargetDummy | null = null;
+    let bestKind: 'bot' | 'human' | null = null;
+    let bestBot: TargetDummy | null = null;
+    let bestHuman: RemoteHumanEntity | null = null;
     let bestScore = Infinity;
 
-    for (let i = 0; i < this.world.targets.length; i++) {
-      const t = this.world.targets[i];
-      if (t.isAlly || t.eliminated || !t.group.visible) continue;
-      if (t.downTimer > 0 && !t.isDowned) continue;
-
-      this.getBotBodyPoint(t, 'chest', _v2);
-      this.getBotBodyPoint(t, 'head', _v3);
-      const by = t.group.position.y;
+    const evalCandidate = (baseY: number, isLowPose: boolean): number | null => {
       const dx = _v2.x - camPos.x;
       const dyChest = _v2.y - camPos.y;
       const dz = _v2.z - camPos.z;
 
-      // Forward projection along camera ray to enemy distance
       const proj = dx * fx + dyChest * fy + dz * fz;
       const playerDist = Math.hypot(_v2.x - this.pos.x, _v2.z - this.pos.z);
-      if (proj < 0.8 || playerDist > maxRange) continue;
+      if (proj < 0.8 || playerDist > maxRange) return null;
 
-      // Exact 3D point where the crosshair ray passes the enemy
       const rayX = camPos.x + fx * proj;
       const rayY = camPos.y + fy * proj;
       const rayZ = camPos.z + fz * proj;
 
-      // Tighter vertical & horizontal sticky bounds so aim assist stays close to the crosshair
       const distVertPad = THREE.MathUtils.clamp(proj * 0.015, 0.14, 1.15);
-      const headTopWorldY = Math.max(_v3.y + 0.24, by + 0.85) + distVertPad * 0.65;
-      const minWorldY = Math.min(_v2.y - 0.72, by - 0.18) - distVertPad;
-      if (rayY > headTopWorldY || rayY < minWorldY) continue;
+      const headTopWorldY =
+        Math.max(_v3.y + 0.24, baseY + (isLowPose ? 0.72 : 0.85)) + distVertPad * 0.65;
+      const minWorldY = Math.min(_v2.y - 0.58, baseY - 0.24) - distVertPad;
+      if (rayY > headTopWorldY || rayY < minWorldY) return null;
 
       const horizErr = Math.hypot(rayX - _v2.x, rayZ - _v2.z);
       const minStickRadius =
@@ -5702,44 +6241,100 @@ export class BattleRoyaleEngine {
         4.2,
       );
 
-      // Compact screen-space reticle halo so distant off-target enemies don't snap
       let inScreenHalo = false;
       _camDesired.copy(_v2).project(cam);
       if (_camDesired.z >= -1 && _camDesired.z <= 1) {
         const ndcDist = Math.hypot(_camDesired.x, _camDesired.y);
-        const haloRadiusNdc = t.isDowned
-          ? this.isAiming
-            ? 0.055
-            : 0.045
-          : playerDist < 16
+        const haloRadiusNdc =
+          playerDist < 16
             ? this.isAiming
-              ? 0.13
-              : 0.10
+              ? 0.14
+              : 0.11
             : this.isAiming
-              ? 0.08
-              : 0.055;
+              ? 0.095
+              : 0.065;
         if (ndcDist <= haloRadiusNdc) {
           inScreenHalo = true;
         }
       }
 
-      if (horizErr <= maxHorizErr || inScreenHalo) {
-        // Strongly prefer standing active threats over downed crawling bots
-        const downedPenalty = t.isDowned ? 0.42 : 0;
-        const score = Math.atan2(horizErr, Math.max(1.5, proj)) + downedPenalty;
-        if (score < bestScore) {
-          if (
-            this.hasLineOfSightToPoint(_rayOrigin, _v2) ||
-            this.hasLineOfSightToPoint(_rayOrigin, _v3) ||
-            this.hasLineOfSightToPoint(camPos, _v3)
-          ) {
-            bestScore = score;
-            best = t;
-          }
+      if (horizErr > maxHorizErr && !inScreenHalo) return null;
+      const downedPenalty = isLowPose ? 0.04 : 0;
+      const score = Math.atan2(horizErr, Math.max(1.5, proj)) + downedPenalty;
+      if (score >= bestScore) return null;
+      if (
+        this.hasLineOfSightToPoint(_rayOrigin, _v2) ||
+        this.hasLineOfSightToPoint(_rayOrigin, _v3) ||
+        this.hasLineOfSightToPoint(camPos, _v2) ||
+        this.hasLineOfSightToPoint(camPos, _v3)
+      ) {
+        return score;
+      }
+      return null;
+    };
+
+    for (let i = 0; i < this.world.targets.length; i++) {
+      const t = this.world.targets[i];
+      if (t.isAlly || t.eliminated || !t.group.visible) continue;
+      if (t.downTimer > 0 && !t.isDowned) continue;
+
+      this.getBotBodyPoint(t, 'chest', _v2);
+      this.getBotBodyPoint(t, 'head', _v3);
+      const score = evalCandidate(t.group.position.y, t.isDowned);
+      if (score !== null) {
+        bestScore = score;
+        bestKind = 'bot';
+        bestBot = t;
+        bestHuman = null;
+      }
+    }
+
+    if (this.onlineRoomId) {
+      for (const ent of this.onlineRemotePlayers.values()) {
+        if (
+          ent.disconnected ||
+          ent.teamId === this.onlineTeamId ||
+          !ent.rig.root.visible ||
+          ent.lastState?.eliminated
+        ) {
+          continue;
+        }
+        this.getRemoteBodyPoint(ent, 'chest', _v2);
+        this.getRemoteBodyPoint(ent, 'head', _v3);
+        const isLowPose = Boolean(ent.lastState?.isDowned || ent.lastState?.stance === 'prone');
+        const score = evalCandidate(ent.rig.root.position.y, isLowPose);
+        if (score !== null) {
+          bestScore = score;
+          bestKind = 'human';
+          bestHuman = ent;
+          bestBot = null;
         }
       }
     }
-    return best;
+
+    if (bestKind === 'bot' && bestBot) {
+      const b = bestBot;
+      return {
+        id: b.id,
+        isDowned: b.isDowned,
+        isLowPose: b.isDowned,
+        getChest: (out) => this.getBotBodyPoint(b, 'chest', out),
+        getHead: (out) => this.getBotBodyPoint(b, 'head', out),
+      };
+    }
+    if (bestKind === 'human' && bestHuman) {
+      const ent = bestHuman;
+      const isDowned = Boolean(ent.lastState?.isDowned);
+      const isLowPose = isDowned || ent.lastState?.stance === 'prone';
+      return {
+        id: `human:${ent.accountId}`,
+        isDowned,
+        isLowPose,
+        getChest: (out) => this.getRemoteBodyPoint(ent, 'chest', out),
+        getHead: (out) => this.getRemoteBodyPoint(ent, 'head', out),
+      };
+    }
+    return null;
   }
 
   private fillActiveTargetMeshes(): number {
@@ -6882,7 +7477,27 @@ export class BattleRoyaleEngine {
       !this.isHoldingGrenade &&
       !punchBlockedThisFrame
     ) {
-      this.pendingSemiFireUntilMs = performance.now() + 240;
+      const nowFirePress = performance.now();
+      const usePreShotSnapDelay =
+        !this.wasFireDown &&
+        this.settings.aimAssistMode === 'default' &&
+        Boolean(WEAPONS[activeWeaponState.weaponId]?.supportsAimAssist);
+      if (usePreShotSnapDelay) {
+        // Brief ~55ms pre-first-shot snap delay so aim-assist settles cleanly before the first bullet leaves
+        this.firstShotDelayUntilMs = nowFirePress + 55;
+        this.pendingSemiFireUntilMs = nowFirePress + 280;
+      } else {
+        this.pendingSemiFireUntilMs = nowFirePress + 240;
+      }
+    }
+    if (
+      (!weaponFireDown && performance.now() > this.pendingSemiFireUntilMs) ||
+      justSwitchedSlot ||
+      this.isPlacingGloo ||
+      this.isHoldingGrenade ||
+      this.isSwimming
+    ) {
+      this.firstShotDelayUntilMs = 0;
     }
     if (justSwitchedSlot || this.isPlacingGloo || this.isHoldingGrenade || this.isSwimming) {
       this.pendingSemiFireUntilMs = 0;
@@ -6906,11 +7521,11 @@ export class BattleRoyaleEngine {
       !this.isPlacingGloo &&
       !this.isHoldingGrenade;
 
-    // Progressive spray fatigue: crisp 5-shot capa burst window, then smooth fatigue
+    // Progressive spray fatigue: crisp 4-shot capa burst window, then fades so player always controls aim
     const sprayControl =
-      this.consecutiveShots <= 5
+      this.consecutiveShots <= 4
         ? 1.0
-        : Math.max(0.22, 1.0 - (this.consecutiveShots - 5) * 0.11);
+        : Math.max(0.15, 1.0 - (this.consecutiveShots - 4) * 0.14);
 
     const renderReach = this.getEnemyRenderDist() + 10;
     const assistMaxRange = activeDef
@@ -6937,25 +7552,27 @@ export class BattleRoyaleEngine {
     const rawPitchInput = -edges.dy * sens * invert;
     const absRawYawIn = Math.abs(rawYawInput);
 
-    // When locked while firing in initial burst, resist gentle pull so dragging upward for CAPA
-    // stays stable; weakens gradually during prolonged spray so it's never 100% permanent aimbot.
+    // Light assist friction during initial burst; player flicks or drags always break lock cleanly
     const hasActiveFireLock =
       assistAllowed && weaponFireDown && !justStartedFiring && this.lockedTargetId !== null;
     let deferredPitchApplied = false;
 
     if (hasActiveFireLock) {
-      // Only accumulate horizontal lock-break when pulling strongly sideways (not during diagonal upward Capa drags)
       const isUpwardDrag = rawPitchInput > 0.0008 && absRawYawIn < rawPitchInput * 1.45;
-      if (absRawYawIn > 0.028 && !isUpwardDrag) {
+      if (absRawYawIn > 0.016 && !isUpwardDrag) {
         this.aimBreakAccum += absRawYawIn;
       } else {
-        this.aimBreakAccum = Math.max(0, this.aimBreakAccum - dt * 1.25);
+        this.aimBreakAccum = Math.max(0, this.aimBreakAccum - dt * 1.45);
       }
 
-      const breakFlick = 0.30 * Math.max(0.48, sprayControl);
-      const breakAccumLimit = 1.18 * Math.max(0.36, sprayControl);
-      if (absRawYawIn > breakFlick || this.aimBreakAccum > breakAccumLimit) {
-        // Strong pull or sustained spray fatigue broke the lock — don't jump onto another enemy mid-hold
+      const breakFlick = 0.18 * Math.max(0.45, sprayControl);
+      const breakAccumLimit = 0.46 * Math.max(0.32, sprayControl);
+      if (
+        absRawYawIn > breakFlick ||
+        this.aimBreakAccum > breakAccumLimit ||
+        rawPitchInput < -0.025
+      ) {
+        // Player pulled away — release lock immediately without jumping to another target
         this.lockedTargetId = null;
         this.aimRelockBlockedUntilRelease = true;
         this.lockedTargetWasStanding = false;
@@ -6964,7 +7581,7 @@ export class BattleRoyaleEngine {
         this.yaw += rawYawInput;
         this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput, -1.05, 1.18);
       } else {
-        const horizSlip = THREE.MathUtils.lerp(0.55, 0.04, sprayControl);
+        const horizSlip = THREE.MathUtils.lerp(0.82, 0.25, sprayControl);
         this.yaw += rawYawInput * horizSlip;
         deferredPitchApplied = true;
       }
@@ -6995,6 +7612,7 @@ export class BattleRoyaleEngine {
     // Classic Free Fire Aim-Assist ("Mira Gruda" + "Subir Capa" + Fadiga de Spray)
     this.aimAssistActive = false;
     let justAimSnapped = false;
+    let aimConvergedThisFrame = false;
 
     if (assistAllowed && activeDef) {
       if (weaponFireDown) {
@@ -7004,26 +7622,19 @@ export class BattleRoyaleEngine {
           this.lockedTargetWasStanding = false;
           this.aimBreakAccum = 0;
         }
-        let target: TargetDummy | null = null;
+        let target: ReturnType<BattleRoyaleEngine['getResolvedAimTarget']> = null;
         if (this.lockedTargetId) {
-          const existing = this.targetById.get(this.lockedTargetId);
-          // If a standing enemy just went downed or died mid-spray, release lock cleanly instead of snapping to floor or jumping to another enemy
-          const justKnockedStanding = this.lockedTargetWasStanding && Boolean(existing?.isDowned);
-          if (
-            existing &&
-            !justKnockedStanding &&
-            existing.downTimer <= 0 &&
-            !existing.eliminated &&
-            existing.group.visible
-          ) {
-            this.getBotBodyPoint(existing, 'chest', _v2);
-            this.getBotBodyPoint(existing, 'head', _v3);
+          const existing = this.getResolvedAimTarget(this.lockedTargetId);
+          if (existing) {
+            existing.getChest(_v2);
+            existing.getHead(_v3);
             _rayOrigin.set(this.pos.x, this.pos.y + targetCamHeight, this.pos.z);
             const dist = _v2.distanceTo(_rayOrigin);
             if (
               dist <= assistMaxRange &&
               (this.hasLineOfSightToPoint(_rayOrigin, _v2) ||
                 this.hasLineOfSightToPoint(_rayOrigin, _v3) ||
+                this.hasLineOfSightToPoint(this.world.camera.position, _v2) ||
                 this.hasLineOfSightToPoint(this.world.camera.position, _v3))
             ) {
               target = existing;
@@ -7057,16 +7668,16 @@ export class BattleRoyaleEngine {
           target = this.findAimAssistTarget(coneRad, assistMaxRange);
           if (target) {
             this.lockedTargetId = target.id;
-            this.lockedTargetWasStanding = !target.isDowned;
+            this.lockedTargetWasStanding = !target.isLowPose;
             this.aimBreakAccum = 0;
           }
         }
 
         if (target) {
-          this.getBotBodyPoint(target, 'chest', _v1);
-          this.getBotBodyPoint(target, 'head', _v3);
+          target.getChest(_v1);
+          target.getHead(_v3);
           const pivotY = this.pos.y + targetCamHeight;
-          const crouchOffset = !target.isDowned && this.stance === 'crouch' ? -0.04 : 0;
+          const crouchOffset = !target.isLowPose && this.stance === 'crouch' ? -0.04 : 0;
 
           const chestAim = this.computeExactAnglesToTarget(
             _v1.x,
@@ -7084,13 +7695,14 @@ export class BattleRoyaleEngine {
           );
           const headTopAim = this.computeExactAnglesToTarget(
             _v3.x,
-            _v3.y + (target.isDowned ? 0.12 : 0.18),
+            _v3.y + (target.isLowPose ? 0.14 : 0.18),
             _v3.z,
             targetCamHeight,
             targetShoulderOffset,
           );
 
           if (chestAim.horiz > 0.15) {
+            aimConvergedThisFrame = true;
             let deltaYaw = chestAim.yaw - this.yaw;
             while (deltaYaw > Math.PI) deltaYaw -= Math.PI * 2;
             while (deltaYaw < -Math.PI) deltaYaw += Math.PI * 2;
@@ -7098,64 +7710,54 @@ export class BattleRoyaleEngine {
             const currentHitWorldY = pivotY + Math.tan(this.pitch) * chestAim.horiz;
             const horizOffsetAtTarget = Math.abs(Math.sin(deltaYaw)) * chestAim.horiz;
             const alreadyOnHead =
-              !target.isDowned &&
               horizOffsetAtTarget <= 0.24 &&
               currentHitWorldY >= _v3.y - 0.19 &&
               currentHitWorldY <= _v3.y + 0.19;
 
             this.aimAssistActive = sprayControl > 0.3;
-            if (this.stance === 'crouch' && !target.isDowned) {
+            if (this.stance === 'crouch' && !target.isLowPose) {
               this.wasLockedWhileCrouched = true;
               this.crouchLockedDist = chestAim.horiz;
             }
 
-            if (justStartedFiring) {
+            if (justStartedFiring || justStartedAiming) {
               this.yaw += deltaYaw * 0.98;
-              if (target.isDowned) {
-                this.pitch = THREE.MathUtils.clamp(
-                  THREE.MathUtils.lerp(this.pitch, chestAim.pitch, 0.96),
-                  -1.05,
-                  1.18,
+              const span0 = Math.max(0.012, headAim.pitch - chestAim.pitch);
+              const activeUpPull = Math.max(
+                rawPitchInput * 3.8,
+                this.recentUpDragSum * 1.55,
+                this.recentUpDragPeak * 4.2,
+              );
+              let startPitch = alreadyOnHead ? headAim.pitch : chestAim.pitch;
+              if (!alreadyOnHead && activeUpPull >= 0.004) {
+                // One-tap Capa ("Desert / Doze / 1-tiro"): pulling up as you fire climbs straight to head
+                const oneTapMult =
+                  !activeDef.automatic ||
+                  activeDef.category === 'HG' ||
+                  activeDef.category === 'SG'
+                    ? 1.55
+                    : 1.25;
+                const climb0 = THREE.MathUtils.clamp(
+                  (activeUpPull * oneTapMult - 0.003) / Math.max(0.014, span0 * 0.65),
+                  0,
+                  1,
                 );
-              } else {
-                const span0 = Math.max(0.012, headAim.pitch - chestAim.pitch);
-                const activeUpPull = Math.max(
-                  rawPitchInput * 3.8,
-                  this.recentUpDragSum * 1.55,
-                  this.recentUpDragPeak * 4.2,
-                );
-                let startPitch = alreadyOnHead ? headAim.pitch : chestAim.pitch;
-                if (!alreadyOnHead && activeUpPull >= 0.004) {
-                  // One-tap Capa ("Desert / Doze / 1-tiro"): pulling up as you fire climbs straight to head
-                  const oneTapMult =
-                    !activeDef.automatic ||
-                    activeDef.category === 'HG' ||
-                    activeDef.category === 'SG'
-                      ? 1.55
-                      : 1.25;
-                  const climb0 = THREE.MathUtils.clamp(
-                    (activeUpPull * oneTapMult - 0.003) / Math.max(0.014, span0 * 0.65),
-                    0,
-                    1,
-                  );
-                  startPitch = THREE.MathUtils.lerp(chestAim.pitch, headAim.pitch, climb0);
-                }
-                this.pitch = THREE.MathUtils.clamp(
-                  THREE.MathUtils.lerp(this.pitch, startPitch, 0.96),
-                  -1.05,
-                  1.18,
-                );
+                startPitch = THREE.MathUtils.lerp(chestAim.pitch, headAim.pitch, climb0);
+              }
+              this.pitch = THREE.MathUtils.clamp(
+                THREE.MathUtils.lerp(this.pitch, startPitch, 0.96),
+                -1.05,
+                1.18,
+              );
+              if (justStartedAiming) {
+                justAimSnapped = true;
               }
             } else {
-              // Strong burst lock that weakens progressively if player sprays nonstop
-              const yawLambda = (this.isAiming ? 68 : 60) * sprayControl;
+              // Gentle assist that lets the user pull freely past head or unstick anytime (works standing, crouched, prone, or downed)
+              const yawLambda = (this.isAiming ? 26 : 20) * sprayControl;
               this.yaw += deltaYaw * (1 - Math.exp(-yawLambda * dt));
 
-              if (target.isDowned) {
-                // Keep shots squarely on low crawling enemy without pulling up into empty air!
-                const dampRate = (this.isAiming ? 42 : 34) * sprayControl;
-                this.pitch = THREE.MathUtils.damp(this.pitch, chestAim.pitch, dampRate, dt);
-              } else if (this.bugDoCapaTimer > 0) {
+              if (this.bugDoCapaTimer > 0 && !target.isLowPose) {
                 const distQuality =
                   chestAim.horiz < 6
                     ? chestAim.horiz / 6
@@ -7167,7 +7769,7 @@ export class BattleRoyaleEngine {
                   headAim.pitch + 0.004,
                   distQuality,
                 );
-                this.pitch = THREE.MathUtils.damp(this.pitch, bugPitch, 38 * sprayControl, dt);
+                this.pitch = THREE.MathUtils.damp(this.pitch, bugPitch, 32 * sprayControl, dt);
               } else {
                 const chestPitch = chestAim.pitch;
                 const headPitch = headAim.pitch;
@@ -7175,59 +7777,65 @@ export class BattleRoyaleEngine {
                 const chestHeadSpan = Math.max(0.014, headPitch - chestPitch);
 
                 if (rawPitchInput > 0.00012) {
-                  // Smooth upward climb ("subir capa") capped cleanly at head so strong pulls NEVER unstick
-                  const climbScale = THREE.MathUtils.clamp(chestHeadSpan / 0.030, 0.78, 1.55);
+                  // Player drags upward for Capa — NO hard ceiling; pulling past headTopPitch + 0.024 breaks lock!
+                  const climbScale = THREE.MathUtils.clamp(chestHeadSpan / 0.030, 0.78, 1.45);
                   const oneShotBoost =
                     !activeDef.automatic ||
                     activeDef.category === 'HG' ||
                     activeDef.category === 'SG'
-                      ? 1.6
-                      : 1.38;
-                  const scaledUp = Math.min(
-                    rawPitchInput * climbScale * oneShotBoost,
-                    Math.max(0.036, chestHeadSpan * 1.1),
-                  );
-                  this.pitch = THREE.MathUtils.clamp(
-                    Math.min(headTopPitch, this.pitch + scaledUp),
-                    -1.05,
-                    1.18,
-                  );
-                  if (sprayControl > 0.25 && this.pitch >= headPitch - chestHeadSpan * 0.16) {
-                    // Magnetize cleanly onto exact head center without detaching on hard swipes
+                      ? 1.45
+                      : 1.25;
+                  const scaledUp = rawPitchInput * climbScale * oneShotBoost;
+                  this.pitch = THREE.MathUtils.clamp(this.pitch + scaledUp, -1.05, 1.18);
+
+                  if (this.pitch > headTopPitch + 0.024) {
+                    // User pulled too far upward — unstick cleanly!
+                    this.lockedTargetId = null;
+                    this.aimRelockBlockedUntilRelease = true;
+                    this.lockedTargetWasStanding = false;
+                    this.aimBreakAccum = 0;
+                    this.wasLockedWhileCrouched = false;
+                    this.aimAssistActive = false;
+                  } else if (
+                    sprayControl > 0.35 &&
+                    Math.abs(rawPitchInput) < 0.0045 &&
+                    this.pitch >= headPitch - chestHeadSpan * 0.14 &&
+                    this.pitch <= headTopPitch
+                  ) {
+                    const headMagnet = Math.min(18, 28 * sprayControl);
                     this.pitch = THREE.MathUtils.clamp(
-                      Math.min(
-                        headTopPitch,
-                        THREE.MathUtils.damp(this.pitch, headPitch, 62 * sprayControl, dt),
-                      ),
+                      THREE.MathUtils.damp(this.pitch, headPitch, headMagnet, dt),
                       -1.05,
                       1.18,
                     );
                   }
-                } else if (rawPitchInput < -0.002) {
-                  if (rawPitchInput < -0.055) {
-                    // Strong intentional downward flick breaks lock
+                } else if (rawPitchInput < -0.0008) {
+                  if (rawPitchInput < -0.025) {
                     this.lockedTargetId = null;
                     this.lockedTargetWasStanding = false;
                     this.aimRelockBlockedUntilRelease = true;
                     this.aimBreakAccum = 0;
                     this.aimAssistActive = false;
+                    this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput, -1.05, 1.18);
                   } else {
-                    this.pitch = THREE.MathUtils.clamp(
-                      this.pitch + rawPitchInput * 0.45,
-                      chestPitch,
-                      headTopPitch,
-                    );
+                    this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput * 0.72, -1.05, 1.18);
+                    if (this.pitch < chestPitch - 0.03) {
+                      this.lockedTargetId = null;
+                      this.lockedTargetWasStanding = false;
+                      this.aimRelockBlockedUntilRelease = true;
+                      this.aimBreakAccum = 0;
+                      this.aimAssistActive = false;
+                    }
                   }
                 } else {
                   const inHeadZone =
-                    this.pitch >= headPitch - chestHeadSpan * 0.48 &&
-                    this.pitch <= headTopPitch + 0.04;
-                  const dampRate = (this.isAiming ? 46 : 38) * sprayControl;
+                    this.pitch >= headPitch - chestHeadSpan * 0.42 &&
+                    this.pitch <= headTopPitch + 0.02;
+                  const dampRate = (this.isAiming ? 20 : 16) * sprayControl;
                   if (inHeadZone) {
                     this.pitch = THREE.MathUtils.damp(this.pitch, headPitch, dampRate, dt);
                   } else if (this.pullingUpTimer > 0) {
-                    // Preserve upward climb progress between touch/mouse poll ticks
-                    this.pitch = THREE.MathUtils.clamp(this.pitch, chestPitch, headTopPitch);
+                    this.pitch = THREE.MathUtils.clamp(this.pitch, chestPitch, headTopPitch + 0.024);
                   } else {
                     this.pitch = THREE.MathUtils.damp(this.pitch, chestPitch, dampRate, dt);
                   }
@@ -7242,8 +7850,8 @@ export class BattleRoyaleEngine {
         // One-time Aim-FOV snap when opening scope using tighter reticle capture
         const aimSnapTarget = this.findAimAssistTarget(0.18, assistMaxRange);
         if (aimSnapTarget) {
-          this.getBotBodyPoint(aimSnapTarget, 'chest', _v1);
-          this.getBotBodyPoint(aimSnapTarget, 'head', _v3);
+          aimSnapTarget.getChest(_v1);
+          aimSnapTarget.getHead(_v3);
           const pivotY = this.pos.y + targetCamHeight;
 
           const chestAim = this.computeExactAnglesToTarget(
@@ -7262,7 +7870,6 @@ export class BattleRoyaleEngine {
             const currentHitWorldY = pivotY + Math.tan(this.pitch) * chestAim.horiz;
             const horizOffsetAtTarget = Math.abs(Math.sin(deltaYawToCenter)) * chestAim.horiz;
             const alreadyOnHead =
-              !aimSnapTarget.isDowned &&
               horizOffsetAtTarget <= 0.22 &&
               currentHitWorldY >= _v3.y - 0.17 &&
               currentHitWorldY <= _v3.y + 0.17;
@@ -7283,9 +7890,18 @@ export class BattleRoyaleEngine {
             this.yaw += deltaYaw;
             this.pitch = desired.pitch;
             justAimSnapped = true;
+            aimConvergedThisFrame = true;
           }
         }
       }
+    }
+    if ((justStartedAiming || justStoppedAiming) && !aimConvergedThisFrame) {
+      this.convergeCrosshairOnScopeToggle(
+        this.camShoulderCurrent,
+        targetShoulderOffset,
+        targetCamHeight,
+      );
+      justAimSnapped = true;
     }
     this.wasAiming = this.isAiming;
 
@@ -7402,12 +8018,15 @@ export class BattleRoyaleEngine {
       }
     }
 
-    // Movement Speed (weapon mobility + Stock attachment + Medkit slow; suppress sprint during firing pose)
-    const hasMove = Math.abs(this.input.moveX) > 0.05 || Math.abs(this.input.moveZ) > 0.05;
+    // Movement Speed (weapon mobility + Stock attachment + Medkit slow; freeze horizontal leaving spawn during Gladiadores 10s prep)
+    const gladIntroFrozen = this.gameVariant === 'gladiadores' && this.gladPhase === 'intro';
+    const moveInX = gladIntroFrozen ? 0 : this.input.moveX;
+    const moveInZ = gladIntroFrozen ? 0 : this.input.moveZ;
+    const hasMove = Math.abs(moveInX) > 0.05 || Math.abs(moveInZ) > 0.05;
     this.isSprinting =
       this.input.isSprinting &&
       hasMove &&
-      this.input.moveZ >= -0.15 &&
+      moveInZ >= -0.15 &&
       this.stance === 'stand' &&
       !this.isAiming &&
       !fireDown &&
@@ -7467,8 +8086,8 @@ export class BattleRoyaleEngine {
       this.pos.x = THREE.MathUtils.clamp(this.pos.x, abGround.minX, abGround.maxX);
       this.pos.z = THREE.MathUtils.clamp(this.pos.z, abGround.minZ, abGround.maxZ);
     } else {
-      const targetVx = (forwardX * this.input.moveZ + rightX * this.input.moveX) * maxSpeed;
-      const targetVz = (forwardZ * this.input.moveZ + rightZ * this.input.moveX) * maxSpeed;
+      const targetVx = (forwardX * moveInZ + rightX * moveInX) * maxSpeed;
+      const targetVz = (forwardZ * moveInZ + rightZ * moveInX) * maxSpeed;
       const accel = this.isOnSurfboard ? 10 : this.isSwimming ? 8 : this.isGrounded ? 18 : 6.5;
       this.vel.x = THREE.MathUtils.damp(this.vel.x, targetVx, accel, dt);
       this.vel.z = THREE.MathUtils.damp(this.vel.z, targetVz, accel, dt);
@@ -7780,7 +8399,7 @@ export class BattleRoyaleEngine {
       snapCameraNow,
     );
 
-    // Fire or Melee Punch AFTER camera & aim-assist sync (per-slot cooldown + buffered semi-auto taps)
+    // Fire or Melee Punch AFTER camera & aim-assist sync (with pre-first-shot snap delay + buffered taps)
     const nowMs = performance.now();
     const bufferedWeaponTap =
       this.activeSlot !== 4 &&
@@ -7795,7 +8414,7 @@ export class BattleRoyaleEngine {
           this.slotLastShotTime[4] = nowMs;
           this.performMeleePunch();
         }
-      } else if (activeWeaponState && !this.isReloading) {
+      } else if (activeWeaponState && !this.isReloading && nowMs >= this.firstShotDelayUntilMs) {
         const def = WEAPONS[activeWeaponState.weaponId];
         const canFire = def.automatic
           ? weaponFireDown || bufferedWeaponTap
@@ -7803,6 +8422,7 @@ export class BattleRoyaleEngine {
         if (canFire && nowMs - this.slotLastShotTime[this.activeSlot] >= def.fireRateMs) {
           this.slotLastShotTime[this.activeSlot] = nowMs;
           this.pendingSemiFireUntilMs = 0;
+          this.firstShotDelayUntilMs = 0;
           this.fireActiveWeapon(activeWeaponState);
         }
       }
@@ -9122,7 +9742,7 @@ export class BattleRoyaleEngine {
       }
 
       if (this.gameVariant === 'gladiadores') {
-        if (this.gladPhase === 'fight' && !this.gladPendingWinner) {
+        if (!this.onlineRoomId && this.gladPhase === 'fight' && !this.gladPendingWinner) {
           const anyEnemyAlive = this.world.targets.some(
             (b) => !b.isAlly && !b.eliminated && b.downTimer <= 0,
           );
@@ -11080,8 +11700,8 @@ export class BattleRoyaleEngine {
         continue;
       }
 
-      // Gladiadores mode: stationary bots, infinite ammo (no reload), never lethal to player
-      if (this.gameVariant === 'gladiadores' && isPlaying && !bot.isAlly) {
+      // Gladiadores mode: stationary bots (both Team 1 & Team 2), infinite ammo, target nearest living opponent
+      if (this.gameVariant === 'gladiadores' && isPlaying) {
         const floorY = this.resolveFloorHeight(bx, bz, bot.group.position.y + 0.5);
         bot.group.position.y = floorY;
 
@@ -11096,38 +11716,135 @@ export class BattleRoyaleEngine {
         let isFiringNow = false;
 
         if (this.gladPhase === 'fight') {
-          const faceYaw = Math.atan2(this.pos.x - bx, this.pos.z - bz);
-          bot.group.rotation.y = lerpAngle(bot.group.rotation.y, faceYaw, 1 - Math.exp(-8 * dt));
-          const def = WEAPONS[bot.weaponId];
-          bot.ammoInMag = def.magSize;
-          if (bot.fireCooldown <= 0) {
-            bot.shotSeq = (bot.shotSeq ?? 0) + 1;
-            bot.lastShotAtElapsed = this.elapsed;
-            bot.animator?.triggerFire();
-            isFiringNow = true;
-            bot.fireCooldown = Math.max(0.11, (def.fireRateMs / 1000) * 1.15);
+          let bestDistSq = Infinity;
+          let targetKind: 'player' | 'remote' | 'bot' | null = null;
+          let targetX = this.pos.x;
+          let targetY = this.pos.y + 1.15;
+          let targetZ = this.pos.z;
+          let targetRemoteEnt: RemoteHumanEntity | null = null;
+          let targetBot: TargetDummy | null = null;
 
-            const camDistSq =
-              (bx - this.pos.x) * (bx - this.pos.x) + (bz - this.pos.z) * (bz - this.pos.z);
-            if (camDistSq < 140 * 140) {
-              soundEngine.playGunshot(bot.weaponId, false, Math.sqrt(camDistSq));
+          if (!bot.isAlly && !this.isDead) {
+            bestDistSq = (this.pos.x - bx) ** 2 + (this.pos.z - bz) ** 2;
+            targetKind = 'player';
+            targetX = this.pos.x;
+            targetY = this.pos.y + 1.15;
+            targetZ = this.pos.z;
+          }
+
+          if (this.onlineRoomId) {
+            for (const ent of this.onlineRemotePlayers.values()) {
+              if (ent.disconnected || !ent.lastState || ent.lastState.eliminated) continue;
+              const isOpponent = bot.isAlly
+                ? ent.teamId !== this.onlineTeamId
+                : ent.teamId === this.onlineTeamId;
+              if (!isOpponent) continue;
+              const rx = ent.rig.root.position.x;
+              const rz = ent.rig.root.position.z;
+              const dSq = (rx - bx) ** 2 + (rz - bz) ** 2;
+              if (dSq < bestDistSq) {
+                bestDistSq = dSq;
+                targetKind = 'remote';
+                targetX = rx;
+                targetY = ent.rig.root.position.y + 1.15;
+                targetZ = rz;
+                targetRemoteEnt = ent;
+                targetBot = null;
+              }
             }
+          }
 
-            _v1.set(bx, bot.group.position.y + 1.25, bz);
-            _v2.set(
-              this.pos.x + (Math.random() - 0.5) * 5.2,
-              this.pos.y + 1.15 + (Math.random() - 0.5) * 2.2,
-              this.pos.z + (Math.random() - 0.5) * 5.2,
-            );
-            this.spawnTracer(_v1, _v2);
+          for (let j = 0; j < bots.length; j++) {
+            if (i === j) continue;
+            const other = bots[j];
+            if (other.eliminated || other.downTimer > 0) continue;
+            if (other.isAlly === bot.isAlly) continue;
+            const dSq =
+              (other.group.position.x - bx) ** 2 + (other.group.position.z - bz) ** 2;
+            if (dSq < bestDistSq) {
+              bestDistSq = dSq;
+              targetKind = 'bot';
+              targetX = other.group.position.x;
+              targetY = other.group.position.y + 1.15;
+              targetZ = other.group.position.z;
+              targetBot = other;
+              targetRemoteEnt = null;
+            }
+          }
 
-            if (!this.isDead && this.hp > 55 && Math.random() < 0.08) {
-              const chipDmg = Math.min(4, Math.max(1, this.hp - 48));
-              this.applyPlayerDamage(chipDmg, bx, bz, bot.nick, def.shortName, false);
+          if (targetKind) {
+            const faceYaw = Math.atan2(targetX - bx, targetZ - bz);
+            bot.group.rotation.y = lerpAngle(bot.group.rotation.y, faceYaw, 1 - Math.exp(-8 * dt));
+            const def = WEAPONS[bot.weaponId];
+            bot.ammoInMag = def.magSize;
+            if (bot.fireCooldown <= 0) {
+              bot.shotSeq = (bot.shotSeq ?? 0) + 1;
+              bot.lastShotAtElapsed = this.elapsed;
+              bot.animator?.triggerFire();
+              isFiringNow = true;
+              bot.fireCooldown = Math.max(0.11, (def.fireRateMs / 1000) * 1.15);
+
+              const camDistSq =
+                (bx - this.pos.x) * (bx - this.pos.x) + (bz - this.pos.z) * (bz - this.pos.z);
+              if (camDistSq < 140 * 140) {
+                soundEngine.playGunshot(bot.weaponId, false, Math.sqrt(camDistSq));
+              }
+
+              const ox = bx;
+              const oy = bot.group.position.y + 1.25;
+              const oz = bz;
+              const tx = targetX + (Math.random() - 0.5) * 4.4;
+              const ty = targetY + (Math.random() - 0.5) * 1.8;
+              const tz = targetZ + (Math.random() - 0.5) * 4.4;
+              const shotRay = this.resolveBotShotRay(ox, oy, oz, tx, ty, tz);
+
+              _v1.set(ox, oy, oz);
+              _v2.set(shotRay.endX, shotRay.endY, shotRay.endZ);
+              this.spawnTracer(_v1, _v2);
+
+              if (shotRay.blocked) {
+                if (shotRay.hitGlooId) {
+                  this.damageGlooById(shotRay.hitGlooId, def.damage);
+                }
+              } else if (targetKind === 'player') {
+                if (!this.isDead && this.hp > 55 && Math.random() < 0.08) {
+                  const chipDmg = Math.min(4, Math.max(1, this.hp - 48));
+                  this.applyPlayerDamage(chipDmg, bx, bz, bot.nick, def.shortName, false);
+                }
+              } else if (targetKind === 'remote' && targetRemoteEnt) {
+                const remoteHp = targetRemoteEnt.lastState?.hp ?? 200;
+                if (remoteHp > 60 && Math.random() < 0.08) {
+                  const chipDmg = Math.min(4, Math.max(1, remoteHp - 52));
+                  this.queueOrSendRoomAction({
+                    type: 'damage_player',
+                    targetAccountId: targetRemoteEnt.accountId,
+                    damage: chipDmg,
+                    isHeadshot: false,
+                    weaponId: bot.weaponId,
+                  });
+                }
+              } else if (targetKind === 'bot' && targetBot) {
+                if (Math.random() < 0.14) {
+                  this.applyBotHitDamage(
+                    targetBot,
+                    Math.max(4, Math.round(def.damage * 0.45)),
+                    false,
+                    bot.nick,
+                    def.shortName,
+                    false,
+                    bx,
+                    bz,
+                  );
+                }
+              }
             }
           }
         } else {
-          bot.group.rotation.y = lerpAngle(bot.group.rotation.y, -Math.PI / 2, 1 - Math.exp(-8 * dt));
+          const localTeam = this.onlineRoomId ? this.onlineTeamId : 1;
+          const botTeam = bot.isAlly ? localTeam : localTeam === 1 ? 2 : 1;
+          const botIsNorth = botTeam === 1 ? this.gladRound % 2 === 1 : this.gladRound % 2 === 0;
+          const gladIdleRotY = botIsNorth ? 0 : Math.PI;
+          bot.group.rotation.y = lerpAngle(bot.group.rotation.y, gladIdleRotY, 1 - Math.exp(-8 * dt));
         }
 
         if (bot.rig && bot.animator) {
@@ -11407,17 +12124,26 @@ export class BattleRoyaleEngine {
             if (isPlaying && inRenderRange && camDistSq < 150 * 150) {
               soundEngine.playGunshot(bot.weaponId, false, Math.sqrt(camDistSq));
             }
+
+            const ox = bx;
+            const oy = bot.group.position.y + 1.25;
+            const oz = bz;
+            const sx = tx + (Math.random() - 0.5) * 4.4;
+            const sy = ty + (Math.random() - 0.5) * 2.0;
+            const sz = tz + (Math.random() - 0.5) * 4.4;
+            const shotRay = this.resolveBotShotRay(ox, oy, oz, sx, sy, sz);
+
             if (camDistSq < 130 * 130) {
-              _v1.set(bx, bot.group.position.y + 1.25, bz);
-              _v2.set(
-                tx + (Math.random() - 0.5) * 4.4,
-                ty + (Math.random() - 0.5) * 2.0,
-                tz + (Math.random() - 0.5) * 4.4,
-              );
+              _v1.set(ox, oy, oz);
+              _v2.set(shotRay.endX, shotRay.endY, shotRay.endZ);
               this.spawnTracer(_v1, _v2);
             }
 
-            if (bot.targetId === 'player') {
+            if (shotRay.blocked) {
+              if (shotRay.hitGlooId) {
+                this.damageGlooById(shotRay.hitGlooId, def.damage);
+              }
+            } else if (bot.targetId === 'player') {
               // Bad-bot aim: steady continuous gunfire with low chip hit chance, never kills the player
               if (dist < Math.min(96, def.range) && Math.random() < 0.09) {
                 if (activeVeh && !activeVeh.destroyed && Math.random() < 0.62) {
@@ -13036,10 +13762,89 @@ export class BattleRoyaleEngine {
     if (v) this.enterVehicle(v);
   }
 
+  private resolveBotShotRay(
+    ox: number,
+    oy: number,
+    oz: number,
+    tx: number,
+    ty: number,
+    tz: number,
+  ): {
+    endX: number;
+    endY: number;
+    endZ: number;
+    blocked: boolean;
+    hitGlooId?: string;
+  } {
+    _rayOrigin.set(ox, oy, oz);
+    _rayDir.set(tx - ox, ty - oy, tz - oz);
+    const dist = _rayDir.length();
+    if (dist <= 0.1) {
+      return { endX: tx, endY: ty, endZ: tz, blocked: false };
+    }
+    _rayDir.divideScalar(dist);
+
+    let blockDist: number | null = null;
+    let hitGlooId: string | undefined;
+
+    const terrainDist = this.raycastTerrainDist(_rayOrigin, _rayDir, dist);
+    if (terrainDist < dist - 0.22) {
+      blockDist = terrainDist;
+    }
+
+    const glbDist = this.raycastActiveGlbWall(_rayOrigin, _rayDir, dist, 0.08);
+    if (glbDist !== null && glbDist < dist - 0.15 && (blockDist === null || glbDist < blockDist)) {
+      blockDist = glbDist;
+      hitGlooId = undefined;
+    }
+
+    this.raycaster.set(_rayOrigin, _rayDir);
+    this.raycaster.far = dist;
+    const hits = this.raycaster.intersectObjects(this.solidObstaclesActive, false);
+    if (hits.length > 0 && hits[0].distance < dist - 0.15) {
+      if (blockDist === null || hits[0].distance <= blockDist) {
+        blockDist = hits[0].distance;
+        hitGlooId = hits[0].object.userData.glooId as string | undefined;
+      }
+    }
+
+    if (blockDist !== null) {
+      return {
+        endX: ox + _rayDir.x * blockDist,
+        endY: oy + _rayDir.y * blockDist,
+        endZ: oz + _rayDir.z * blockDist,
+        blocked: true,
+        hitGlooId,
+      };
+    }
+
+    return { endX: tx, endY: ty, endZ: tz, blocked: false };
+  }
+
   private enterVehicle(v: VehicleEntity): void {
     if (v.destroyed || this.isDead || this.isPlayerDowned) return;
+    const hasRemoteDriver = Boolean(
+      this.onlineRoomId &&
+        ((v.netDriverAccountId !== null &&
+          v.netDriverAccountId !== undefined &&
+          v.netDriverAccountId !== this.onlineAccountId) ||
+          Array.from(this.onlineRemotePlayers.values()).some(
+            (ent) =>
+              ent.lastState &&
+              !ent.lastState.eliminated &&
+              ent.lastState.activeVehicleId === v.id &&
+              ent.lastState.vehicleSeat !== 'passenger',
+          )),
+    );
     this.activeVehicleId = v.id;
-    v.driverIsPlayer = true;
+    this.lastExitedVehicleState = null;
+    if (hasRemoteDriver) {
+      this.localVehicleSeat = 'passenger';
+      v.driverIsPlayer = false;
+    } else {
+      this.localVehicleSeat = 'driver';
+      v.driverIsPlayer = true;
+    }
     this.inWater = false;
     this.isSwimming = false;
     this.isOnSurfboard = false;
@@ -13061,11 +13866,29 @@ export class BattleRoyaleEngine {
   private exitVehicleImmediate(): void {
     if (!this.activeVehicleId) return;
     const v = this.world.vehicles.find((veh) => veh.id === this.activeVehicleId);
+    const wasDriver = this.localVehicleSeat !== 'passenger';
     if (v) {
-      v.driverIsPlayer = false;
+      if (wasDriver) {
+        v.driverIsPlayer = false;
+        v.speed = 0;
+        if (this.onlineRoomId) {
+          this.lastExitedVehicleState = {
+            id: v.id,
+            x: Math.round(v.x * 100) / 100,
+            y: Math.round(v.y * 100) / 100,
+            z: Math.round(v.z * 100) / 100,
+            yaw: Math.round(v.yaw * 1000) / 1000,
+            speed: 0,
+            hp: Math.round(v.hp),
+            destroyed: v.destroyed,
+            updatedAtMs: Date.now(),
+          };
+        }
+      }
       this.ejectPassengersFromVehicle(v);
     }
     this.activeVehicleId = null;
+    this.localVehicleSeat = null;
     this.playerRig.weaponMount.visible = this.activeSlot !== 4;
     soundEngine.stopVehicleAudio();
   }
@@ -13073,18 +13896,37 @@ export class BattleRoyaleEngine {
   private exitVehicle(): void {
     if (!this.activeVehicleId) return;
     const v = this.world.vehicles.find((veh) => veh.id === this.activeVehicleId);
+    const wasDriver = this.localVehicleSeat !== 'passenger';
+    if (v && wasDriver && this.onlineRoomId) {
+      v.speed = 0;
+      this.lastExitedVehicleState = {
+        id: v.id,
+        x: Math.round(v.x * 100) / 100,
+        y: Math.round(v.y * 100) / 100,
+        z: Math.round(v.z * 100) / 100,
+        yaw: Math.round(v.yaw * 1000) / 1000,
+        speed: 0,
+        hp: Math.round(v.hp),
+        destroyed: v.destroyed,
+        updatedAtMs: Date.now(),
+      };
+    }
     this.activeVehicleId = null;
+    this.localVehicleSeat = null;
     this.playerRig.weaponMount.visible = this.activeSlot !== 4;
     soundEngine.stopVehicleAudio();
     soundEngine.playVehicleEnter();
 
     if (v) {
-      v.driverIsPlayer = false;
+      if (wasDriver) {
+        v.driverIsPlayer = false;
+      }
       const sideX = Math.cos(v.yaw);
       const sideZ = -Math.sin(v.yaw);
+      const sideMult = wasDriver ? -2.1 : 2.1;
       const abExit = this.getActiveBounds();
-      this.pos.x = THREE.MathUtils.clamp(v.x - sideX * 2.1, abExit.minX, abExit.maxX);
-      this.pos.z = THREE.MathUtils.clamp(v.z + sideZ * 2.1, abExit.minZ, abExit.maxZ);
+      this.pos.x = THREE.MathUtils.clamp(v.x + sideX * sideMult, abExit.minX, abExit.maxX);
+      this.pos.z = THREE.MathUtils.clamp(v.z - sideZ * sideMult, abExit.minZ, abExit.maxZ);
       const exitFloor = this.resolveFloorHeight(this.pos.x, this.pos.z, v.y + 1.5);
       const exitDeepThresh = this.isBermudaMapActive() ? BERMUDA_GLB_WATER_Y + 0.25 : -0.78;
       this.pos.y =
@@ -13092,7 +13934,9 @@ export class BattleRoyaleEngine {
           ? Math.max(exitFloor, this.getDeepWaterMinY())
           : Math.max(this.getDryMinFloorY(), exitFloor);
       this.vel.set(0, 0, 0);
-      this.ejectPassengersFromVehicle(v);
+      if (wasDriver) {
+        this.ejectPassengersFromVehicle(v);
+      }
     }
   }
 
@@ -13134,6 +13978,7 @@ export class BattleRoyaleEngine {
   }
 
   private updateVehicles(dt: number): void {
+    const nowMs = performance.now();
     for (let i = 0; i < this.world.vehicles.length; i++) {
       const v = this.world.vehicles[i];
       if (!v.destroyed && v.hp < v.maxHp * 0.38) {
@@ -13145,6 +13990,38 @@ export class BattleRoyaleEngine {
           sm.scale.setScalar(0.65 + phase * 0.85);
         }
       }
+
+      const isLocalDriver = this.activeVehicleId === v.id && this.localVehicleSeat === 'driver';
+      if (isLocalDriver) continue;
+
+      if (this.onlineRoomId && v.netTarget) {
+        const nt = v.netTarget;
+        const ageSec = nt.driverAccountId !== null
+          ? Math.min(0.12, Math.max(0, (nowMs - nt.updatedAtMs) * 0.001) * 0.5)
+          : 0;
+        const targetX = nt.x + Math.sin(nt.yaw) * nt.speed * ageSec;
+        const targetZ = nt.z + Math.cos(nt.yaw) * nt.speed * ageSec;
+        const posAlpha = 1 - Math.exp(-(nt.driverAccountId !== null ? 20 : 14) * dt);
+        v.x = THREE.MathUtils.lerp(v.x, targetX, posAlpha);
+        v.y = THREE.MathUtils.lerp(v.y, nt.y, posAlpha);
+        v.z = THREE.MathUtils.lerp(v.z, targetZ, posAlpha);
+        v.yaw = lerpAngle(v.yaw, nt.yaw, posAlpha);
+        v.speed = THREE.MathUtils.lerp(v.speed, nt.speed, posAlpha);
+        v.group.position.set(v.x, v.y, v.z);
+        v.group.rotation.y = v.yaw;
+        v.collider.cx = v.x;
+        v.collider.cz = v.z;
+        v.collider.rotY = v.yaw;
+        v.collider.minY = v.y;
+        v.collider.maxY = v.y + 2.05;
+        const wheelSpin = (v.speed * dt) / (v.kind === 'sport' ? 0.36 : 0.42);
+        v.wheelFL.rotation.x += wheelSpin;
+        v.wheelFR.rotation.x += wheelSpin;
+        v.wheelRL.rotation.x += wheelSpin;
+        v.wheelRR.rotation.x += wheelSpin;
+        continue;
+      }
+
       if (!v.driverIsPlayer && Math.abs(v.speed) > 0.08 && !v.destroyed) {
         const abVeh = this.getActiveBounds();
         v.speed = THREE.MathUtils.damp(v.speed, 0, 2.2, dt);
@@ -13165,6 +14042,95 @@ export class BattleRoyaleEngine {
         v.wheelRR.rotation.x += wheelSpin;
       }
     }
+  }
+
+  private updatePassengerPlayer(dt: number): void {
+    const v = this.world.vehicles.find((veh) => veh.id === this.activeVehicleId);
+    if (!v || v.destroyed) {
+      this.exitVehicle();
+      return;
+    }
+
+    this.input.sample();
+    const edges = this.input.consumeLookAndEdges();
+    if (this.input.consumeResetCameraFlag()) {
+      this.camShake = 0;
+      this.vehicleLookOverrideTimer = 0;
+      this.hudDirty = true;
+    }
+    if (edges.backpack) this.onBackpackRequest?.();
+    if (edges.medkit) this.useMedkit();
+    if (edges.smallMedkit) this.useSmallKit();
+    this.updateMedkitChannel(dt, false);
+    if (edges.interact) {
+      this.exitVehicle();
+      return;
+    }
+
+    const sens = 0.0028 * this.settings.sensitivity;
+    const invert = this.settings.invertY ? -1 : 1;
+    const manualLook = Math.abs(edges.dx) > 0.45 || Math.abs(edges.dy) > 0.45;
+    if (manualLook) {
+      this.vehicleLookOverrideTimer = 1.45;
+      this.yaw -= edges.dx * sens;
+      this.pitch = THREE.MathUtils.clamp(this.pitch - edges.dy * sens * invert, -0.85, 0.45);
+    } else {
+      this.vehicleLookOverrideTimer = Math.max(0, this.vehicleLookOverrideTimer - dt);
+      if (this.vehicleLookOverrideTimer <= 0) {
+        const targetCamYaw = v.yaw + Math.PI;
+        let diffYaw = targetCamYaw - this.yaw;
+        while (diffYaw > Math.PI) diffYaw -= Math.PI * 2;
+        while (diffYaw < -Math.PI) diffYaw += Math.PI * 2;
+        const followRate = Math.abs(v.speed) > 1.2 ? 6.8 : 3.2;
+        this.yaw += diffYaw * (1 - Math.exp(-followRate * dt));
+        this.pitch = THREE.MathUtils.damp(this.pitch, -0.18, 2.6, dt);
+      }
+    }
+
+    const vYaw = v.group.rotation.y;
+    const cosV = Math.cos(vYaw);
+    const sinV = Math.sin(vYaw);
+    const seatSide = 0.36;
+    const seatFwd = 0.12;
+    const seatX = v.group.position.x + cosV * seatSide + sinV * seatFwd;
+    const seatY = v.group.position.y + 0.30;
+    const seatZ = v.group.position.z - sinV * seatSide + cosV * seatFwd;
+
+    soundEngine.updateVehicleEngineAudio(true, Math.min(1, Math.abs(v.speed) / 28));
+    this.pos.set(seatX, seatY, seatZ);
+    if (this.usingMedkit) {
+      const pulse = 1 + Math.sin(this.elapsed * 8.5) * 0.14;
+      this.healRingMesh.position.set(v.x, v.y + 0.18, v.z);
+      this.healRingMesh.scale.set(pulse * 1.45, pulse * 1.45, 1);
+      this.healRingMesh.rotation.z += dt * 2.2;
+      this.healRingMesh.visible = true;
+    } else {
+      this.healRingMesh.visible = false;
+    }
+
+    this.characterYaw = vYaw + Math.PI;
+    this.playerRig.root.visible = true;
+    this.playerRig.weaponMount.visible = false;
+    this.playerRig.root.position.set(seatX, seatY, seatZ);
+    this.playerRig.root.rotation.y = vYaw;
+    this.animator.update(this.playerRig, {
+      dt,
+      speed: Math.abs(v.speed),
+      stance: 'stand',
+      isGrounded: true,
+      isSprinting: false,
+      isAiming: false,
+      isFiring: false,
+      isHealing: this.usingMedkit,
+      isDriving: true,
+      isLobby: false,
+      isSkydiving: false,
+      isParachuting: false,
+      isDead: false,
+      pitchRad: 0,
+    });
+
+    this.updateThirdPersonCamera(dt, 6.4, 1.55, 'none', false, false);
   }
 
   private updateDrivingPlayer(dt: number): void {
@@ -13617,8 +14583,15 @@ export class BattleRoyaleEngine {
           hp: Math.round(activeVeh.hp),
           maxHp: activeVeh.maxHp,
           speedKmh: Math.round(Math.abs(activeVeh.speed) * 3.6),
-          passengerCount: 1 + activeVeh.passengerIds.length,
+          passengerCount: this.onlineRoomId
+            ? Math.max(
+                1,
+                (activeVeh.netDriverAccountId ? 1 : 0) +
+                  (activeVeh.netPassengerAccountIds?.length ?? 0),
+              )
+            : 1 + activeVeh.passengerIds.length,
           isBurning: !activeVeh.destroyed && activeVeh.hp < activeVeh.maxHp * 0.38,
+          isDriver: this.localVehicleSeat !== 'passenger',
         }
       : null;
 
@@ -13830,11 +14803,27 @@ export class BattleRoyaleEngine {
               enemyScore: this.gladEnemyScore,
               playerTeamAlive:
                 (this.isDead ? 0 : 1) +
+                Array.from(this.onlineRemotePlayers.values()).filter(
+                  (e) =>
+                    !e.disconnected &&
+                    e.teamId === this.onlineTeamId &&
+                    e.lastState &&
+                    !e.lastState.eliminated,
+                ).length +
                 this.world.targets.filter((b) => b.isAlly && !b.eliminated && b.downTimer <= 0).length,
-              enemyTeamAlive: this.world.targets.filter(
-                (b) => !b.isAlly && !b.eliminated && b.downTimer <= 0,
-              ).length,
+              enemyTeamAlive:
+                Array.from(this.onlineRemotePlayers.values()).filter(
+                  (e) =>
+                    !e.disconnected &&
+                    e.teamId !== this.onlineTeamId &&
+                    e.lastState &&
+                    !e.lastState.eliminated,
+                ).length +
+                this.world.targets.filter(
+                  (b) => !b.isAlly && !b.eliminated && b.downTimer <= 0,
+                ).length,
               phase: this.gladPhase,
+              phaseTimerSec: Math.max(0, Math.ceil(this.gladPhaseTimer)),
               banner: this.gladBanner,
             }
           : undefined,
@@ -14149,6 +15138,80 @@ export class BattleRoyaleEngine {
   private onWindowPointerUp = (): void => {
     this.lobbyDragging = false;
   };
+
+  public selectGladiadoresWeapon(weaponId: WeaponId, preferredSlot?: 1 | 2): boolean {
+    if (this.gameVariant !== 'gladiadores' || this.gladPhase !== 'intro') return false;
+    const def = WEAPONS[weaponId];
+    if (!def) return false;
+    const targetSlot: 1 | 2 | 3 =
+      weaponId === 'g18' || weaponId === 'deagle'
+        ? 3
+        : preferredSlot ?? (this.activeSlot === 2 ? 2 : 1);
+    const reserveAmmo =
+      def.category === 'SR'
+        ? 25
+        : def.category === 'SG'
+          ? 48
+          : def.category === 'HG'
+            ? 42
+            : 180;
+    const chosenScope: ScopeType =
+      def.id === 'awm'
+        ? 'sniper'
+        : def.allowsCustomScope && this.ownedScopes.includes('2x')
+          ? '2x'
+          : def.defaultScope;
+    this.weapons[targetSlot] = {
+      weaponId,
+      ammoInMag: def.magSize,
+      reserveAmmo,
+      scope: chosenScope,
+      attachments: emptyAttachments(),
+    };
+    this.activeSlot = targetSlot;
+    this.isReloading = false;
+    this.reloadTimer = 0;
+    this.syncPlayerWeaponAndBackVisuals();
+    this.animator.triggerWeaponDraw();
+    soundEngine.playWeaponSwitch();
+    this.hudDirty = true;
+    return true;
+  }
+
+  public skipGladiadoresPrep(): void {
+    if (this.gameVariant !== 'gladiadores' || this.gladPhase !== 'intro') return;
+    const hasConnectedRemotes =
+      Boolean(this.onlineRoomId) &&
+      Array.from(this.onlineRemotePlayers.values()).some((e) => !e.disconnected);
+    if (hasConnectedRemotes) {
+      this.gladLocalReadyRound = this.gladRound;
+      if (this.onlineAccountId === this.onlineHostAccountId) {
+        this.gladReadyAccounts.add(this.onlineAccountId);
+        let connectedHumans = 1;
+        for (const ent of this.onlineRemotePlayers.values()) {
+          if (!ent.disconnected) connectedHumans++;
+        }
+        if (this.gladReadyAccounts.size >= connectedHumans) {
+          this.gladPhaseTimer = 0;
+          this.gladPhase = 'fight';
+          this.gladBanner = null;
+        } else {
+          this.gladBanner = `PRONTO! AGUARDANDO (${Math.max(1, Math.ceil(this.gladPhaseTimer))}s)`;
+        }
+      } else {
+        this.gladBanner = `PRONTO! AGUARDANDO (${Math.max(1, Math.ceil(this.gladPhaseTimer))}s)`;
+        this.queueOrSendRoomAction({ type: 'glad_ready', round: this.gladRound });
+      }
+      soundEngine.playUiConfirm();
+      this.hudDirty = true;
+      return;
+    }
+    this.gladPhaseTimer = 0;
+    this.gladPhase = 'fight';
+    this.gladBanner = null;
+    soundEngine.playUiConfirm();
+    this.hudDirty = true;
+  }
 
   private handleResize = (): void => {
     const w = this.container.clientWidth || window.innerWidth;

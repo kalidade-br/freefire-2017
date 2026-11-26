@@ -995,6 +995,7 @@ export interface VehicleHudState {
   speedKmh: number;
   isBurning: boolean;
   passengerCount: number;
+  isDriver?: boolean;
 }
 
 export type WeaponSlotId = 1 | 2 | 3 | 4; // 4 = Punho (Soco)
@@ -1093,6 +1094,7 @@ export interface HudSnapshot {
     playerTeamAlive: number;
     enemyTeamAlive: number;
     phase: 'intro' | 'fight' | 'round_end';
+    phaseTimerSec: number;
     banner: string | null;
   };
   reviveTarget: {

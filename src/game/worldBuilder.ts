@@ -241,6 +241,19 @@ export interface VehicleEntity {
   destroyed: boolean;
   driverIsPlayer: boolean;
   passengerIds: string[];
+  netDriverAccountId?: number | null;
+  netPassengerAccountIds?: number[];
+  netTarget?: {
+    x: number;
+    y: number;
+    z: number;
+    yaw: number;
+    speed: number;
+    hp: number;
+    destroyed: boolean;
+    driverAccountId: number | null;
+    updatedAtMs: number;
+  } | null;
 }
 
 export interface WorldHandle {
@@ -321,8 +334,8 @@ export const GLADIADORES_FLOOR_Y = GLADIADORES_ORIGIN.y + 0.57;
 export const GLADIADORES_BOUNDS = {
   minX: GLADIADORES_ORIGIN.x - 29.0,
   maxX: GLADIADORES_ORIGIN.x - 2.0,
-  minZ: GLADIADORES_ORIGIN.z - 19.0,
-  maxZ: GLADIADORES_ORIGIN.z + 19.0,
+  minZ: GLADIADORES_ORIGIN.z - 21.0,
+  maxZ: GLADIADORES_ORIGIN.z + 21.0,
 } as const;
 
 function createVendingMachineProp(
@@ -3110,6 +3123,9 @@ export function createIslandWorld(
       v.destroyed = false;
       v.driverIsPlayer = false;
       v.passengerIds = [];
+      v.netDriverAccountId = null;
+      v.netPassengerAccountIds = [];
+      v.netTarget = null;
       v.group.position.set(v.x, v.y, v.z);
       v.group.rotation.set(0, v.yaw, 0);
       v.chassisGroup.rotation.set(0, 0, 0);

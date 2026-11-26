@@ -40,6 +40,7 @@ import {
   SCOPE_META,
   ScopeType,
   WEAPONS,
+  WeaponId,
   WeaponSlotId,
   getRankInfo,
 } from '../game/types';
@@ -112,6 +113,8 @@ interface GameHudProps {
   onOpenGgMacroModal?: () => void;
   onSelectScope: (scope: ScopeType) => void;
   onSelectGlooSkin?: (skin: GlooSkinId) => void;
+  onSelectGladiadoresWeapon?: (weaponId: WeaponId, slot?: 1 | 2) => void;
+  onReadyGladiadoresRound?: () => void;
   onSkipWaiting: () => void;
   onJumpFromPlane: () => void;
   onOpenParachute: () => void;
@@ -185,6 +188,8 @@ export const GameHud: React.FC<GameHudProps> = ({
   onOpenGgMacroModal,
   onSelectScope,
   onSelectGlooSkin,
+  onSelectGladiadoresWeapon,
+  onReadyGladiadoresRound,
   onSkipWaiting,
   onJumpFromPlane,
   onOpenParachute,
@@ -223,6 +228,7 @@ export const GameHud: React.FC<GameHudProps> = ({
   const [fireKnob, setFireKnob] = useState({ x: 0, y: 0 });
   const [isFirePressed, setIsFirePressed] = useState(false);
   const [autoSprintActive, setAutoSprintActive] = useState(false);
+  const [gladWeaponSlot, setGladWeaponSlot] = useState<1 | 2>(1);
   const joyOriginRef = useRef<{ id: number; cx: number; cy: number } | null>(null);
   const lookTouchRef = useRef<{ id: number; lx: number; ly: number } | null>(null);
   const fireDragRef = useRef<{
@@ -497,9 +503,9 @@ export const GameHud: React.FC<GameHudProps> = ({
         ctx.lineWidth = 2;
         ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
 
-        // Center cover blocks visual guide
-        const c1 = toArenaPx(GLADIADORES_ORIGIN.x - 19, GLADIADORES_ORIGIN.z - 8);
-        const c2 = toArenaPx(GLADIADORES_ORIGIN.x - 12, GLADIADORES_ORIGIN.z + 8);
+        // Center cover blocks visual guide (symmetrical between North/South spawns)
+        const c1 = toArenaPx(GLADIADORES_ORIGIN.x - 24, GLADIADORES_ORIGIN.z - 2.5);
+        const c2 = toArenaPx(GLADIADORES_ORIGIN.x - 7, GLADIADORES_ORIGIN.z + 2.5);
         ctx.fillStyle = '#475569';
         ctx.fillRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
       } else {
@@ -1483,6 +1489,7 @@ export const GameHud: React.FC<GameHudProps> = ({
                 </div>
                 <div className="text-[10px] font-mono text-neutral-200">
                   RODADA {hud.gladiadores.round}/5 · META 3
+                  {hud.gladiadores.phase === 'intro' ? ` · ${hud.gladiadores.phaseTimerSec}s` : ''}
                 </div>
               </div>
 
@@ -1495,8 +1502,101 @@ export const GameHud: React.FC<GameHudProps> = ({
             </div>
 
             {hud.gladiadores.banner && (
-              <div className="mt-2 px-5 py-1.5 bg-gradient-to-r from-red-950/92 via-black/95 to-red-950/92 border-y-2 border-amber-400 text-sm sm:text-base font-black uppercase tracking-widest text-amber-300 shadow-2xl">
+              <div className="mt-1 px-5 py-1 bg-gradient-to-r from-red-950/92 via-black/95 to-red-950/92 border-y-2 border-amber-400 text-xs sm:text-sm font-black uppercase tracking-widest text-amber-300 shadow-2xl">
                 {hud.gladiadores.banner}
+              </div>
+            )}
+
+            {hud.gladiadores.phase === 'intro' && (
+              <div
+                onPointerDown={(e) => e.stopPropagation()}
+                className="pointer-events-auto mt-1 w-[min(92vw,470px)] bg-black/88 border border-amber-400/75 p-2.5 shadow-2xl backdrop-blur-sm"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-2 mb-2 border-b border-white/15">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-amber-300">
+                      ARSENAL ({hud.gladiadores.phaseTimerSec}s)
+                    </span>
+                    <button
+                      type="button"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        setGladWeaponSlot(1);
+                      }}
+                      className={`touch-none px-2 py-0.5 text-[10px] font-black uppercase border cursor-pointer ${
+                        gladWeaponSlot === 1
+                          ? 'bg-amber-400 text-black border-white'
+                          : 'bg-white/10 text-neutral-200 border-white/25 hover:bg-white/20'
+                      }`}
+                    >
+                      SLOT 1
+                    </button>
+                    <button
+                      type="button"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        setGladWeaponSlot(2);
+                      }}
+                      className={`touch-none px-2 py-0.5 text-[10px] font-black uppercase border cursor-pointer ${
+                        gladWeaponSlot === 2
+                          ? 'bg-amber-400 text-black border-white'
+                          : 'bg-white/10 text-neutral-200 border-white/25 hover:bg-white/20'
+                      }`}
+                    >
+                      SLOT 2
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      onReadyGladiadoresRound?.();
+                    }}
+                    className="touch-none px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-[10px] uppercase tracking-wider border border-white cursor-pointer"
+                  >
+                    PRONTO ▶
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1.5">
+                  {Object.values(WEAPONS).map((w) => {
+                    const isEqSlot1 = hud.weapons[1]?.weaponId === w.id;
+                    const isEqSlot2 = hud.weapons[2]?.weaponId === w.id;
+                    const isEqSlot3 = hud.weapons[3]?.weaponId === w.id;
+                    const equipped = isEqSlot1 || isEqSlot2 || isEqSlot3;
+                    return (
+                      <button
+                        key={w.id}
+                        type="button"
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          onSelectGladiadoresWeapon?.(w.id, gladWeaponSlot);
+                        }}
+                        className={`touch-none flex flex-col items-center justify-between p-1.5 border text-center cursor-pointer transition-colors ${
+                          equipped
+                            ? 'bg-amber-500/25 border-amber-400 text-amber-200'
+                            : 'bg-white/5 hover:bg-white/15 border-white/20 text-neutral-100'
+                        }`}
+                      >
+                        <WeaponIcon weaponId={w.id} className="w-12 h-6 shrink-0" />
+                        <div className="flex items-center gap-1 mt-0.5">
+                          <span className="text-[9px] font-black uppercase tracking-tight leading-none">
+                            {w.shortName}
+                          </span>
+                          {equipped && (
+                            <span className="text-[8px] font-mono font-black px-1 bg-amber-400 text-black leading-tight">
+                              {isEqSlot1 ? '1' : isEqSlot2 ? '2' : '3'}
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -2469,10 +2569,20 @@ export const GameHud: React.FC<GameHudProps> = ({
               </span>
             </div>
             <div className="w-full flex items-center justify-between text-[10px] font-mono">
-              <span className={hud.inVehicle.isBurning ? 'text-red-400 font-black' : 'text-neutral-400'}>
+              <span
+                className={
+                  hud.inVehicle.isBurning
+                    ? 'text-red-400 font-black'
+                    : hud.inVehicle.isDriver === false
+                      ? 'text-cyan-300 font-bold'
+                      : 'text-neutral-400'
+                }
+              >
                 {hud.inVehicle.isBurning
                   ? 'CARRO EM CHAMAS!'
-                  : `${hud.inVehicle.passengerCount} a bordo`}
+                  : hud.inVehicle.isDriver === false
+                    ? `PASSAGEIRO · ${hud.inVehicle.passengerCount} a bordo`
+                    : `${hud.inVehicle.passengerCount} a bordo`}
               </span>
               <button
                 type="button"
@@ -2898,7 +3008,12 @@ export const GameHud: React.FC<GameHudProps> = ({
         })()}
 
       {/* CUSTOMIZABLE MOBILE VEHICLE TOUCH PEDALS & STEERING WHEN DRIVING */}
-      {showTouchHud && isGroundCombat && !hideGameplayHud && !isPaused && hud.inVehicle && (
+      {showTouchHud &&
+        isGroundCombat &&
+        !hideGameplayHud &&
+        !isPaused &&
+        hud.inVehicle &&
+        hud.inVehicle.isDriver !== false && (
         <>
           <div
             style={layoutStyle(hudLayout.vehicleSteer)}

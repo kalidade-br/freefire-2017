@@ -2,6 +2,8 @@ import { auth } from '../lib/firebase';
 import type {
   BrMapId,
   CharacterConfig,
+  GameVariant,
+  GladiadoresFormat,
   MatchMode,
   NetworkSyncPreset,
   WeaponId,
@@ -121,6 +123,11 @@ export type MultiplayerServerEvent =
   | { type: 'matchmaking_status'; status: MatchmakingSearchStatus }
   | { type: 'matchmaking_queue_update'; pools: SearchingPoolInfo[] }
   | {
+      type: 'glad_ready';
+      accountId: number;
+      round: number;
+    }
+  | {
       type: 'chat_message';
       scope: 'party' | 'match';
       fromAccountId: number;
@@ -151,7 +158,8 @@ class MultiplayerClient {
   // Real-time RTT / Ping tracking (ms + 999+ disconnect detection)
   private lastMeasuredPingMs = 24;
   private pendingStartAtMs: number | null = null;
-  private lastWsSyncSentAtMs: number | null = null;
+  private lastPingProbeSentAtMs = 0;
+  private consecutiveFailures = 0;
   private connectionLost = typeof navigator !== 'undefined' ? !navigator.onLine : false;
   private pingProbeTimer: number | null = null;
   private probeInFlight = false;
@@ -167,6 +175,7 @@ class MultiplayerClient {
       });
       window.addEventListener('online', () => {
         this.connectionLost = false;
+        this.consecutiveFailures = 0;
         this.pendingStartAtMs = null;
         void this.probePing();
       });
@@ -207,9 +216,9 @@ class MultiplayerClient {
   }
 
   private getPingProbeIntervalMs(): number {
-    if (this.lowLatencyMode || this.syncPreset === 'ultra') return 650;
+    if (this.lowLatencyMode || this.syncPreset === 'ultra') return 800;
     if (this.syncPreset === 'economy') return 1800;
-    return 1000;
+    return 1100;
   }
 
   private startPingLoop(): void {
@@ -231,14 +240,24 @@ class MultiplayerClient {
   private markRequestSucceeded(startedAtMs: number): void {
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const rtt = Math.max(1, Math.round(now - startedAtMs));
-    this.lastMeasuredPingMs = rtt;
+    this.lastMeasuredPingMs =
+      this.lastMeasuredPingMs > 0
+        ? Math.round(this.lastMeasuredPingMs * 0.45 + rtt * 0.55)
+        : rtt;
     this.pendingStartAtMs = null;
+    this.consecutiveFailures = 0;
     this.connectionLost = false;
   }
 
   private markConnectionFailed(): void {
-    this.connectionLost = true;
+    this.consecutiveFailures += 1;
     this.pendingStartAtMs = null;
+    if (
+      this.consecutiveFailures >= 3 ||
+      (typeof navigator !== 'undefined' && navigator.onLine === false)
+    ) {
+      this.connectionLost = true;
+    }
   }
 
   public async probePing(): Promise<void> {
@@ -249,6 +268,9 @@ class MultiplayerClient {
     }
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      if (now - this.lastPingProbeSentAtMs < 450) return;
+      this.lastPingProbeSentAtMs = now;
       const sentAt = this.markRequestStarted();
       try {
         this.ws.send(JSON.stringify({ type: 'ping', clientTs: sentAt }));
@@ -262,7 +284,7 @@ class MultiplayerClient {
     this.probeInFlight = true;
     const t0 = this.markRequestStarted();
     const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timeoutId = window.setTimeout(() => ctrl?.abort(), 2200);
+    const timeoutId = window.setTimeout(() => ctrl?.abort(), 2800);
     try {
       const res = await fetch(buildApiUrl('/api/ping'), {
         method: 'GET',
@@ -293,12 +315,14 @@ class MultiplayerClient {
     const pendingElapsed =
       this.pendingStartAtMs !== null ? Math.max(0, Math.round(now - this.pendingStartAtMs)) : 0;
 
-    if (pendingElapsed >= 999) {
+    if (pendingElapsed >= 2500) {
       return { pingMs: 999, disconnected: true, label: '999+' };
     }
 
     const effective =
-      pendingElapsed > this.lastMeasuredPingMs ? pendingElapsed : this.lastMeasuredPingMs;
+      pendingElapsed > this.lastMeasuredPingMs
+        ? Math.min(998, Math.round(this.lastMeasuredPingMs * 0.5 + pendingElapsed * 0.5))
+        : this.lastMeasuredPingMs;
 
     if (effective >= 999) {
       return { pingMs: 999, disconnected: true, label: '999+' };
@@ -339,10 +363,8 @@ class MultiplayerClient {
       this.lastParty = ev.party;
     } else if (ev.type === 'room_snapshot') {
       this.lastRoomSnapshot = ev.snapshot;
-      if (this.lastWsSyncSentAtMs !== null) {
-        this.markRequestSucceeded(this.lastWsSyncSentAtMs);
-        this.lastWsSyncSentAtMs = null;
-      }
+      this.consecutiveFailures = 0;
+      this.connectionLost = false;
     }
     this.listeners.forEach((cb) => {
       try {
@@ -426,9 +448,6 @@ class MultiplayerClient {
 
       socket.onerror = () => {
         this.wsConnecting = false;
-        if (this.token && this.wsEverOpened) {
-          this.markConnectionFailed();
-        }
       };
 
       socket.onclose = (ev) => {
@@ -449,7 +468,7 @@ class MultiplayerClient {
             return;
           }
         } else if (this.token) {
-          this.markConnectionFailed();
+          this.pendingStartAtMs = null;
         }
         if (this.token && !this.wsUnsupported && this.reconnectTimer === null) {
           const delay = this.lowLatencyMode ? 550 : 1800;
@@ -501,7 +520,9 @@ class MultiplayerClient {
         headers,
       });
     } catch (err) {
-      this.markConnectionFailed();
+      if (!(err instanceof Error && err.name === 'AbortError')) {
+        this.markConnectionFailed();
+      }
       throw err;
     }
 
@@ -818,6 +839,8 @@ class MultiplayerClient {
   }
 
   public async setPartyConfig(cfg: Partial<{
+    gameVariant: GameVariant;
+    gladiadoresFormat: GladiadoresFormat;
     mode: MatchMode;
     mapId: BrMapId;
     isRanked: boolean;
@@ -922,13 +945,9 @@ class MultiplayerClient {
     state?: ClientMatchStatePush,
     actions?: MatchRoomAction[],
   ): Promise<MatchRoomSnapshot> {
-    if (this.lowLatencyMode && this.activeSyncAbort) {
-      this.activeSyncAbort.abort();
-      this.activeSyncAbort = null;
-    }
     const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     if (ctrl) this.activeSyncAbort = ctrl;
-    const timeoutMs = this.lowLatencyMode ? 1150 : 2400;
+    const timeoutMs = 2800;
     const timer =
       typeof window !== 'undefined' && ctrl
         ? window.setTimeout(() => ctrl.abort(), timeoutMs)
@@ -953,9 +972,6 @@ class MultiplayerClient {
 
   public sendWsState(state: ClientMatchStatePush): boolean {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      if (this.lastWsSyncSentAtMs === null) {
-        this.lastWsSyncSentAtMs = this.markRequestStarted();
-      }
       this.ws.send(JSON.stringify({ type: 'sync_state', state }));
       return true;
     }

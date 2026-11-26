@@ -510,7 +510,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                     CONVITE DE {inv.fromNickname}
                   </div>
                   <div className="text-[10px] font-mono text-neutral-300">
-                    {inv.isRanked ? 'BR RANQUEADO' : 'CLÁSSICO'} · {inv.mode.toUpperCase()}
+                    {inv.gameVariant === 'gladiadores'
+                      ? `GLADIADORES · ${(inv.gladiadoresFormat ?? '2v2').toUpperCase()}`
+                      : `${inv.isRanked ? 'BR RANQUEADO' : 'CLÁSSICO'} · ${inv.mode.toUpperCase()}`}
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">

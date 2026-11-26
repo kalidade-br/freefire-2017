@@ -117,12 +117,25 @@ export const SearchingPlayersModal: React.FC<SearchingPlayersModalProps> = ({
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2">
                     <div className="flex items-center gap-2 min-w-0">
-                      <span className="px-2 py-0.5 bg-amber-500/20 border border-amber-400/60 text-[10px] font-black uppercase text-amber-300">
-                        {pool.isRanked ? 'RANQUEADA' : 'CLÁSSICO'}
-                      </span>
-                      <span className="text-xs font-black uppercase text-white">
-                        {pool.mode.toUpperCase()} · {mapLabel}
-                      </span>
+                      {pool.gameVariant === 'gladiadores' ? (
+                        <>
+                          <span className="px-2 py-0.5 bg-red-500/20 border border-red-400/70 text-[10px] font-black uppercase text-red-300">
+                            GLADIADORES
+                          </span>
+                          <span className="text-xs font-black uppercase text-white">
+                            {(pool.gladiadoresFormat ?? '1v1').toUpperCase()} · Arena 3D
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="px-2 py-0.5 bg-amber-500/20 border border-amber-400/60 text-[10px] font-black uppercase text-amber-300">
+                            {pool.isRanked ? 'RANQUEADA' : 'CLÁSSICO'}
+                          </span>
+                          <span className="text-xs font-black uppercase text-white">
+                            {pool.mode.toUpperCase()} · {mapLabel}
+                          </span>
+                        </>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2">

@@ -372,6 +372,7 @@ export default function App() {
   });
 
   const prevBackpackOpenRef = useRef(false);
+  const prevGladPhaseRef = useRef<string | null>(null);
   const activeLaunchedRoomIdRef = useRef<string | null>(null);
   const firebaseUserRef = useRef<FirebaseUser | null>(null);
 
@@ -465,15 +466,22 @@ export default function App() {
 
   const syncPartyConfigState = useCallback((nextParty: PartyState) => {
     const nextMap: BrMapId = 'bermuda';
+    const nextVariant: GameVariant = nextParty.gameVariant === 'gladiadores' ? 'gladiadores' : 'br';
+    const nextGladFormat: GladiadoresFormat =
+      nextParty.gladiadoresFormat === '2v2' ? '2v2' : '1v1';
     setParty(nextParty);
     setBrMapId(nextMap);
     setMatchMode(nextParty.mode);
     setIsRanked(nextParty.isRanked);
     setAutoFillBots(nextParty.autoFillBots);
+    setGameVariant(nextVariant);
+    setGladiadoresFormat(nextGladFormat);
     engineRef.current?.setBrMapId(nextMap);
     engineRef.current?.setMatchMode(nextParty.mode);
     engineRef.current?.setRankedMode(nextParty.isRanked);
     engineRef.current?.setAutoFillBots(nextParty.autoFillBots);
+    engineRef.current?.setGameVariant(nextVariant);
+    engineRef.current?.setGladiadoresFormat(nextGladFormat);
     if (engineRef.current) {
       setMapMeta(engineRef.current.getMapMetadata());
     }
@@ -755,14 +763,24 @@ export default function App() {
     );
   }, [account, character.modelId, gameState, gameVariant, gladiadoresFormat, matchMode, party, profile.nickname]);
 
-  // Release pointer lock when Backpack / Shop / Pause opens & handle keyboard shortcuts to close
+  // Release pointer lock when Backpack / Shop / Pause / Gladiadores Arsenal opens & handle keyboard shortcuts to close
   useEffect(() => {
     if (isBackpackOpen && !prevBackpackOpenRef.current) {
       soundEngine.playBackpackOpen();
     }
     prevBackpackOpenRef.current = isBackpackOpen;
 
-    if (isBackpackOpen || isPaused || isShopOpen || showGgMacroModal || showSettingsModal || showHudEditor) {
+    const gladPhase =
+      gameState === GameState.PLAYING && hud.gameVariant === 'gladiadores'
+        ? (hud.gladiadores?.phase ?? null)
+        : null;
+    const prevGladPhase = prevGladPhaseRef.current;
+    prevGladPhaseRef.current = gladPhase;
+
+    const modalBlocking =
+      isBackpackOpen || isPaused || isShopOpen || showGgMacroModal || showSettingsModal || showHudEditor;
+
+    if (modalBlocking) {
       soundEngine.stopRunAudio();
       if (document.pointerLockElement) {
         document.exitPointerLock?.();
@@ -775,6 +793,18 @@ export default function App() {
       gameState === GameState.PLAYING
     ) {
       engineRef.current?.input.setGameplayActive(true);
+      if (gladPhase === 'intro') {
+        if (document.pointerLockElement) {
+          document.exitPointerLock?.();
+        }
+      } else if (
+        prevGladPhase === 'intro' &&
+        gladPhase === 'fight' &&
+        engineRef.current &&
+        !engineRef.current.input.mouseSuspended
+      ) {
+        engineRef.current.input.requestLock();
+      }
     }
 
     if (!isBackpackOpen && !isShopOpen) return;
@@ -803,7 +833,18 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isBackpackOpen, isPaused, isShopOpen, showGgMacroModal, showSettingsModal, showHudEditor, gameState, settings.keyBindings?.backpack]);
+  }, [
+    isBackpackOpen,
+    isPaused,
+    isShopOpen,
+    showGgMacroModal,
+    showSettingsModal,
+    showHudEditor,
+    gameState,
+    hud.gameVariant,
+    hud.gladiadores?.phase,
+    settings.keyBindings?.backpack,
+  ]);
 
   // Mount WebGLRenderer once inside isolated container
   useEffect(() => {
@@ -1188,11 +1229,32 @@ export default function App() {
   const handleChangeGameVariant = (variant: GameVariant) => {
     setGameVariant(variant);
     engineRef.current?.setGameVariant(variant);
+    const syncedFormat: GladiadoresFormat | undefined =
+      variant === 'gladiadores' && party && party.members.length === 2 ? '2v2' : undefined;
+    if (syncedFormat) {
+      setGladiadoresFormat(syncedFormat);
+      engineRef.current?.setGladiadoresFormat(syncedFormat);
+    }
+    if (account) {
+      void multiplayerClient
+        .setPartyConfig({
+          gameVariant: variant,
+          ...(syncedFormat ? { gladiadoresFormat: syncedFormat } : {}),
+        })
+        .then((res) => syncPartyConfigState(res.party))
+        .catch(() => undefined);
+    }
   };
 
   const handleChangeGladiadoresFormat = (fmt: GladiadoresFormat) => {
     setGladiadoresFormat(fmt);
     engineRef.current?.setGladiadoresFormat(fmt);
+    if (account) {
+      void multiplayerClient
+        .setPartyConfig({ gladiadoresFormat: fmt })
+        .then((res) => syncPartyConfigState(res.party))
+        .catch(() => undefined);
+    }
   };
 
   const handleChangeGladiadoresTargetRounds = (rounds: number) => {
@@ -1203,14 +1265,13 @@ export default function App() {
   const handleStartMatch = async () => {
     if (!engineRef.current) return;
     if (searchState.active) return;
+    soundEngine.unlock();
+    soundEngine.playUiConfirm();
+    engineRef.current.setGameVariant(gameVariant);
     if (gameVariant === 'gladiadores') {
       engineRef.current.setGladiadoresFormat(gladiadoresFormat);
       engineRef.current.setGladiadoresTargetRounds(gladiadoresTargetRounds);
-      engineRef.current.startGladiadoresMatch();
-      return;
     }
-    soundEngine.unlock();
-    soundEngine.playUiConfirm();
     const startedAt = Date.now();
     setSearchState({ active: true, startedAtMs: startedAt, poolKey: null, isOffline: false });
     try {
@@ -1225,6 +1286,8 @@ export default function App() {
       }
       await multiplayerClient
         .setPartyConfig({
+          gameVariant,
+          gladiadoresFormat,
           mode: matchMode,
           mapId: brMapId,
           isRanked,
@@ -1249,7 +1312,13 @@ export default function App() {
       offlineLaunchTimerRef.current = window.setTimeout(() => {
         offlineLaunchTimerRef.current = null;
         setSearchState({ active: false, startedAtMs: 0, poolKey: null, isOffline: false });
-        engineRef.current?.startOfflineBrMatch();
+        if (gameVariant === 'gladiadores') {
+          engineRef.current?.setGladiadoresFormat(gladiadoresFormat);
+          engineRef.current?.setGladiadoresTargetRounds(gladiadoresTargetRounds);
+          engineRef.current?.startGladiadoresMatch();
+        } else {
+          engineRef.current?.startOfflineBrMatch();
+        }
       }, 10_000);
     }
   };
@@ -1590,6 +1659,12 @@ export default function App() {
             const nextChar: CharacterConfig = { ...character, glooSkin: skin };
             handleUpdateCharacter(nextChar);
             engineRef.current?.setGlooSkin(skin);
+          }}
+          onSelectGladiadoresWeapon={(wid, slot) => {
+            engineRef.current?.selectGladiadoresWeapon(wid, slot);
+          }}
+          onReadyGladiadoresRound={() => {
+            engineRef.current?.skipGladiadoresPrep();
           }}
           onSkipWaiting={() => engineRef.current?.skipWaitingToPlane()}
           onJumpFromPlane={() => engineRef.current?.jumpFromPlane()}
