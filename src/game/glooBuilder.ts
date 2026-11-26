@@ -4,8 +4,8 @@ import type { GlooSkinId, WalkablePlatform, WorldObbCollider } from './types';
 export interface GlooVariantAssets {
   classicGeo: THREE.BufferGeometry;
   ffwcGeo: THREE.BufferGeometry;
-  classicMat: THREE.MeshStandardMaterial;
-  ffwcMat: THREE.MeshStandardMaterial;
+  classicMat: THREE.MeshLambertMaterial;
+  ffwcMat: THREE.MeshLambertMaterial;
   classicPreviewMat: THREE.MeshBasicMaterial;
   ffwcPreviewMat: THREE.MeshBasicMaterial;
   classicTex: THREE.CanvasTexture;
@@ -87,7 +87,7 @@ function createClassicGlooTexture(maxAnisotropy: number): THREE.CanvasTexture {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.anisotropy = Math.min(4, Math.max(1, maxAnisotropy));
+  tex.anisotropy = 1;
   tex.needsUpdate = true;
   return tex;
 }
@@ -322,7 +322,7 @@ function createFfwcGlooTexture(maxAnisotropy: number): THREE.CanvasTexture {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.anisotropy = Math.min(4, Math.max(1, maxAnisotropy));
+  tex.anisotropy = 1;
   tex.needsUpdate = true;
   return tex;
 }
@@ -514,24 +514,20 @@ export function createGlooVariantAssets(maxAnisotropy: number): GlooVariantAsset
   const classicGeo = buildCurvedGlooGeometry('classic');
   const ffwcGeo = buildCurvedGlooGeometry('ffwc');
 
-  const classicMat = new THREE.MeshStandardMaterial({
+  const classicMat = new THREE.MeshLambertMaterial({
     map: classicTex,
     color: 0xffffff,
     emissive: 0x1e40af,
     emissiveIntensity: 0.14,
-    roughness: 0.34,
-    metalness: 0.08,
     transparent: true,
     opacity: 0.94,
   });
 
-  const ffwcMat = new THREE.MeshStandardMaterial({
+  const ffwcMat = new THREE.MeshLambertMaterial({
     map: ffwcTex,
     color: 0xffffff,
     emissive: 0x0e7490,
     emissiveIntensity: 0.18,
-    roughness: 0.3,
-    metalness: 0.16,
     transparent: true,
     opacity: 0.96,
   });

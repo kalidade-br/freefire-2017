@@ -1,5 +1,10 @@
 import * as THREE from 'three';
 import {
+  createBlobShadowMesh,
+  ensureSkinnedMeshCullingSphere,
+  toFF2017Material,
+} from './materialOptimizer';
+import {
   cloneCharacterScene,
   FF_SCENE_SCALE,
   FFModelId,
@@ -78,9 +83,8 @@ export function createWeaponModel(weaponId: WeaponId): THREE.Group {
 
 export function createParachuteCanopyGroup(camoTexture: THREE.Texture): THREE.Group {
   const parachuteGroup = new THREE.Group();
-  const canopyMat = new THREE.MeshStandardMaterial({
+  const canopyMat = new THREE.MeshLambertMaterial({
     map: camoTexture,
-    roughness: 0.85,
     side: THREE.DoubleSide,
   });
   const canopy = new THREE.Mesh(
@@ -91,7 +95,8 @@ export function createParachuteCanopyGroup(camoTexture: THREE.Texture): THREE.Gr
   canopy.rotation.y = Math.PI / 2;
   canopy.position.set(0, 2.1, 0);
   canopy.scale.set(0.55, 1.35, 1.0);
-  canopy.castShadow = true;
+  canopy.castShadow = false;
+  canopy.receiveShadow = false;
   parachuteGroup.add(canopy);
 
   const lineMat = new THREE.LineBasicMaterial({ color: 0x1d201a });
@@ -175,10 +180,8 @@ export function createHeadgearSet(hairMat: THREE.Material, darkMat: THREE.Materi
   capGroup.add(capCrown, capVisor);
 
   const helmetGroup = new THREE.Group();
-  const helmetMat = new THREE.MeshStandardMaterial({
+  const helmetMat = new THREE.MeshLambertMaterial({
     color: 0x353c30,
-    roughness: 0.42,
-    metalness: 0.35,
   });
   const helmY = useRealHair ? 0.115 : 0.205;
   const helmetShell = new THREE.Mesh(
@@ -225,32 +228,22 @@ function createSurfboardGroup(): {
   });
   hullGeo.rotateX(Math.PI / 2);
 
-  const hullMat = new THREE.MeshStandardMaterial({
+  const hullMat = new THREE.MeshLambertMaterial({
     color: 0x0ea5e9,
-    roughness: 0.24,
-    metalness: 0.18,
   });
-  const stripeMat = new THREE.MeshStandardMaterial({
+  const stripeMat = new THREE.MeshLambertMaterial({
     color: 0xf59e0b,
-    roughness: 0.34,
-    metalness: 0.55,
   });
-  const padMat = new THREE.MeshStandardMaterial({
+  const padMat = new THREE.MeshLambertMaterial({
     color: 0x111827,
-    roughness: 0.9,
-    metalness: 0.04,
   });
-  const finMat = new THREE.MeshStandardMaterial({
+  const finMat = new THREE.MeshLambertMaterial({
     color: 0x1e293b,
-    roughness: 0.32,
-    metalness: 0.65,
   });
-  const jetMat = new THREE.MeshStandardMaterial({
+  const jetMat = new THREE.MeshLambertMaterial({
     color: 0x38bdf8,
     emissive: 0x0284c7,
     emissiveIntensity: 0.85,
-    roughness: 0.2,
-    metalness: 0.35,
   });
 
   const hullMesh = new THREE.Mesh(hullGeo, hullMat);
@@ -307,15 +300,11 @@ export function createBandageMeshes(): {
   wrapGroup: THREE.Group;
   dispose: () => void;
 } {
-  const gauzeMat = new THREE.MeshStandardMaterial({
+  const gauzeMat = new THREE.MeshLambertMaterial({
     color: 0xf8fafc,
-    roughness: 0.9,
-    metalness: 0.02,
   });
-  const trimMat = new THREE.MeshStandardMaterial({
+  const trimMat = new THREE.MeshLambertMaterial({
     color: 0xdc2626,
-    roughness: 0.65,
-    metalness: 0.05,
   });
 
   // White bandage roll + trailing gauze strip held in right hand
@@ -395,60 +384,46 @@ function createAdamCharacterRig(
   const rightKnee = new THREE.Group();
 
   const bodyMeshes: THREE.Mesh[] = [];
-  const bodyMats: THREE.MeshStandardMaterial[] = [];
+  const bodyMats: THREE.MeshLambertMaterial[] = [];
 
   clonedScene.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh) return;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mesh.frustumCulled = false;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.frustumCulled = true;
+    if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) {
+      ensureSkinnedMeshCullingSphere(mesh as THREE.SkinnedMesh, 1.65);
+    }
     bodyMeshes.push(mesh);
 
     const rawMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-    if (rawMat && (rawMat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
-      const clonedMat = (rawMat as THREE.MeshStandardMaterial).clone();
-      clonedMat.roughness = Math.max(0.62, clonedMat.roughness ?? 0.78);
-      clonedMat.metalness = Math.min(0.12, clonedMat.metalness ?? 0.04);
+    if (rawMat) {
+      const ffMat = toFF2017Material(rawMat, { nodeName: mesh.name });
+      const clonedMat = ffMat.clone();
       mesh.material = clonedMat;
-      bodyMats.push(clonedMat);
+      if ((clonedMat as THREE.MeshLambertMaterial).isMeshLambertMaterial) {
+        bodyMats.push(clonedMat as THREE.MeshLambertMaterial);
+      }
     }
   });
 
-  const vestMat = new THREE.MeshStandardMaterial({
+  const vestMat = new THREE.MeshLambertMaterial({
     color: initialConfig.vestColor,
-    roughness: 0.62,
-    metalness: 0.16,
   });
-  const packMat = new THREE.MeshStandardMaterial({
+  const packMat = new THREE.MeshLambertMaterial({
     color: 0x485038,
-    roughness: 0.78,
-    metalness: 0.06,
   });
-  const hairMat = new THREE.MeshStandardMaterial({
+  const hairMat = new THREE.MeshLambertMaterial({
     color: initialConfig.hairColor,
-    roughness: 0.84,
-    metalness: 0.04,
     side: THREE.DoubleSide,
   });
-  const darkMat = new THREE.MeshStandardMaterial({
+  const darkMat = new THREE.MeshLambertMaterial({
     color: 0x1b1c1f,
-    roughness: 0.7,
-    metalness: 0.15,
   });
 
-  // Contact shadow disc grounded at y = 0.018
-  const contactShadow = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.15, 1.15),
-    new THREE.MeshBasicMaterial({
-      map: contactShadowTexture,
-      transparent: true,
-      depthWrite: false,
-      opacity: 0.52,
-    }),
-  );
-  contactShadow.rotation.x = -Math.PI / 2;
-  contactShadow.position.y = 0.018;
+  // Classic Free Fire 2017 circular Blob Shadow grounded at y = 0.02
+  const contactShadow = createBlobShadowMesh(contactShadowTexture, 0.58, 0.54);
   root.add(contactShadow);
 
   // Locate real Free Fire Mixamo skeleton bones
@@ -718,8 +693,6 @@ function createAdamCharacterRig(
     for (let m = 0; m < bodyMats.length; m++) {
       bodyMats[m].dispose();
     }
-    contactShadow.geometry.dispose();
-    (contactShadow.material as THREE.Material).dispose();
     muzzleFlash.geometry.dispose();
     (muzzleFlash.material as THREE.Material).dispose();
     vestGroup.traverse((o) => {
@@ -823,65 +796,40 @@ function createProceduralCharacterRig(
   const root = new THREE.Group();
   const bodyMeshes: THREE.Mesh[] = [];
 
-  const skinMat = new THREE.MeshStandardMaterial({
+  const skinMat = new THREE.MeshLambertMaterial({
     color: initialConfig.skinColor,
-    roughness: 0.72,
-    metalness: 0.02,
   });
-  const shirtMat = new THREE.MeshStandardMaterial({
+  const shirtMat = new THREE.MeshLambertMaterial({
     color: initialConfig.shirtColor,
-    roughness: 0.85,
-    metalness: 0.0,
   });
-  const pantsMat = new THREE.MeshStandardMaterial({
+  const pantsMat = new THREE.MeshLambertMaterial({
     color: initialConfig.pantsColor,
-    roughness: 0.88,
-    metalness: 0.0,
   });
-  const vestMat = new THREE.MeshStandardMaterial({
+  const vestMat = new THREE.MeshLambertMaterial({
     color: initialConfig.vestColor,
-    roughness: 0.65,
-    metalness: 0.12,
   });
-  const packMat = new THREE.MeshStandardMaterial({
+  const packMat = new THREE.MeshLambertMaterial({
     color: 0x485038,
-    roughness: 0.78,
-    metalness: 0.06,
   });
-  const hairMat = new THREE.MeshStandardMaterial({
+  const hairMat = new THREE.MeshLambertMaterial({
     color: initialConfig.hairColor,
-    roughness: 0.82,
-    metalness: 0.05,
   });
-  const shoeMat = new THREE.MeshStandardMaterial({
+  const shoeMat = new THREE.MeshLambertMaterial({
     color: initialConfig.shoesColor,
-    roughness: 0.58,
-    metalness: 0.08,
   });
-  const darkMat = new THREE.MeshStandardMaterial({
+  const darkMat = new THREE.MeshLambertMaterial({
     color: 0x1b1c1f,
-    roughness: 0.7,
-    metalness: 0.15,
   });
 
   const regMesh = (m: THREE.Mesh) => {
-    m.castShadow = true;
-    m.receiveShadow = true;
+    m.castShadow = false;
+    m.receiveShadow = false;
+    m.frustumCulled = true;
     bodyMeshes.push(m);
     return m;
   };
 
-  const contactShadow = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.15, 1.15),
-    new THREE.MeshBasicMaterial({
-      map: contactShadowTexture,
-      transparent: true,
-      depthWrite: false,
-      opacity: 0.52,
-    }),
-  );
-  contactShadow.rotation.x = -Math.PI / 2;
-  contactShadow.position.y = 0.018;
+  const contactShadow = createBlobShadowMesh(contactShadowTexture, 0.58, 0.54);
   root.add(contactShadow);
 
   const pelvis = new THREE.Group();

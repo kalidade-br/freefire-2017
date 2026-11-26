@@ -11,7 +11,7 @@ function makeCanvas(size: number): [HTMLCanvasElement, CanvasRenderingContext2D]
 
 function finalizeTexture(
   canvas: HTMLCanvasElement,
-  anisotropy: number,
+  _anisotropy: number,
   repeatX = 1,
   repeatY = 1,
 ): THREE.CanvasTexture {
@@ -20,7 +20,7 @@ function finalizeTexture(
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeatX, repeatY);
-  tex.anisotropy = Math.min(8, Math.max(2, anisotropy));
+  tex.anisotropy = 1;
   tex.magFilter = THREE.LinearFilter;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.needsUpdate = true;
@@ -375,6 +375,7 @@ export function createProceduralTextures(
   shCtx.fillRect(0, 0, 64, 64);
   const contactShadow = new THREE.CanvasTexture(shC);
   contactShadow.colorSpace = THREE.SRGBColorSpace;
+  contactShadow.anisotropy = 1;
   contactShadow.needsUpdate = true;
 
   const allTextures: THREE.CanvasTexture[] = [
@@ -400,29 +401,14 @@ export function createProceduralTextures(
   ];
 
   let appliedLevel: TextureQuality | null = null;
-  let lastMaxAniso = Math.max(1, maxAnisotropy);
-  const applyQuality = (level: TextureQuality, maxAniso?: number) => {
-    const resolvedMaxAniso =
-      typeof maxAniso === 'number' && maxAniso > 0
-        ? Math.max(1, maxAniso)
-        : lastMaxAniso;
-    if (appliedLevel === level && resolvedMaxAniso === lastMaxAniso) return;
+  const applyQuality = (level: TextureQuality, _maxAniso?: number) => {
+    if (appliedLevel === level) return;
     appliedLevel = level;
-    lastMaxAniso = resolvedMaxAniso;
-    const cap = lastMaxAniso;
-    const targetAniso =
-      level === 'low'
-        ? Math.min(2, cap)
-        : level === 'medium'
-          ? Math.min(4, cap)
-          : level === 'high'
-            ? Math.min(8, cap)
-            : Math.min(16, cap);
     const targetMinFilter = THREE.LinearMipmapLinearFilter;
 
     for (let i = 0; i < allTextures.length; i++) {
       const t = allTextures[i];
-      t.anisotropy = targetAniso;
+      t.anisotropy = 1;
       t.minFilter = targetMinFilter;
       t.magFilter = THREE.LinearFilter;
       t.needsUpdate = true;

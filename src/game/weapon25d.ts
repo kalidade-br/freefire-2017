@@ -487,7 +487,7 @@ interface CachedWeaponAssets {
   rightPlaneGeo: THREE.BufferGeometry;
   leftPlaneGeo: THREE.BufferGeometry;
   coreGeo: THREE.BufferGeometry;
-  planeMat: THREE.MeshStandardMaterial;
+  planeMat: THREE.MeshLambertMaterial;
   barrelParts: Array<{
     geo: THREE.BufferGeometry;
     mat: THREE.Material;
@@ -501,29 +501,21 @@ interface CachedWeaponAssets {
   }>;
 }
 
-const DARK_CORE_MAT = new THREE.MeshStandardMaterial({
+const DARK_CORE_MAT = new THREE.MeshLambertMaterial({
   color: 0x262b34,
-  roughness: 0.62,
-  metalness: 0.36,
 });
-const GUN_METAL_MAT = new THREE.MeshStandardMaterial({
+const GUN_METAL_MAT = new THREE.MeshLambertMaterial({
   color: 0x454f5e,
-  roughness: 0.34,
-  metalness: 0.78,
 });
-const SIGHT_ACCENT_MAT = new THREE.MeshStandardMaterial({
+const SIGHT_ACCENT_MAT = new THREE.MeshLambertMaterial({
   color: 0xef4444,
   emissive: 0x7f1d1d,
   emissiveIntensity: 0.45,
-  roughness: 0.3,
-  metalness: 0.4,
 });
-const LENS_BLUE_MAT = new THREE.MeshStandardMaterial({
+const LENS_BLUE_MAT = new THREE.MeshLambertMaterial({
   color: 0x38bdf8,
   emissive: 0x0284c7,
   emissiveIntensity: 0.4,
-  roughness: 0.15,
-  metalness: 0.9,
 });
 
 interface WeaponPalette {
@@ -779,17 +771,15 @@ function getOrCreateCachedWeaponAssets(weaponId: WeaponId): CachedWeaponAssets {
   );
 
   const fallbackTex = createFallbackWeaponTexture(weaponId);
-  const planeMat = new THREE.MeshStandardMaterial({
+  fallbackTex.anisotropy = 1;
+  const planeMat = new THREE.MeshLambertMaterial({
     color: 0xffffff,
     map: fallbackTex,
-    emissiveMap: fallbackTex,
-    emissive: new THREE.Color(0xffffff),
-    emissiveIntensity: 0.34,
+    emissive: new THREE.Color(0x282828),
+    emissiveIntensity: 1.0,
     alphaTest: 0.35,
     transparent: false,
     side: THREE.DoubleSide,
-    roughness: 0.44,
-    metalness: 0.14,
   });
 
   if (typeof window !== 'undefined' && typeof Image !== 'undefined') {
@@ -811,14 +801,9 @@ function getOrCreateCachedWeaponAssets(weaponId: WeaponId): CachedWeaponAssets {
         tex.generateMipmaps = true;
         tex.minFilter = THREE.LinearMipmapLinearFilter;
         tex.magFilter = THREE.LinearFilter;
-        const isMobile =
-          typeof navigator !== 'undefined' &&
-          (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
-            (navigator.maxTouchPoints ?? 0) > 0);
-        tex.anisotropy = isMobile ? 1 : 2;
+        tex.anisotropy = 1;
         tex.needsUpdate = true;
         planeMat.map = tex;
-        planeMat.emissiveMap = tex;
         planeMat.needsUpdate = true;
         fallbackTex.dispose();
       };

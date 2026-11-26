@@ -1078,6 +1078,8 @@ export interface HudSnapshot {
   killFeed: KillFeedEntry[];
   combatIconPopup: CombatIconPopup | null;
   fps: number;
+  drawCalls: number;
+  triangles: number;
   pointerLocked: boolean;
   mouseSuspended: boolean;
   mouseResetNotice: boolean;

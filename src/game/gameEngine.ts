@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { preloadAdamAssets } from './adamAssets';
 import { BERMUDA_GLB_WATER_Y, preloadExternalWorldAssets } from './externalAssets';
 import { soundEngine } from './audio';
@@ -73,7 +72,6 @@ import {
 } from './types';
 import {
   defaultResolutionForQuality,
-  defaultShadowForQuality,
   defaultTextureForQuality,
   isMobileHardware,
 } from './storage';
@@ -374,6 +372,16 @@ interface BulletTracer {
   active: boolean;
 }
 
+interface BulletImpactVfx {
+  mesh: THREE.Mesh;
+  vx: number;
+  vy: number;
+  vz: number;
+  life: number;
+  maxLife: number;
+  active: boolean;
+}
+
 interface RemoteHumanEntity {
   accountId: number;
   publicId: string;
@@ -386,6 +394,7 @@ interface RemoteHumanEntity {
   isTeamLeader: boolean;
   rig: CharacterRig;
   animator: CharacterAnimator;
+  animAccum: number;
   hitMeshes: THREE.Mesh[];
   targetPos: THREE.Vector3;
   targetYaw: number;
@@ -421,7 +430,6 @@ export class BattleRoyaleEngine {
   private isSoftwareGl: boolean;
   private contextLost = false;
   private textures: ProceduralTextureSet;
-  private envMap: THREE.Texture;
 
   private lobbyScene: LobbySceneHandle;
   private world: WorldHandle;
@@ -441,6 +449,18 @@ export class BattleRoyaleEngine {
     color: 0xffe27a,
     transparent: true,
     opacity: 0.9,
+  });
+  private impactPool: BulletImpactVfx[] = [];
+  private impactGeo = new THREE.BoxGeometry(0.11, 0.11, 0.11);
+  private impactWallMat = new THREE.MeshBasicMaterial({
+    color: 0xfde047,
+    transparent: true,
+    opacity: 0.9,
+  });
+  private impactHitMat = new THREE.MeshBasicMaterial({
+    color: 0xff6b2b,
+    transparent: true,
+    opacity: 0.95,
   });
   private solidObstaclesNoTerrain: THREE.Object3D[] = [];
   private solidObstaclesActive: THREE.Object3D[] = [];
@@ -489,10 +509,8 @@ export class BattleRoyaleEngine {
   });
   private grenadeTargetMesh: THREE.Mesh;
   private grenadeProjGeo = new THREE.SphereGeometry(0.14, 10, 8);
-  private grenadeProjMat = new THREE.MeshStandardMaterial({
+  private grenadeProjMat = new THREE.MeshLambertMaterial({
     color: 0x4d7c0f,
-    roughness: 0.45,
-    metalness: 0.4,
     emissive: 0x3f6212,
     emissiveIntensity: 0.35,
   });
@@ -516,21 +534,16 @@ export class BattleRoyaleEngine {
   private airDropCordGeo = new THREE.CylinderGeometry(0.025, 0.025, 2.8, 5);
   private airDropBeamGeo = new THREE.CylinderGeometry(0.45, 0.78, 165, 12, 1, true);
   private airDropRingGeo = new THREE.RingGeometry(1.15, 1.58, 22);
-  private airDropCrateMat = new THREE.MeshStandardMaterial({
+  private airDropCrateMat = new THREE.MeshLambertMaterial({
     color: 0x3f4739,
-    roughness: 0.45,
-    metalness: 0.52,
   });
-  private airDropStripeMat = new THREE.MeshStandardMaterial({
+  private airDropStripeMat = new THREE.MeshLambertMaterial({
     color: 0xf59e0b,
     emissive: 0xd97706,
     emissiveIntensity: 0.25,
-    roughness: 0.35,
-    metalness: 0.3,
   });
-  private airDropChuteMat = new THREE.MeshStandardMaterial({
+  private airDropChuteMat = new THREE.MeshLambertMaterial({
     color: 0xd97706,
-    roughness: 0.68,
     side: THREE.DoubleSide,
   });
   private airDropCordMat = new THREE.MeshBasicMaterial({ color: 0xe5e7eb });
@@ -814,6 +827,14 @@ export class BattleRoyaleEngine {
   private fpsAccumTime = 0;
   private fpsFrames = 0;
   private currentFps = 60;
+  private lastDrawCalls = 0;
+  private lastTriangles = 0;
+  private basePixelRatio = 1.0;
+  private currentPixelRatio = 1.0;
+  private adaptivePixelScale = 1.0;
+  private adaptiveDrawDistFactor = 1.0;
+  private highFpsStreak = 0;
+  private simFrameIndex = 0;
   private currentCharConfig: CharacterConfig;
 
   constructor(
@@ -833,32 +854,27 @@ export class BattleRoyaleEngine {
     this.onBackpackRequest = onBackpackRequest;
     this.onOpenShopRequest = onOpenShopRequest;
 
-    // 1. Create a single WebGLRenderer with progressive fallbacks (never trigger WEBGL_lose_context on a probe!)
+    // 1. Create a single WebGLRenderer tuned for mobile FF 2017 performance
     const { renderer, isSoftwareGl } = this.createSafeRenderer(initialSettings);
     this.renderer = renderer;
     this.isSoftwareGl = isSoftwareGl;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMapping = THREE.NoToneMapping;
+    this.renderer.shadowMap.enabled = false;
     this.applyQualitySettings(initialSettings);
     this.renderer.setSize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
     this.renderer.domElement.addEventListener('webglcontextlost', this.onWebGLContextLost);
     this.renderer.domElement.addEventListener('webglcontextrestored', this.onWebGLContextRestored);
     container.appendChild(this.renderer.domElement);
 
-    // 3. Studio IBL environment
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.envMap = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    pmrem.dispose();
-
-    // 4. Procedural textures & scenes
-    const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
+    // 2. Procedural textures (1x anisotropy for mobile speed) & scenes (zero PBR envMap)
+    const maxAniso = 1;
     this.textures = createProceduralTextures(maxAniso);
     this.glooSkin = initialChar.glooSkin === 'ffwc' ? 'ffwc' : 'classic';
     this.glooAssets = createGlooVariantAssets(maxAniso);
     preloadAllWeaponTextures();
 
-    this.lobbyScene = createLobbyScene(this.textures, this.envMap);
+    this.lobbyScene = createLobbyScene(this.textures, null);
     this.lobbyRig = createCharacterRig(
       initialChar,
       this.textures.camoParachute,
@@ -868,7 +884,7 @@ export class BattleRoyaleEngine {
     this.lobbyRig.setBackWeapons(null, null);
     this.lobbyScene.characterAnchor.add(this.lobbyRig.root);
 
-    this.world = createIslandWorld(this.textures, this.envMap);
+    this.world = createIslandWorld(this.textures, null);
     this.applyQualitySettings(initialSettings);
     for (let i = 0; i < this.world.targets.length; i++) {
       this.targetById.set(this.world.targets[i].id, this.world.targets[i]);
@@ -877,9 +893,19 @@ export class BattleRoyaleEngine {
     this.rebuildSolidObstaclesNoTerrain();
     for (let i = 0; i < 16; i++) {
       const mesh = new THREE.Mesh(this.tracerGeo, this.tracerMat);
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
       mesh.visible = false;
       this.world.scene.add(mesh);
       this.tracerPool.push({ mesh, life: 0, active: false });
+    }
+    for (let i = 0; i < 24; i++) {
+      const mesh = new THREE.Mesh(this.impactGeo, this.impactWallMat);
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.visible = false;
+      this.world.scene.add(mesh);
+      this.impactPool.push({ mesh, vx: 0, vy: 0, vz: 0, life: 0, maxLife: 0.22, active: false });
     }
 
     // Tactical Gloo Wall preview + Grenade trajectory line + projectile & explosion pools
@@ -964,28 +990,31 @@ export class BattleRoyaleEngine {
     this.startLoop();
   }
 
-  private createSafeRenderer(initialSettings: GameSettings): {
+  private createSafeRenderer(_initialSettings: GameSettings): {
     renderer: THREE.WebGLRenderer;
     isSoftwareGl: boolean;
   } {
-    const mobile = isMobileHardware();
     const attempts: THREE.WebGLRendererParameters[] = [
       {
-        antialias:
-          !mobile &&
-          (initialSettings.quality === 'high' || (initialSettings.resolutionScale ?? 85) >= 85),
+        antialias: false,
         powerPreference: 'high-performance',
+        precision: 'mediump',
+        stencil: false,
         alpha: true,
       },
       {
         antialias: false,
         powerPreference: 'default',
+        precision: 'mediump',
+        stencil: false,
         alpha: true,
         failIfMajorPerformanceCaveat: false,
       },
       {
         antialias: false,
         powerPreference: 'low-power',
+        precision: 'mediump',
+        stencil: false,
         alpha: true,
         failIfMajorPerformanceCaveat: false,
       },
@@ -1124,9 +1153,6 @@ export class BattleRoyaleEngine {
 
     const texLevel =
       settings.textureQuality ?? defaultTextureForQuality(settings.quality);
-    const shadowLevel = this.isSoftwareGl
-      ? 'off'
-      : (settings.shadowQuality ?? defaultShadowForQuality(settings.quality));
 
     const mobile = isMobileHardware();
     const resPct = THREE.MathUtils.clamp(
@@ -1138,52 +1164,30 @@ export class BattleRoyaleEngine {
     const maxScale = this.isSoftwareGl
       ? 1.0
       : mobile
-        ? Math.min(2.5, Math.max(dpr * 1.15, 1.85))
-        : Math.min(2.6, Math.max(dpr * 1.5, 2.25));
-    const scale = Math.max(0.025, (resPct / 100) * maxScale);
-    const prevShadowEnabled = this.renderer.shadowMap.enabled;
-    const prevShadowType = this.renderer.shadowMap.type;
-    const nextShadowEnabled = shadowLevel !== 'off';
-    const nextShadowType =
-      shadowLevel === 'high' || shadowLevel === 'ultra'
-        ? THREE.PCFSoftShadowMap
-        : THREE.PCFShadowMap;
+        ? 1.0
+        : Math.min(1.5, Math.max(dpr, 1.0));
+    const scale = Math.max(0.5, Math.min(mobile ? 1.0 : 1.5, (resPct / 100) * maxScale));
+    this.basePixelRatio = scale;
+    this.adaptivePixelScale = 1.0;
+    this.adaptiveDrawDistFactor = 1.0;
+    this.highFpsStreak = 0;
+    this.currentPixelRatio = scale;
 
     this.renderer.setPixelRatio(scale);
-    this.renderer.domElement.style.imageRendering = resPct < 35 ? 'pixelated' : 'auto';
+    this.renderer.domElement.style.imageRendering = scale < 0.72 ? 'pixelated' : 'auto';
     if (this.lobbyScene && this.world) {
       this.handleResize();
     }
-    this.renderer.shadowMap.enabled = nextShadowEnabled;
-    this.renderer.shadowMap.type = nextShadowType;
-    if (nextShadowEnabled) {
-      this.renderer.shadowMap.needsUpdate = true;
-    }
-    this.renderer.toneMappingExposure =
-      settings.quality === 'low' ? 1.12 : settings.quality === 'high' ? 1.2 : 1.15;
+    this.renderer.shadowMap.enabled = false;
+    this.renderer.toneMapping = THREE.NoToneMapping;
 
-    const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
+    const maxAniso = 1;
     if (this.textures) {
       this.textures.applyQuality(texLevel, maxAniso);
     }
     if (this.world) {
-      this.world.applyQuality(settings.quality, this.isSoftwareGl, texLevel, shadowLevel, maxAniso);
-      this.world.camera.far =
-        settings.quality === 'low' ? 175 : settings.quality === 'high' ? 285 : 230;
-      this.world.camera.updateProjectionMatrix();
-      if (prevShadowEnabled !== nextShadowEnabled || prevShadowType !== nextShadowType) {
-        this.world.scene.traverse((obj) => {
-          const mat = (obj as THREE.Mesh).material;
-          if (!mat) return;
-          if (Array.isArray(mat)) {
-            mat.forEach((m) => {
-              m.needsUpdate = true;
-            });
-          } else {
-            mat.needsUpdate = true;
-          }
-        });
-      }
+      this.world.applyQuality(settings.quality, this.isSoftwareGl, texLevel, 'off', maxAniso);
+      this.world.setAdaptiveDrawDistance(this.adaptiveDrawDistFactor);
     }
   }
 
@@ -1230,7 +1234,7 @@ export class BattleRoyaleEngine {
     this.world.scene.add(this.playerRig.root);
     this.syncPlayerWeaponAndBackVisuals();
 
-    upgradeBotsToAdam(this.world.targets, this.textures.camoParachute);
+    upgradeBotsToAdam(this.world.targets, this.textures.camoParachute, this.textures.contactShadow);
   }
 
   public setLobbySquadMembers(
@@ -1714,6 +1718,7 @@ export class BattleRoyaleEngine {
       isTeamLeader: Boolean(slot.isTeamLeader),
       rig,
       animator: new CharacterAnimator(),
+      animAccum: 0,
       hitMeshes: [chestHit, headHit],
       targetPos: new THREE.Vector3(spawnX, spawnY, spawnZ),
       targetYaw: isGlad ? (rIsNorth ? 0 : Math.PI) : 0,
@@ -2831,40 +2836,48 @@ export class BattleRoyaleEngine {
         hasRemoteWeapon && !st.isHealing && !st.isReviving;
 
       const remoteDef = st.weaponId ? WEAPONS[st.weaponId] : null;
-      entity.animator.update(entity.rig, {
-        dt,
-        speed: moveSpeed,
-        stance: st.stance,
-        isGrounded: st.isGrounded ?? (st.flightPhase === 'landed' || st.flightPhase === 'waiting'),
-        isSprinting: st.isSprinting,
-        isAiming: st.isAiming,
-        isFiring: Boolean(st.isFiring),
-        isReloading: Boolean(st.isReloading),
-        isHealing: Boolean(st.isHealing),
-        isReviving: Boolean(st.isReviving),
-        isVaulting: Boolean(st.isVaulting),
-        vaultProgress: st.vaultProgress ?? 0,
-        isLobby: false,
-        isSkydiving: st.flightPhase === 'dropping',
-        isParachuting: st.flightPhase === 'parachute',
-        isDead: st.eliminated,
-        isDowned: st.isDowned,
-        isDriving: Boolean(st.activeVehicleId),
-        isSwimming: st.isSwimming,
-        isOnSurfboard: st.isOnSurfboard,
-        hasWeapon: hasRemoteWeapon,
-        hasMoveInput: moveSpeed > 0.35,
-        weaponCategory: hasRemoteWeapon && remoteDef ? remoteDef.category : null,
-        pitchRad: st.pitch,
-        turnDeltaRad,
-        moveLocalX,
-        moveLocalZ,
-      });
-
       const isSpectatedHuman =
         this.isSpectating &&
         this.spectateTargetRef?.kind === 'human' &&
         this.spectateTargetRef.accountId === entity.accountId;
+      const rDx = prevPos.x - this.pos.x;
+      const rDz = prevPos.z - this.pos.z;
+      const rDistSq = rDx * rDx + rDz * rDz;
+      const rAnimStride = isSpectatedHuman || rDistSq <= 28 * 28 ? 1 : rDistSq <= 55 * 55 ? 2 : 3;
+      entity.animAccum += dt;
+      if (rAnimStride === 1 || (this.simFrameIndex + entity.accountId) % rAnimStride === 0) {
+        const animDt = entity.animAccum;
+        entity.animAccum = 0;
+        entity.animator.update(entity.rig, {
+          dt: animDt,
+          speed: moveSpeed,
+          stance: st.stance,
+          isGrounded: st.isGrounded ?? (st.flightPhase === 'landed' || st.flightPhase === 'waiting'),
+          isSprinting: st.isSprinting,
+          isAiming: st.isAiming,
+          isFiring: Boolean(st.isFiring),
+          isReloading: Boolean(st.isReloading),
+          isHealing: Boolean(st.isHealing),
+          isReviving: Boolean(st.isReviving),
+          isVaulting: Boolean(st.isVaulting),
+          vaultProgress: st.vaultProgress ?? 0,
+          isLobby: false,
+          isSkydiving: st.flightPhase === 'dropping',
+          isParachuting: st.flightPhase === 'parachute',
+          isDead: st.eliminated,
+          isDowned: st.isDowned,
+          isDriving: Boolean(st.activeVehicleId),
+          isSwimming: st.isSwimming,
+          isOnSurfboard: st.isOnSurfboard,
+          hasWeapon: hasRemoteWeapon,
+          hasMoveInput: moveSpeed > 0.35,
+          weaponCategory: hasRemoteWeapon && remoteDef ? remoteDef.category : null,
+          pitchRad: st.pitch,
+          turnDeltaRad,
+          moveLocalX,
+          moveLocalZ,
+        });
+      }
       const isGroundRemote =
         state === GameState.PLAYING &&
         !st.eliminated &&
@@ -5008,10 +5021,59 @@ export class BattleRoyaleEngine {
 
       this.fpsAccumTime += rawDt;
       this.fpsFrames++;
-      if (this.fpsAccumTime >= 0.4) {
+      if (this.fpsAccumTime >= 0.5) {
         this.currentFps = Math.round(this.fpsFrames / this.fpsAccumTime);
         this.fpsAccumTime = 0;
         this.fpsFrames = 0;
+
+        // Dynamic mobile resolution & draw distance scaling to lock ~60 FPS
+        if (!this.isSoftwareGl && this.world) {
+          const mobile = isMobileHardware();
+          const maxPr = mobile ? 1.0 : 1.5;
+          if (this.currentFps < 45) {
+            this.highFpsStreak = 0;
+            const prevScale = this.adaptivePixelScale;
+            const prevDist = this.adaptiveDrawDistFactor;
+            this.adaptivePixelScale = Math.max(0.65, this.adaptivePixelScale - 0.1);
+            this.adaptiveDrawDistFactor = Math.max(0.58, this.adaptiveDrawDistFactor - 0.1);
+            const nextPr = THREE.MathUtils.clamp(
+              this.basePixelRatio * this.adaptivePixelScale,
+              0.65,
+              maxPr,
+            );
+            if (Math.abs(nextPr - this.currentPixelRatio) > 0.02 || Math.abs(prevScale - this.adaptivePixelScale) > 0.01) {
+              this.currentPixelRatio = nextPr;
+              this.renderer.setPixelRatio(nextPr);
+            }
+            if (Math.abs(prevDist - this.adaptiveDrawDistFactor) > 0.01) {
+              this.world.setAdaptiveDrawDistance(this.adaptiveDrawDistFactor);
+            }
+          } else if (this.currentFps >= 57) {
+            this.highFpsStreak++;
+            if (
+              this.highFpsStreak >= 4 &&
+              (this.adaptivePixelScale < 1.0 || this.adaptiveDrawDistFactor < 1.0)
+            ) {
+              const prevDist = this.adaptiveDrawDistFactor;
+              this.adaptivePixelScale = Math.min(1.0, this.adaptivePixelScale + 0.05);
+              this.adaptiveDrawDistFactor = Math.min(1.0, this.adaptiveDrawDistFactor + 0.05);
+              const nextPr = THREE.MathUtils.clamp(
+                this.basePixelRatio * this.adaptivePixelScale,
+                0.65,
+                maxPr,
+              );
+              if (Math.abs(nextPr - this.currentPixelRatio) > 0.02) {
+                this.currentPixelRatio = nextPr;
+                this.renderer.setPixelRatio(nextPr);
+              }
+              if (Math.abs(prevDist - this.adaptiveDrawDistFactor) > 0.01) {
+                this.world.setAdaptiveDrawDistance(this.adaptiveDrawDistFactor);
+              }
+            }
+          } else {
+            this.highFpsStreak = 0;
+          }
+        }
       }
 
       this.updateSimulation(dt);
@@ -5056,6 +5118,7 @@ export class BattleRoyaleEngine {
   }
 
   private updateSimulation(dt: number): void {
+    this.simFrameIndex = (this.simFrameIndex + 1) & 0x3fffffff;
     const state = this.stateMachine.getState();
 
     // Update continuous flight / wind audio loop
@@ -5181,6 +5244,7 @@ export class BattleRoyaleEngine {
     this.updateThrownGrenades(dt);
     this.updateExplosionVfx(dt);
     this.updateTracers(dt);
+    this.updateImpacts(dt);
     this.hitmarkerTimer = Math.max(0, this.hitmarkerTimer - dt);
     this.headshotFlashTimer = Math.max(0, this.headshotFlashTimer - dt);
     this.damageFlashTimer = Math.max(0, this.damageFlashTimer - dt);
@@ -9004,11 +9068,8 @@ export class BattleRoyaleEngine {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(x, y, z);
     mesh.rotation.y = wallYaw;
-    const shadowLv =
-      this.settings.shadowQuality ?? defaultShadowForQuality(this.settings.quality);
-    const enableShadow = !this.isSoftwareGl && shadowLv !== 'off';
-    mesh.castShadow = enableShadow;
-    mesh.receiveShadow = enableShadow;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
     mesh.userData.glooId = id;
     this.world.scene.add(mesh);
 
@@ -9501,6 +9562,9 @@ export class BattleRoyaleEngine {
         }
       }
 
+      let didHitTargetOrObstacle = false;
+      let hitCharSpark = false;
+
       if (tHit) {
         const glbWallDist = this.raycastActiveGlbWall(
           this.raycaster.ray.origin,
@@ -9514,8 +9578,10 @@ export class BattleRoyaleEngine {
         );
         if (glbWallDist !== null && (wallHits.length === 0 || glbWallDist <= wallHits[0].distance)) {
           endDist = glbWallDist;
+          didHitTargetOrObstacle = true;
         } else if (wallHits.length > 0) {
           endDist = wallHits[0].distance;
+          didHitTargetOrObstacle = true;
           const hitGlooId = wallHits[0].object.userData.glooId as string | undefined;
           const hitVehId = wallHits[0].object.userData.vehicleId as string | undefined;
           if (hitGlooId) {
@@ -9531,6 +9597,8 @@ export class BattleRoyaleEngine {
           }
         } else {
           endDist = tHit.distance;
+          didHitTargetOrObstacle = true;
+          hitCharSpark = true;
           const tId = tHit.object.userData.targetId as string | undefined;
           const remoteAccId = tHit.object.userData.remoteAccountId as number | undefined;
           const isHead = Boolean(tHit.object.userData.isHeadshot);
@@ -9624,8 +9692,10 @@ export class BattleRoyaleEngine {
         );
         if (glbWallDist !== null && (wallHits.length === 0 || glbWallDist <= wallHits[0].distance)) {
           endDist = glbWallDist;
+          didHitTargetOrObstacle = true;
         } else if (wallHits.length > 0) {
           endDist = wallHits[0].distance;
+          didHitTargetOrObstacle = true;
           const hitGlooId = wallHits[0].object.userData.glooId as string | undefined;
           const hitVehId = wallHits[0].object.userData.vehicleId as string | undefined;
           if (hitGlooId) {
@@ -9639,14 +9709,19 @@ export class BattleRoyaleEngine {
           ) {
             this.detonateExplosiveBarrel(wallHits[0].instanceId);
           }
+        } else if (terrainDist < effectiveRange * 0.85) {
+          didHitTargetOrObstacle = true;
         }
       }
 
-      // Spawn pooled tracer from weapon muzzle toward ray point
+      // Spawn pooled tracer & pooled impact spark from weapon muzzle toward ray point
       this.playerRig.muzzleFlash.getWorldPosition(_rayOrigin);
       _rayDir.copy(this.raycaster.ray.direction).normalize();
       _v2.copy(cam.position).addScaledVector(_rayDir, endDist);
       this.spawnTracer(_rayOrigin, _v2);
+      if (didHitTargetOrObstacle && p < 2) {
+        this.spawnImpact(_v2.x, _v2.y, _v2.z, hitCharSpark);
+      }
       if (this.onlineRoomId && p === 0) {
         this.queueOrSendRoomAction({
           type: 'shoot',
@@ -10979,33 +11054,42 @@ export class BattleRoyaleEngine {
         const moveLocalX = moveDist > 0.002 ? (dxMove * bRightX + dzMove * bRightZ) / moveDist : 0;
         const moveLocalZ = moveDist > 0.002 ? (dxMove * bFwdX + dzMove * bFwdZ) / moveDist : 1;
 
-        b.animator.update(b.rig, {
-          dt,
-          speed: isDying ? 0 : spd,
-          stance: 'stand',
-          isGrounded: b.airState === 'ground',
-          isSprinting,
-          isAiming,
-          isFiring,
-          isReloading,
-          isHealing,
-          isReviving,
-          isDriving: false,
-          isLobby: false,
-          isSkydiving: b.airState === 'skydiving',
-          isParachuting: b.airState === 'parachuting',
-          isDead: isDying,
-          isDowned: b.isDowned && !isDying,
-          isSwimming: inWater && b.airState === 'ground',
-          isOnSurfboard: false,
-          hasWeapon,
-          hasMoveInput: !isDying && spd > 0.35,
-          weaponCategory: wCat,
-          pitchRad: 0,
-          turnDeltaRad,
-          moveLocalX,
-          moveLocalZ,
-        });
+        const bDxCam = b.group.position.x - this.pos.x;
+        const bDzCam = b.group.position.z - this.pos.z;
+        const bDistSq = bDxCam * bDxCam + bDzCam * bDzCam;
+        const bAnimStride = bDistSq <= 26 * 26 ? 1 : bDistSq <= 55 * 55 ? 2 : 3;
+        b.animAccum = (b.animAccum ?? 0) + dt;
+        if (bAnimStride === 1 || (this.simFrameIndex + i) % bAnimStride === 0) {
+          const animDt = b.animAccum;
+          b.animAccum = 0;
+          b.animator.update(b.rig, {
+            dt: animDt,
+            speed: isDying ? 0 : spd,
+            stance: 'stand',
+            isGrounded: b.airState === 'ground',
+            isSprinting,
+            isAiming,
+            isFiring,
+            isReloading,
+            isHealing,
+            isReviving,
+            isDriving: false,
+            isLobby: false,
+            isSkydiving: b.airState === 'skydiving',
+            isParachuting: b.airState === 'parachuting',
+            isDead: isDying,
+            isDowned: b.isDowned && !isDying,
+            isSwimming: inWater && b.airState === 'ground',
+            isOnSurfboard: false,
+            hasWeapon,
+            hasMoveInput: !isDying && spd > 0.35,
+            weaponCategory: wCat,
+            pitchRad: 0,
+            turnDeltaRad,
+            moveLocalX,
+            moveLocalZ,
+          });
+        }
       }
       return;
     }
@@ -12299,9 +12383,11 @@ export class BattleRoyaleEngine {
             : bot.moveSpeed;
         const stepDist = botActualSpeed * dt;
 
-        // Multi-ray OBB obstacle avoidance (keep forward line while mid-jump/vaulting over obstacle)
+        // Multi-ray OBB obstacle avoidance (throttled for distant bots on low-end mobile CPUs)
         let hitSill = false;
-        if (bot.vaultTimer <= 0 && bot.vy === 0) {
+        const canRunSteer =
+          botCamDistSq <= 32 * 32 || (this.simFrameIndex + i) % 2 === 0;
+        if (bot.vaultTimer <= 0 && bot.vy === 0 && canRunSteer) {
           hitSill = this.steerBotDirection(
             bot,
             bx,
@@ -12383,10 +12469,17 @@ export class BattleRoyaleEngine {
           bot.group.position.z = nz;
         }
 
-        // Exact same 2-pass OBB wall/prop/vehicle/gloo collision sliding & floor platforms as the player!
+        // OBB wall/prop/vehicle/gloo collision sliding (2-pass near player, single/throttled pass when distant)
         const ignoreSill = bot.vaultTimer > 0;
-        const push1 = this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, ignoreSill);
-        const push2 = this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, ignoreSill);
+        const farColSkip =
+          !bot.isAlly && !isSpectatedBot && botCamDistSq > 42 * 42 && (this.simFrameIndex + i) % 2 !== 0;
+        const push1 = farColSkip
+          ? 0
+          : this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, ignoreSill);
+        const push2 =
+          farColSkip || (!bot.isAlly && !isSpectatedBot && botCamDistSq > 28 * 28)
+            ? 0
+            : this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, ignoreSill);
         bot.group.position.x = THREE.MathUtils.clamp(bot.group.position.x, botBounds.minX, botBounds.maxX);
         bot.group.position.z = THREE.MathUtils.clamp(bot.group.position.z, botBounds.minZ, botBounds.maxZ);
 
@@ -12640,51 +12733,58 @@ export class BattleRoyaleEngine {
           botActualSpeed > 3.9 && !botInWater && !botIsHealing && !botIsReviving;
         const botWeaponCat = WEAPONS[bot.weaponId]?.category ?? null;
         bot.rig.weaponMount.visible = !botInWater && !botIsHealing && !botIsReviving;
-        bot.animAccum = 0;
 
-        const curYaw = bot.group.rotation.y;
-        const prevYaw = bot.netPrevYaw ?? curYaw;
-        let turnDeltaRad = curYaw - prevYaw;
-        while (turnDeltaRad > Math.PI) turnDeltaRad -= Math.PI * 2;
-        while (turnDeltaRad < -Math.PI) turnDeltaRad += Math.PI * 2;
-        bot.netPrevYaw = curYaw;
+        const botAnimStride =
+          isSpectatedBot || botCamDistSq <= 26 * 26 ? 1 : botCamDistSq <= 55 * 55 ? 2 : 3;
+        bot.animAccum = (bot.animAccum ?? 0) + dt;
+        if (botAnimStride === 1 || (this.simFrameIndex + i) % botAnimStride === 0) {
+          const animDt = bot.animAccum;
+          bot.animAccum = 0;
 
-        const bFwdX = Math.sin(curYaw);
-        const bFwdZ = Math.cos(curYaw);
-        const bRightX = -Math.cos(curYaw);
-        const bRightZ = Math.sin(curYaw);
-        const moveLocalX = isMoving && botActualSpeed > 0.25 ? moveDirX * bRightX + moveDirZ * bRightZ : 0;
-        const moveLocalZ = isMoving && botActualSpeed > 0.25 ? moveDirX * bFwdX + moveDirZ * bFwdZ : 1;
+          const curYaw = bot.group.rotation.y;
+          const prevYaw = bot.netPrevYaw ?? curYaw;
+          let turnDeltaRad = curYaw - prevYaw;
+          while (turnDeltaRad > Math.PI) turnDeltaRad -= Math.PI * 2;
+          while (turnDeltaRad < -Math.PI) turnDeltaRad += Math.PI * 2;
+          bot.netPrevYaw = curYaw;
 
-        bot.animator.update(bot.rig, {
-          dt,
-          speed: botActualSpeed,
-          stance: 'stand',
-          isGrounded: botGroundedNow,
-          isSprinting: botIsSprinting,
-          isAiming: botIsAiming,
-          isFiring:
-            botIsAiming &&
-            (bot.fireCooldown > 0.03 || this.elapsed - (bot.lastShotAtElapsed ?? -99) < 0.16),
-          isReloading: botIsReloading,
-          isHealing: botIsHealing,
-          isReviving: botIsReviving,
-          isDriving: false,
-          isSwimming: botInWater,
-          isOnSurfboard: false,
-          isLobby: false,
-          isSkydiving: false,
-          isParachuting: false,
-          isDead: false,
-          isDowned: false,
-          hasWeapon: !botInWater,
-          hasMoveInput: botActualSpeed > 0.35,
-          weaponCategory: botInWater ? null : botWeaponCat,
-          pitchRad: 0,
-          turnDeltaRad,
-          moveLocalX,
-          moveLocalZ,
-        });
+          const bFwdX = Math.sin(curYaw);
+          const bFwdZ = Math.cos(curYaw);
+          const bRightX = -Math.cos(curYaw);
+          const bRightZ = Math.sin(curYaw);
+          const moveLocalX = isMoving && botActualSpeed > 0.25 ? moveDirX * bRightX + moveDirZ * bRightZ : 0;
+          const moveLocalZ = isMoving && botActualSpeed > 0.25 ? moveDirX * bFwdX + moveDirZ * bFwdZ : 1;
+
+          bot.animator.update(bot.rig, {
+            dt: animDt,
+            speed: botActualSpeed,
+            stance: 'stand',
+            isGrounded: botGroundedNow,
+            isSprinting: botIsSprinting,
+            isAiming: botIsAiming,
+            isFiring:
+              botIsAiming &&
+              (bot.fireCooldown > 0.03 || this.elapsed - (bot.lastShotAtElapsed ?? -99) < 0.16),
+            isReloading: botIsReloading,
+            isHealing: botIsHealing,
+            isReviving: botIsReviving,
+            isDriving: false,
+            isSwimming: botInWater,
+            isOnSurfboard: false,
+            isLobby: false,
+            isSkydiving: false,
+            isParachuting: false,
+            isDead: false,
+            isDowned: false,
+            hasWeapon: !botInWater,
+            hasMoveInput: botActualSpeed > 0.35,
+            weaponCategory: botInWater ? null : botWeaponCat,
+            pitchRad: 0,
+            turnDeltaRad,
+            moveLocalX,
+            moveLocalZ,
+          });
+        }
       }
 
       if (isPlaying && bot.airState === 'ground' && !bot.isDowned && !bot.eliminated) {
@@ -12742,6 +12842,48 @@ export class BattleRoyaleEngine {
     }
   }
 
+  private spawnImpact(x: number, y: number, z: number, isCharacterHit: boolean): void {
+    for (let s = 0; s < 2; s++) {
+      let slot: BulletImpactVfx | undefined;
+      for (let i = 0; i < this.impactPool.length; i++) {
+        if (!this.impactPool[i].active) {
+          slot = this.impactPool[i];
+          break;
+        }
+      }
+      if (!slot) slot = this.impactPool[0];
+      slot.active = true;
+      slot.maxLife = 0.2;
+      slot.life = slot.maxLife;
+      slot.mesh.material = isCharacterHit ? this.impactHitMat : this.impactWallMat;
+      slot.mesh.position.set(x, y, z);
+      slot.mesh.scale.setScalar(isCharacterHit ? 1.25 : 1.0);
+      slot.vx = (Math.random() - 0.5) * 4.5;
+      slot.vy = 1.2 + Math.random() * 2.8;
+      slot.vz = (Math.random() - 0.5) * 4.5;
+      slot.mesh.visible = true;
+    }
+  }
+
+  private updateImpacts(dt: number): void {
+    for (let i = 0; i < this.impactPool.length; i++) {
+      const imp = this.impactPool[i];
+      if (!imp.active) continue;
+      imp.life -= dt;
+      if (imp.life <= 0) {
+        imp.active = false;
+        imp.mesh.visible = false;
+        continue;
+      }
+      imp.vy -= 14 * dt;
+      imp.mesh.position.x += imp.vx * dt;
+      imp.mesh.position.y += imp.vy * dt;
+      imp.mesh.position.z += imp.vz * dt;
+      const t = imp.life / imp.maxLife;
+      imp.mesh.scale.setScalar(Math.max(0.25, t));
+    }
+  }
+
   private clearAirDrops(): void {
     for (let i = 0; i < this.airDrops.length; i++) {
       const ad = this.airDrops[i];
@@ -12782,11 +12924,8 @@ export class BattleRoyaleEngine {
 
     const crateMesh = new THREE.Mesh(this.airDropCrateGeo, this.airDropCrateMat);
     crateMesh.position.y = 0.675;
-    const airShadowLv =
-      this.settings.shadowQuality ?? defaultShadowForQuality(this.settings.quality);
-    const dropShadow = !this.isSoftwareGl && airShadowLv !== 'off';
-    crateMesh.castShadow = dropShadow;
-    crateMesh.receiveShadow = dropShadow;
+    crateMesh.castShadow = false;
+    crateMesh.receiveShadow = false;
 
     const stripeMesh = new THREE.Mesh(this.airDropStripeGeo, this.airDropStripeMat);
     stripeMesh.position.y = 0.92;
@@ -14557,6 +14696,8 @@ export class BattleRoyaleEngine {
       this.renderer.setClearColor(0x0e1217, 1);
       this.renderer.render(this.world.scene, this.world.camera);
     }
+    this.lastDrawCalls = this.renderer.info.render.calls;
+    this.lastTriangles = this.renderer.info.render.triangles;
   }
 
   private buildHudSnapshot(): HudSnapshot {
@@ -14781,6 +14922,8 @@ export class BattleRoyaleEngine {
       killFeed: this.killFeed.map((k) => ({ ...k })),
       combatIconPopup: this.combatIconPopup ? { ...this.combatIconPopup } : null,
       fps: this.currentFps,
+      drawCalls: this.lastDrawCalls,
+      triangles: this.lastTriangles,
       pointerLocked: this.input.pointerLocked,
       mouseSuspended: this.input.mouseSuspended,
       mouseResetNotice: performance.now() - this.input.mouseResetTimestamp < 1450,
@@ -15253,9 +15396,11 @@ export class BattleRoyaleEngine {
     this.lobbyScene.dispose();
     this.world.dispose();
     this.textures.dispose();
-    this.envMap.dispose();
     this.tracerGeo.dispose();
     this.tracerMat.dispose();
+    this.impactGeo.dispose();
+    this.impactWallMat.dispose();
+    this.impactHitMat.dispose();
     this.glooAssets.dispose();
     this.grenadeLineGeo.dispose();
     this.grenadeLineMat.dispose();

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { autoRigStaticCharacter } from './autoRigCharacter';
+import { optimizeObjectFF2017 } from './materialOptimizer';
 import type { CharacterModelId } from './types';
 
 export type FFModelId = CharacterModelId;
@@ -375,23 +376,8 @@ function buildFFPack(
   rawRotY = -Math.PI / 2,
   runData?: { scene: THREE.Group; clip: THREE.AnimationClip } | null,
 ): FFModelAssetPack {
-  // Normalize meshes: disable frustum culling & preserve clean PBR skin/outfit maps
-  rawScene.traverse((obj) => {
-    const mesh = obj as THREE.Mesh;
-    if (!mesh.isMesh) return;
-    mesh.castShadow = false;
-    mesh.receiveShadow = false;
-    mesh.frustumCulled = false;
-    const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-    if (mat && (mat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
-      const stdMat = mat as THREE.MeshStandardMaterial;
-      stdMat.roughness = Math.max(0.62, stdMat.roughness ?? 0.78);
-      stdMat.metalness = Math.min(0.12, stdMat.metalness ?? 0.04);
-      if (stdMat.map) {
-        stdMat.map.colorSpace = THREE.SRGBColorSpace;
-        stdMat.map.needsUpdate = true;
-      }
-    }
+  optimizeObjectFF2017(rawScene, {
+    minSkinnedCullRadius: 1.65,
   });
 
   // Wrap raw (~0.98m) scene inside +Z-facing upright wrapper (~1.74m)

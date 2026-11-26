@@ -251,6 +251,8 @@ const INITIAL_HUD: HudSnapshot = {
   killFeed: [],
   combatIconPopup: null,
   fps: 60,
+  drawCalls: 0,
+  triangles: 0,
   pointerLocked: false,
   mouseSuspended: false,
   mouseResetNotice: false,
@@ -2061,6 +2063,15 @@ export default function App() {
               Ativar Tela Cheia e Girar
             </button>
           </div>
+        </div>
+      )}
+
+      {gameState !== GameState.BOOT && (
+        <div
+          style={{ textShadow: '0 1px 2px rgba(0,0,0,0.95)' }}
+          className="pointer-events-none fixed top-0.5 left-1.5 z-[35] whitespace-nowrap rounded-none bg-black/35 px-1.5 py-0.5 font-mono text-[10px] font-bold tabular-nums text-white/90"
+        >
+          {hud.fps} FPS | {hud.drawCalls} Calls | {hud.triangles} Tris
         </div>
       )}
     </div>

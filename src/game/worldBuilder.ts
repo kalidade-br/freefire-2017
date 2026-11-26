@@ -26,6 +26,12 @@ import {
 } from './characterBuilder';
 import { ProceduralTextureSet } from './textures';
 import {
+  batchRepeatedMeshesToInstanced,
+  createBlobShadowMesh,
+  ensureSkinnedMeshCullingSphere,
+  optimizeObjectFF2017,
+} from './materialOptimizer';
+import {
   AttachmentKind,
   BrMapId,
   BuildingNavZone,
@@ -44,7 +50,6 @@ import {
   WEAPONS,
   WorldObbCollider,
 } from './types';
-import { isMobileHardware } from './storage';
 
 export interface TargetDummy {
   id: string;
@@ -76,7 +81,7 @@ export interface TargetDummy {
   netTurnDeltaRad?: number;
   netPrevYaw?: number;
   upperAimBones?: Array<{ name: string; bone: THREE.Object3D }>;
-  bodyMat?: THREE.MeshStandardMaterial;
+  bodyMat?: THREE.MeshLambertMaterial;
   torsoGroup?: THREE.Group;
   headMesh?: THREE.Mesh;
   legLPivot?: THREE.Group;
@@ -310,6 +315,7 @@ export interface WorldHandle {
     shadowQuality?: ShadowQuality,
     maxAnisotropy?: number,
   ) => void;
+  setAdaptiveDrawDistance: (factor: number) => void;
   updateDynamicProps: (
     dt: number,
     elapsed: number,
@@ -353,30 +359,24 @@ function createVendingMachineProp(
   group.position.set(x, y, z);
   group.rotation.y = rotY;
 
-  const cabinetMat = new THREE.MeshStandardMaterial({
+  const cabinetMat = new THREE.MeshLambertMaterial({
     color: 0x162231,
-    roughness: 0.45,
-    metalness: 0.55,
   });
-  const trimMat = new THREE.MeshStandardMaterial({
+  const trimMat = new THREE.MeshLambertMaterial({
     color: 0xf59e0b,
-    roughness: 0.35,
-    metalness: 0.4,
     emissive: 0xd97706,
     emissiveIntensity: 0.25,
   });
-  const screenMat = new THREE.MeshStandardMaterial({
+  const screenMat = new THREE.MeshLambertMaterial({
     color: 0x38bdf8,
     emissive: 0x0ea5e9,
     emissiveIntensity: 0.78,
-    roughness: 0.2,
-    metalness: 0.1,
   });
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(1.35, 2.3, 0.95), cabinetMat);
   body.position.y = 1.15;
-  body.castShadow = true;
-  body.receiveShadow = true;
+  body.castShadow = false;
+  body.receiveShadow = false;
   body.userData.cullRoot = group;
 
   const screen = new THREE.Mesh(new THREE.BoxGeometry(0.96, 1.02, 0.08), screenMat);
@@ -435,37 +435,25 @@ function createDrivableVehicle(
   group.add(chassisGroup);
 
   const bodyColor = isSports ? 0x2563eb : 0x4b5336;
-  const bodyMat = new THREE.MeshStandardMaterial({
+  const bodyMat = new THREE.MeshLambertMaterial({
     color: bodyColor,
-    roughness: isSports ? 0.32 : 0.68,
-    metalness: isSports ? 0.58 : 0.25,
   });
-  const accentMat = new THREE.MeshStandardMaterial({
+  const accentMat = new THREE.MeshLambertMaterial({
     color: isSports ? 0x111827 : 0x2b3022,
-    roughness: 0.55,
-    metalness: 0.45,
   });
-  const tireMat = new THREE.MeshStandardMaterial({
+  const tireMat = new THREE.MeshLambertMaterial({
     color: 0x18191d,
-    roughness: 0.88,
-    metalness: 0.08,
   });
-  const rimMat = new THREE.MeshStandardMaterial({
+  const rimMat = new THREE.MeshLambertMaterial({
     color: 0xcbd5e1,
-    roughness: 0.3,
-    metalness: 0.75,
   });
-  const glassMat = new THREE.MeshStandardMaterial({
+  const glassMat = new THREE.MeshLambertMaterial({
     color: 0x7dd3fc,
-    roughness: 0.16,
-    metalness: 0.65,
     transparent: true,
     opacity: 0.72,
   });
-  const headLightMat = new THREE.MeshStandardMaterial({
+  const headLightMat = new THREE.MeshBasicMaterial({
     color: 0xfef08a,
-    emissive: 0xfacc15,
-    emissiveIntensity: 0.6,
   });
 
   const hull = new THREE.Mesh(
@@ -473,8 +461,8 @@ function createDrivableVehicle(
     bodyMat,
   );
   hull.position.y = isSports ? 0.64 : 0.78;
-  hull.castShadow = true;
-  hull.receiveShadow = true;
+  hull.castShadow = false;
+  hull.receiveShadow = false;
   hull.userData.vehicleId = id;
 
   const hood = new THREE.Mesh(
@@ -482,7 +470,7 @@ function createDrivableVehicle(
     bodyMat,
   );
   hood.position.set(0, isSports ? 0.84 : 1.05, isSports ? 1.2 : 1.15);
-  hood.castShadow = true;
+  hood.castShadow = false;
   hood.userData.vehicleId = id;
 
   const cabin = new THREE.Mesh(
@@ -490,7 +478,7 @@ function createDrivableVehicle(
     isSports ? accentMat : bodyMat,
   );
   cabin.position.set(0, isSports ? 1.2 : 1.52, isSports ? -0.35 : -0.52);
-  cabin.castShadow = true;
+  cabin.castShadow = false;
   cabin.userData.vehicleId = id;
 
   const windshield = new THREE.Mesh(
@@ -581,10 +569,8 @@ function createDrivableVehicle(
   // Charred Wreck shown on 0 HP destruction
   const burnedGroup = new THREE.Group();
   burnedGroup.visible = false;
-  const charMat = new THREE.MeshStandardMaterial({
+  const charMat = new THREE.MeshLambertMaterial({
     color: 0x18181b,
-    roughness: 0.95,
-    metalness: 0.15,
   });
   const wreckedHull = new THREE.Mesh(new THREE.BoxGeometry(1.94, 0.72, 3.85), charMat);
   wreckedHull.position.y = 0.45;
@@ -665,6 +651,7 @@ function createBotEntity(
   rotY: number,
   idx: number,
   camoTexture: THREE.Texture,
+  contactShadowTexture: THREE.Texture,
   weaponId: WeaponId,
   vestLevel: 0 | 1 | 2 | 3 = 0,
   helmetLevel: 0 | 1 | 2 | 3 = 0,
@@ -674,18 +661,15 @@ function createBotEntity(
   group.position.set(x, y, z);
   group.rotation.y = rotY;
 
-  const pantsMat = new THREE.MeshStandardMaterial({
+  const pantsMat = new THREE.MeshLambertMaterial({
     color: BOT_PANTS_PALETTE[idx % BOT_PANTS_PALETTE.length],
-    roughness: 0.85,
   });
-  const bodyMat = new THREE.MeshStandardMaterial({
+  const bodyMat = new THREE.MeshLambertMaterial({
     color: BOT_SHIRT_PALETTE[idx % BOT_SHIRT_PALETTE.length],
-    roughness: 0.68,
   });
   const skinColors = [0xd7a27e, 0xc98e6b, 0xe2b291, 0x9b684b];
-  const headMat = new THREE.MeshStandardMaterial({
+  const headMat = new THREE.MeshLambertMaterial({
     color: skinColors[idx % skinColors.length],
-    roughness: 0.58,
   });
 
   const pelvis = new THREE.Group();
@@ -699,7 +683,7 @@ function createBotEntity(
   const chest = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.17, 0.48, 10), bodyMat);
   chest.scale.set(1.06, 1, 0.68);
   chest.position.y = 0.24;
-  chest.castShadow = true;
+  chest.castShadow = false;
   chest.userData.targetId = id;
   torso.add(chest);
 
@@ -710,7 +694,7 @@ function createBotEntity(
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 10), headMat);
   head.scale.set(0.94, 1.06, 0.98);
   head.position.y = 0.18;
-  head.castShadow = true;
+  head.castShadow = false;
   head.userData.targetId = id;
   head.userData.isHeadshot = true;
   headGroup.add(head);
@@ -721,14 +705,14 @@ function createBotEntity(
   pelvis.add(legLPivot);
   const legL = new THREE.Mesh(new THREE.CylinderGeometry(0.078, 0.064, 0.42, 8), pantsMat);
   legL.position.y = -0.21;
-  legL.castShadow = true;
+  legL.castShadow = false;
   legLPivot.add(legL);
   const leftKnee = new THREE.Group();
   leftKnee.position.set(0, -0.42, 0);
   legLPivot.add(leftKnee);
   const shinL = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.046, 0.42, 8), pantsMat);
   shinL.position.y = -0.21;
-  shinL.castShadow = true;
+  shinL.castShadow = false;
   leftKnee.add(shinL);
 
   const legRPivot = new THREE.Group();
@@ -736,21 +720,19 @@ function createBotEntity(
   pelvis.add(legRPivot);
   const legR = new THREE.Mesh(new THREE.CylinderGeometry(0.078, 0.064, 0.42, 8), pantsMat);
   legR.position.y = -0.21;
-  legR.castShadow = true;
+  legR.castShadow = false;
   legRPivot.add(legR);
   const rightKnee = new THREE.Group();
   rightKnee.position.set(0, -0.42, 0);
   legRPivot.add(rightKnee);
   const shinR = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.046, 0.42, 8), pantsMat);
   shinR.position.y = -0.21;
-  shinR.castShadow = true;
+  shinR.castShadow = false;
   rightKnee.add(shinR);
 
   // Vest & Helmet (hidden visuals — compatibility proxies)
-  const vestMat = new THREE.MeshStandardMaterial({
+  const vestMat = new THREE.MeshLambertMaterial({
     color: vestLevel === 3 ? 0x1c1f26 : vestLevel === 2 ? 0x2f3842 : 0x4d5d3d,
-    roughness: 0.55,
-    metalness: vestLevel === 3 ? 0.45 : 0.15,
   });
   const vestMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.18, 0.36, 10), vestMat);
   vestMesh.scale.set(1.06, 1, 0.72);
@@ -758,10 +740,8 @@ function createBotEntity(
   vestMesh.visible = false;
   torso.add(vestMesh);
 
-  const helmMat = new THREE.MeshStandardMaterial({
+  const helmMat = new THREE.MeshLambertMaterial({
     color: helmetLevel === 3 ? 0x181a1f : helmetLevel === 2 ? 0x2c343d : 0x566444,
-    roughness: 0.45,
-    metalness: helmetLevel === 3 ? 0.55 : 0.2,
   });
   const helmetMesh = new THREE.Mesh(
     new THREE.SphereGeometry(0.165, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.58),
@@ -826,9 +806,8 @@ function createBotEntity(
   const parachuteGroup = new THREE.Group();
   const parachuteMesh = new THREE.Mesh(
     new THREE.CylinderGeometry(1.45, 1.7, 1.0, 8, 1, true, 0, Math.PI),
-    new THREE.MeshStandardMaterial({
+    new THREE.MeshLambertMaterial({
       map: camoTexture,
-      roughness: 0.85,
       side: THREE.DoubleSide,
     }),
   );
@@ -845,8 +824,8 @@ function createBotEntity(
   const dummyBackMount2 = new THREE.Group();
   const surfboardGroup = new THREE.Group();
   surfboardGroup.visible = false;
-  const contactShadow = new THREE.Mesh(BOT_SHARED_SHADOW_GEO, BOT_SHARED_SHADOW_MAT);
-  contactShadow.visible = false;
+  const contactShadow = createBlobShadowMesh(contactShadowTexture, 0.56, 0.5);
+  group.add(contactShadow);
 
   const setBandageVisible = (visible: boolean) => {
     bandage.rollGroup.visible = visible;
@@ -1075,32 +1054,30 @@ const BOT_HEAD_PROXY_GEO = new THREE.BoxGeometry(0.36, 0.36, 0.36);
 const BOT_VEST_GEO = new THREE.CylinderGeometry(0.175, 0.155, 0.31, 10);
 const BOT_HELMET_GEO = new THREE.SphereGeometry(0.122, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.58);
 const BOT_PACK_GEO = new THREE.BoxGeometry(0.24, 0.32, 0.14);
-const BOT_PACK_MAT = new THREE.MeshStandardMaterial({
+const BOT_PACK_MAT = new THREE.MeshLambertMaterial({
   color: 0x353b30,
-  roughness: 0.78,
-  metalness: 0.1,
 });
 
 export function upgradeBotsToAdam(
   targets: TargetDummy[],
   camoTexture: THREE.Texture,
+  contactShadowTexture?: THREE.Texture,
 ): void {
   if (!isAdamAssetsLoaded()) return;
 
-  const vestMats: Record<1 | 2 | 3, THREE.MeshStandardMaterial> = {
-    1: new THREE.MeshStandardMaterial({ color: 0x4d5d3d, roughness: 0.55, metalness: 0.15 }),
-    2: new THREE.MeshStandardMaterial({ color: 0x2f3842, roughness: 0.55, metalness: 0.15 }),
-    3: new THREE.MeshStandardMaterial({ color: 0x1c1f26, roughness: 0.55, metalness: 0.45 }),
+  const vestMats: Record<1 | 2 | 3, THREE.MeshLambertMaterial> = {
+    1: new THREE.MeshLambertMaterial({ color: 0x4d5d3d }),
+    2: new THREE.MeshLambertMaterial({ color: 0x2f3842 }),
+    3: new THREE.MeshLambertMaterial({ color: 0x1c1f26 }),
   };
-  const helmMats: Record<1 | 2 | 3, THREE.MeshStandardMaterial> = {
-    1: new THREE.MeshStandardMaterial({ color: 0x566444, roughness: 0.45, metalness: 0.2 }),
-    2: new THREE.MeshStandardMaterial({ color: 0x2c343d, roughness: 0.45, metalness: 0.2 }),
-    3: new THREE.MeshStandardMaterial({ color: 0x181a1f, roughness: 0.45, metalness: 0.55 }),
+  const helmMats: Record<1 | 2 | 3, THREE.MeshLambertMaterial> = {
+    1: new THREE.MeshLambertMaterial({ color: 0x566444 }),
+    2: new THREE.MeshLambertMaterial({ color: 0x2c343d }),
+    3: new THREE.MeshLambertMaterial({ color: 0x181a1f }),
   };
   const sharedParachuteGeo = new THREE.CylinderGeometry(1.45, 1.7, 1.0, 8, 1, true, 0, Math.PI);
-  const sharedParachuteMat = new THREE.MeshStandardMaterial({
+  const sharedParachuteMat = new THREE.MeshLambertMaterial({
     map: camoTexture,
-    roughness: 0.85,
     side: THREE.DoubleSide,
   });
   const armUpVec = new THREE.Vector3(0, 1, 0);
@@ -1130,20 +1107,19 @@ export function upgradeBotsToAdam(
     visualRoot.add(cloned);
     bot.group.add(visualRoot);
 
-    let bodyMat: THREE.MeshStandardMaterial | undefined;
+    let bodyMat: THREE.MeshLambertMaterial | undefined;
     cloned.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.isMesh) return;
-      mesh.castShadow = bot.isAlly;
-      mesh.receiveShadow = bot.isAlly;
-      mesh.frustumCulled = false;
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = true;
+      if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) {
+        ensureSkinnedMeshCullingSphere(mesh as THREE.SkinnedMesh, 1.65);
+      }
       const origMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-      if (origMat && (origMat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
-        const clonedMat = (origMat as THREE.MeshStandardMaterial).clone();
-        clonedMat.roughness = Math.max(0.62, clonedMat.roughness ?? 0.78);
-        clonedMat.metalness = Math.min(0.12, clonedMat.metalness ?? 0.04);
-        mesh.material = clonedMat;
-        if (!bodyMat) bodyMat = clonedMat;
+      if (!bodyMat && origMat && (origMat as THREE.MeshLambertMaterial).isMeshLambertMaterial) {
+        bodyMat = origMat as THREE.MeshLambertMaterial;
       }
     });
 
@@ -1295,8 +1271,14 @@ export function upgradeBotsToAdam(
     const dummyGroup = new THREE.Group();
     const surfboardGroup = new THREE.Group();
     surfboardGroup.visible = false;
-    const contactShadow = new THREE.Mesh(BOT_SHARED_SHADOW_GEO, BOT_SHARED_SHADOW_MAT);
-    contactShadow.visible = false;
+    const contactShadow = contactShadowTexture
+      ? createBlobShadowMesh(contactShadowTexture, 0.56, 0.5)
+      : new THREE.Mesh(BOT_SHARED_SHADOW_GEO, BOT_SHARED_SHADOW_MAT);
+    if (contactShadowTexture) {
+      bot.group.add(contactShadow);
+    } else {
+      contactShadow.visible = false;
+    }
 
     const rig: CharacterRig = {
       isAdam: true,
@@ -1406,20 +1388,14 @@ export function upgradeBotsToAdam(
 
 function createAirplane(): { group: THREE.Group; props: THREE.Mesh[] } {
   const group = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({
+  const bodyMat = new THREE.MeshLambertMaterial({
     color: 0x555d52,
-    roughness: 0.55,
-    metalness: 0.45,
   });
-  const stripeMat = new THREE.MeshStandardMaterial({
+  const stripeMat = new THREE.MeshLambertMaterial({
     color: 0xd19a2a,
-    roughness: 0.5,
-    metalness: 0.2,
   });
-  const propMat = new THREE.MeshStandardMaterial({
+  const propMat = new THREE.MeshLambertMaterial({
     color: 0x1a1c1e,
-    roughness: 0.4,
-    metalness: 0.7,
   });
 
   const fuselage = new THREE.Mesh(
@@ -1427,7 +1403,7 @@ function createAirplane(): { group: THREE.Group; props: THREE.Mesh[] } {
     bodyMat,
   );
   fuselage.rotation.x = Math.PI / 2;
-  fuselage.castShadow = true;
+  fuselage.castShadow = false;
 
   const nose = new THREE.Mesh(new THREE.ConeGeometry(1.9, 3.5, 10), bodyMat);
   nose.rotation.x = Math.PI / 2;
@@ -1435,7 +1411,7 @@ function createAirplane(): { group: THREE.Group; props: THREE.Mesh[] } {
 
   const wing = new THREE.Mesh(new THREE.BoxGeometry(20, 0.45, 3.6), bodyMat);
   wing.position.set(0, 0.9, 1.2);
-  wing.castShadow = true;
+  wing.castShadow = false;
 
   const tailV = new THREE.Mesh(new THREE.BoxGeometry(0.45, 4.2, 2.8), stripeMat);
   tailV.position.set(0, 2.5, -6.8);
@@ -1500,149 +1476,60 @@ function createSkyDome(): THREE.Mesh {
 
 export function createIslandWorld(
   textures: ProceduralTextureSet,
-  envMap: THREE.Texture,
+  _envMap?: THREE.Texture | null,
 ): WorldHandle {
   const scene = new THREE.Scene();
-  const horizonFogColor = new THREE.Color(0xaad6f0);
+  const horizonFogColor = new THREE.Color(0x9bd4f8);
   scene.background = horizonFogColor;
-  const fog = new THREE.Fog(horizonFogColor, 400, 1050);
+  const fog = new THREE.Fog(horizonFogColor, 95, 175);
   scene.fog = fog;
-  scene.environment = envMap;
+  scene.environment = null;
 
   const camera = new THREE.PerspectiveCamera(
     64,
     window.innerWidth / window.innerHeight,
     0.15,
-    1220,
+    205,
   );
 
-  // Distant-Render Texture Blur LOD uniform: preserves normal textures at all distances with soft optical blur
-  const texDistUniform = { value: 64.0 };
-  let currentGlbAniso = 4;
-  const glbTextures = new Set<THREE.Texture>();
-
-  const applyDistanceTextureLod = (
-    mat: THREE.MeshStandardMaterial,
-    _flatRgb?: [number, number, number],
-  ) => {
-    void _flatRgb;
-    mat.onBeforeCompile = (shader) => {
-      shader.uniforms.uTexMaxDist = texDistUniform;
-      shader.fragmentShader = 'uniform float uTexMaxDist;\n' + shader.fragmentShader;
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <map_fragment>',
-        `#ifdef USE_MAP
-          vec4 sampledDiffuseColor = texture2D( map, vMapUv );
-          float texBlurFade = smoothstep(uTexMaxDist * 0.44, uTexMaxDist * 1.15, length(vViewPosition));
-          float mipBias = texBlurFade * 2.25;
-          vec2 blurStep = vec2(0.0055) * texBlurFade;
-          vec4 blurSample = (
-            texture2D( map, vMapUv + vec2( blurStep.x, 0.0), mipBias ) +
-            texture2D( map, vMapUv + vec2(-blurStep.x, 0.0), mipBias ) +
-            texture2D( map, vMapUv + vec2(0.0,  blurStep.y), mipBias ) +
-            texture2D( map, vMapUv + vec2(0.0, -blurStep.y), mipBias )
-          ) * 0.25;
-          #ifdef DECODE_VIDEO_TEXTURE
-            sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
-            blurSample = sRGBTransferEOTF( blurSample );
-          #endif
-          sampledDiffuseColor.rgb = mix(sampledDiffuseColor.rgb, blurSample.rgb, texBlurFade * 0.92);
-          diffuseColor *= sampledDiffuseColor;
-        #endif`,
-      );
-    };
-    mat.customProgramCacheKey = () => 'proc-dist-blur-lod';
-    mat.needsUpdate = true;
-  };
-
-  const patchedGlbMats = new Set<THREE.Material>();
-  const applyGlbDistanceTextureLod = (root: THREE.Object3D) => {
-    root.traverse((node) => {
-      if (!(node as THREE.Mesh).isMesh) return;
-      const mesh = node as THREE.Mesh;
-      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      for (let i = 0; i < mats.length; i++) {
-        const mat = mats[i] as THREE.MeshStandardMaterial | undefined;
-        if (!mat || !mat.map || patchedGlbMats.has(mat)) continue;
-        patchedGlbMats.add(mat);
-        if (mat.map) {
-          glbTextures.add(mat.map);
-          mat.map.generateMipmaps = true;
-          mat.map.minFilter = THREE.LinearMipmapLinearFilter;
-          mat.map.magFilter = THREE.LinearFilter;
-          mat.map.anisotropy = currentGlbAniso;
-          mat.map.needsUpdate = true;
-        }
-        mat.onBeforeCompile = (shader) => {
-          shader.uniforms.uTexMaxDist = texDistUniform;
-          shader.fragmentShader = 'uniform float uTexMaxDist;\n' + shader.fragmentShader;
-          shader.fragmentShader = shader.fragmentShader.replace(
-            '#include <map_fragment>',
-            `#ifdef USE_MAP
-              vec4 sampledDiffuseColor = texture2D( map, vMapUv );
-              float texBlurFade = smoothstep(uTexMaxDist * 0.44, uTexMaxDist * 1.15, length(vViewPosition));
-              float mipBias = texBlurFade * 2.05;
-              vec2 blurStep = vec2(0.0018) * texBlurFade;
-              vec4 blurSample = (
-                texture2D( map, vMapUv + vec2( blurStep.x, 0.0), mipBias ) +
-                texture2D( map, vMapUv + vec2(-blurStep.x, 0.0), mipBias ) +
-                texture2D( map, vMapUv + vec2(0.0,  blurStep.y), mipBias ) +
-                texture2D( map, vMapUv + vec2(0.0, -blurStep.y), mipBias )
-              ) * 0.25;
-              #ifdef DECODE_VIDEO_TEXTURE
-                sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
-                blurSample = sRGBTransferEOTF( blurSample );
-              #endif
-              sampledDiffuseColor.rgb = mix(sampledDiffuseColor.rgb, blurSample.rgb, texBlurFade * 0.92);
-              diffuseColor *= sampledDiffuseColor;
-            #endif`,
-          );
-        };
-        mat.customProgramCacheKey = () => 'glb-dist-blur-lod';
-        mat.needsUpdate = true;
-      }
-    });
-  };
-
-  // Sky Dome + Soft Rounded Horizon Clouds
+  // Sky Dome + Soft Rounded Horizon Clouds (1 InstancedMesh draw call)
   const skyDome = createSkyDome();
   scene.add(skyDome);
 
   const cloudGroup = new THREE.Group();
   const cloudMat = new THREE.MeshBasicMaterial({
-    color: 0xf4f8fc,
+    color: 0xf6faff,
     transparent: true,
-    opacity: 0.72,
+    opacity: 0.76,
   });
   const cloudGeo = new THREE.SphereGeometry(16, 7, 5);
+  const cloudInst = new THREE.InstancedMesh(cloudGeo, cloudMat, 14);
+  cloudInst.castShadow = false;
+  cloudInst.receiveShadow = false;
+  cloudInst.frustumCulled = true;
+  const cloudDummy = new THREE.Object3D();
   for (let i = 0; i < 14; i++) {
     const a = (i / 14) * Math.PI * 2;
     const rad = 700 + (i % 3) * 110;
-    const cloud = new THREE.Mesh(cloudGeo, cloudMat);
-    cloud.position.set(Math.cos(a) * rad, 175 + (i % 3) * 18, Math.sin(a) * rad);
-    cloud.rotation.y = a;
-    cloud.scale.set(1.7 + (i % 3) * 0.5, 0.36 + (i % 2) * 0.12, 1.05);
-    cloudGroup.add(cloud);
+    cloudDummy.position.set(Math.cos(a) * rad, 175 + (i % 3) * 18, Math.sin(a) * rad);
+    cloudDummy.rotation.set(0, a, 0);
+    cloudDummy.scale.set(1.7 + (i % 3) * 0.5, 0.36 + (i % 2) * 0.12, 1.05);
+    cloudDummy.updateMatrix();
+    cloudInst.setMatrixAt(i, cloudDummy.matrix);
   }
+  cloudInst.instanceMatrix.needsUpdate = true;
+  cloudInst.computeBoundingBox();
+  cloudInst.computeBoundingSphere();
+  cloudGroup.add(cloudInst);
   scene.add(cloudGroup);
 
-  // Warm / Cool Outdoor Daylight Rig
-  const hemi = new THREE.HemisphereLight(0xc4e8ff, 0x948062, 1.35);
+  // Classic Free Fire 2017 bright colorful mobile daylight (zero shadow maps)
+  const hemi = new THREE.HemisphereLight(0xbbe6ff, 0x9fa862, 1.55);
   scene.add(hemi);
 
-  const sunLight = new THREE.DirectionalLight(0xfff4dc, 1.9);
+  const sunLight = new THREE.DirectionalLight(0xfff1cc, 1.75);
   sunLight.position.set(110, 150, 85);
   sunLight.castShadow = false;
-  sunLight.shadow.mapSize.set(1024, 1024);
-  sunLight.shadow.camera.near = 10;
-  sunLight.shadow.camera.far = 260;
-  const d = 65;
-  sunLight.shadow.camera.left = -d;
-  sunLight.shadow.camera.right = d;
-  sunLight.shadow.camera.top = d;
-  sunLight.shadow.camera.bottom = -d;
-  sunLight.shadow.bias = -0.0005;
-  sunLight.shadow.normalBias = 0.025;
   scene.add(sunLight);
   scene.add(sunLight.target);
 
@@ -1664,34 +1551,31 @@ export function createIslandWorld(
 
   const roads: MinimapRoad[] = [];
 
-  // Seamless surrounding tropical ocean skirt for Bermuda 3D map
-  const bermudaOceanSkirtMat = new THREE.MeshStandardMaterial({
+  // Seamless surrounding tropical ocean skirt for Bermuda 3D map (lightweight Lambert)
+  const bermudaOceanSkirtMat = new THREE.MeshLambertMaterial({
     map: textures.waterWave,
-    color: 0x1680b0,
-    roughness: 0.28,
-    metalness: 0.18,
+    color: 0x1e8ec2,
   });
-  applyDistanceTextureLod(bermudaOceanSkirtMat);
   const bermudaOceanSkirt = new THREE.Mesh(
     new THREE.PlaneGeometry(4600, 4600),
     bermudaOceanSkirtMat,
   );
   bermudaOceanSkirt.rotation.x = -Math.PI / 2;
   bermudaOceanSkirt.position.y = BERMUDA_GLB_WATER_Y - 0.18;
+  bermudaOceanSkirt.castShadow = false;
+  bermudaOceanSkirt.receiveShadow = false;
   bermudaGroup.add(bermudaOceanSkirt);
 
   const dummy = new THREE.Object3D();
   const barrelGeo = new THREE.CylinderGeometry(0.45, 0.45, 1.25, 8);
-  const barrelMat = new THREE.MeshStandardMaterial({
+  const barrelMat = new THREE.MeshLambertMaterial({
     color: 0xdc2626,
     emissive: 0x7f1d1d,
     emissiveIntensity: 0.35,
-    roughness: 0.45,
-    metalness: 0.42,
   });
   const padBaseGeo = new THREE.CylinderGeometry(1.15, 1.35, 0.25, 14);
   const padPlateGeo = new THREE.BoxGeometry(1.3, 0.14, 1.6);
-  const padBaseMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5, metalness: 0.6 });
+  const padBaseMat = new THREE.MeshLambertMaterial({ color: 0x1e293b });
   const padGlowMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
 
   let activeBrMap: BrMapId = 'bermuda';
@@ -1799,6 +1683,7 @@ export function createIslandWorld(
       (idx * 1.1) % (Math.PI * 2),
       idx,
       textures.camoParachute,
+      textures.contactShadow,
       'g18',
       0,
       0,
@@ -1890,23 +1775,23 @@ export function createIslandWorld(
   lootCoinGeo.rotateZ(Math.PI / 2);
   const lootDeathGeo = new THREE.BoxGeometry(0.76, 0.42, 0.52);
 
-  // Clean realistic PBR materials matching reference loot items
-  const matAmmoOlive = new THREE.MeshStandardMaterial({ color: 0x3b6345, roughness: 0.68, metalness: 0.15 });
-  const matAmmoRed = new THREE.MeshStandardMaterial({ color: 0xa62626, roughness: 0.62, metalness: 0.15 });
-  const matBeigeTan = new THREE.MeshStandardMaterial({ color: 0xcabca6, roughness: 0.64, metalness: 0.06 });
-  const matGoldTrim = new THREE.MeshStandardMaterial({ color: 0xeab308, roughness: 0.34, metalness: 0.72 });
-  const matMedOlive = new THREE.MeshStandardMaterial({ color: 0x525946, roughness: 0.62, metalness: 0.14 });
-  const matMedWhite = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.48, metalness: 0.05 });
-  const matMedRed = new THREE.MeshStandardMaterial({ color: 0xc81e1e, roughness: 0.42 });
-  const matDarkMetal = new THREE.MeshStandardMaterial({ color: 0x20242a, roughness: 0.38, metalness: 0.78 });
-  const matLensBlue = new THREE.MeshStandardMaterial({ color: 0x0ea5e9, roughness: 0.18, metalness: 0.85 });
-  const matGlooCyan = new THREE.MeshStandardMaterial({ color: 0x0891b2, roughness: 0.38, metalness: 0.28 });
-  const matGrenadeOlive = new THREE.MeshStandardMaterial({ color: 0x4b5346, roughness: 0.55, metalness: 0.25 });
-  const matDeathCrate = new THREE.MeshStandardMaterial({ color: 0x6b4728, roughness: 0.72, metalness: 0.12 });
-  const armorMatByLevel: Record<number, THREE.MeshStandardMaterial> = {
-    1: new THREE.MeshStandardMaterial({ color: 0x4b5842, roughness: 0.58, metalness: 0.22 }),
-    2: new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.48, metalness: 0.42 }),
-    3: new THREE.MeshStandardMaterial({ color: 0x181c24, roughness: 0.35, metalness: 0.65 }),
+  // Lightweight Free Fire 2017 Lambert materials for loot items
+  const matAmmoOlive = new THREE.MeshLambertMaterial({ color: 0x3b6345 });
+  const matAmmoRed = new THREE.MeshLambertMaterial({ color: 0xa62626 });
+  const matBeigeTan = new THREE.MeshLambertMaterial({ color: 0xcabca6 });
+  const matGoldTrim = new THREE.MeshLambertMaterial({ color: 0xeab308 });
+  const matMedOlive = new THREE.MeshLambertMaterial({ color: 0x525946 });
+  const matMedWhite = new THREE.MeshLambertMaterial({ color: 0xf1f5f9 });
+  const matMedRed = new THREE.MeshLambertMaterial({ color: 0xc81e1e });
+  const matDarkMetal = new THREE.MeshLambertMaterial({ color: 0x20242a });
+  const matLensBlue = new THREE.MeshLambertMaterial({ color: 0x0ea5e9 });
+  const matGlooCyan = new THREE.MeshLambertMaterial({ color: 0x0891b2 });
+  const matGrenadeOlive = new THREE.MeshLambertMaterial({ color: 0x4b5346 });
+  const matDeathCrate = new THREE.MeshLambertMaterial({ color: 0x6b4728 });
+  const armorMatByLevel: Record<number, THREE.MeshLambertMaterial> = {
+    1: new THREE.MeshLambertMaterial({ color: 0x4b5842 }),
+    2: new THREE.MeshLambertMaterial({ color: 0x334155 }),
+    3: new THREE.MeshLambertMaterial({ color: 0x181c24 }),
   };
 
   // Weapon prototypes (exact same held assets via createWeaponModel, cloned for ground pickups)
@@ -2246,18 +2131,19 @@ export function createIslandWorld(
   waitLobbyGroup.position.set(WAIT_LOBBY_ORIGIN.x, WAIT_LOBBY_ORIGIN.y, WAIT_LOBBY_ORIGIN.z);
   waitLobbyGroup.visible = false;
   const waitSnowBase = new THREE.Mesh(
-    new THREE.CircleGeometry(68, 32),
-    new THREE.MeshStandardMaterial({ color: 0xe6eff6, roughness: 0.9, metalness: 0.02 }),
+    new THREE.CircleGeometry(68, 24),
+    new THREE.MeshLambertMaterial({ color: 0xe6eff6 }),
   );
   waitSnowBase.rotation.x = -Math.PI / 2;
   waitSnowBase.position.y = -0.04;
-  waitSnowBase.receiveShadow = true;
+  waitSnowBase.receiveShadow = false;
   const waitSeaBase = new THREE.Mesh(
-    new THREE.CircleGeometry(900, 32),
-    new THREE.MeshStandardMaterial({ color: 0x1a749e, roughness: 0.35, metalness: 0.12 }),
+    new THREE.CircleGeometry(900, 24),
+    new THREE.MeshLambertMaterial({ color: 0x1e84b4 }),
   );
   waitSeaBase.rotation.x = -Math.PI / 2;
   waitSeaBase.position.y = -1.6;
+  waitSeaBase.receiveShadow = false;
   waitLobbyGroup.add(waitSnowBase, waitSeaBase);
   scene.add(waitLobbyGroup);
 
@@ -2266,17 +2152,18 @@ export function createIslandWorld(
   gladiadoresGroup.visible = false;
   const gladFloorPad = new THREE.Mesh(
     new THREE.PlaneGeometry(86, 74),
-    new THREE.MeshStandardMaterial({ color: 0x3b3f45, roughness: 0.92, metalness: 0.08 }),
+    new THREE.MeshLambertMaterial({ color: 0x454a52 }),
   );
   gladFloorPad.rotation.x = -Math.PI / 2;
   gladFloorPad.position.set(-15.5, 0.50, 0);
-  gladFloorPad.receiveShadow = true;
+  gladFloorPad.receiveShadow = false;
   const gladOuterGround = new THREE.Mesh(
-    new THREE.CircleGeometry(520, 32),
-    new THREE.MeshStandardMaterial({ color: 0x262b30, roughness: 0.95, metalness: 0.04 }),
+    new THREE.CircleGeometry(520, 24),
+    new THREE.MeshLambertMaterial({ color: 0x2d3339 }),
   );
   gladOuterGround.rotation.x = -Math.PI / 2;
   gladOuterGround.position.set(-15.5, -0.45, 0);
+  gladOuterGround.receiveShadow = false;
   gladiadoresGroup.add(gladFloorPad, gladOuterGround);
   scene.add(gladiadoresGroup);
 
@@ -2322,6 +2209,7 @@ export function createIslandWorld(
 
     if (assets.airplaneTemplate) {
       const planeModel = assets.airplaneTemplate.clone(true);
+      optimizeObjectFF2017(planeModel);
       airplaneGroup.clear();
       airplaneGroup.add(planeModel);
       airplaneProps.length = 0;
@@ -2333,29 +2221,39 @@ export function createIslandWorld(
 
     if (assets.lobbyTemplate) {
       const lobbyModel = assets.lobbyTemplate.clone(true);
-      applyGlbDistanceTextureLod(lobbyModel);
       waitLobbyGroup.add(lobbyModel);
       waitLobbyGroup.updateMatrixWorld(true);
       waitCollisionGrid.buildFromObject(lobbyModel);
+      optimizeObjectFF2017(lobbyModel);
+      batchRepeatedMeshesToInstanced(lobbyModel, { minGroupSize: 2 });
     }
 
     if (assets.gladiadoresTemplate) {
       const gladModel = assets.gladiadoresTemplate.clone(true);
-      applyGlbDistanceTextureLod(gladModel);
       gladiadoresGroup.add(gladModel);
       gladiadoresGroup.updateMatrixWorld(true);
       gladiadoresCollisionGrid.buildFromObject(gladModel);
+      optimizeObjectFF2017(gladModel);
+      batchRepeatedMeshesToInstanced(gladModel, { minGroupSize: 2 });
     }
 
     if (assets.bermudaTemplate) {
       const bermudaModel = assets.bermudaTemplate.clone(true);
-      applyGlbDistanceTextureLod(bermudaModel);
       bermudaGroup.add(bermudaModel);
       bermudaGroup.updateMatrixWorld(true);
       bermudaCollisionGrid.buildFromObject(bermudaModel);
 
-      // Collect discrete buildings, trees, rocks & props in bermuda.glb for view-cone + distance culling
-      // Keep large terrain/ground/road/ocean meshes always visible (handled by fog & soft-blur normal-texture LOD).
+      // Extract real houses, hangars & 2nd floors from bermuda.glb before instancing
+      const spots = extractBermudaBuildingSpots(bermudaModel, bermudaCollisionGrid);
+
+      // Convert remaining materials to FF 2017 Lambert/Basic & batch identical repeated props/trees/rocks/houses
+      optimizeObjectFF2017(bermudaModel, { hideWatermark: true });
+      batchRepeatedMeshesToInstanced(bermudaModel, {
+        minGroupSize: 2,
+        skipNameRe: /terrain|ground|water|ocean|sea|sky|highway|airport_road|p_road|road|runway/i,
+      });
+
+      // Collect non-instanced discrete buildings & props for view-cone + distance culling
       bermudaCullables.length = 0;
       const cullBox = new THREE.Box3();
       const cullCenter = new THREE.Vector3();
@@ -2363,7 +2261,7 @@ export function createIslandWorld(
       const NEVER_CULL_RE =
         /terrain|ground|water|ocean|sea|sky|cloud|highway|airport_road|p_road|road|runway/i;
       bermudaModel.traverse((node) => {
-        if (!(node as THREE.Mesh).isMesh) return;
+        if (!(node as THREE.Mesh).isMesh || (node as THREE.InstancedMesh).isInstancedMesh) return;
         const m = node as THREE.Mesh;
         if (!m.visible) return;
         const pName = m.parent?.name ?? '';
@@ -2384,9 +2282,6 @@ export function createIslandWorld(
           radius,
         });
       });
-
-      // Extract real houses, hangars & 2nd floors from bermuda.glb (zero changes to map mesh!)
-      const spots = extractBermudaBuildingSpots(bermudaModel, bermudaCollisionGrid);
       const bermudaGroundAt = (x: number, z: number) =>
         bermudaCollisionGrid.sampleTerrainHeight(x, z, BERMUDA_GLB_WATER_Y);
       const findNearestDrySpot = (tx: number, tz: number): { x: number; z: number; y: number } => {
@@ -2790,142 +2685,66 @@ export function createIslandWorld(
     }
   };
 
-  let structureCullDist = 155;
+  let structureCullDist = 145;
 
-  let baseFogNear = 102;
-  let baseFogFar = 195;
-  let baseCamFar = 230;
+  let baseFogNear = 88;
+  let baseFogFar = 165;
+  let baseCamFar = 195;
+  let adaptiveFarFactor = 1.0;
+
+  const setAdaptiveDrawDistance = (factor: number) => {
+    adaptiveFarFactor = THREE.MathUtils.clamp(factor, 0.55, 1.0);
+  };
 
   const applyQuality = (
     quality: GraphicsQuality,
     isSoftwareGl: boolean,
     textureQuality?: TextureQuality,
-    shadowQuality?: ShadowQuality,
-    maxAnisotropy = 8,
+    _shadowQuality?: ShadowQuality,
+    _maxAnisotropy = 1,
   ) => {
     const resolvedTex: TextureQuality =
       textureQuality ?? (quality === 'low' ? 'low' : quality === 'high' ? 'ultra' : 'medium');
-    const resolvedShadow: ShadowQuality = isSoftwareGl
-      ? 'off'
-      : (shadowQuality ?? (quality === 'low' ? 'off' : quality === 'high' ? 'high' : 'low'));
 
-    const capAniso = Math.max(1, maxAnisotropy);
-    currentGlbAniso =
-      resolvedTex === 'low'
-        ? Math.min(2, capAniso)
-        : resolvedTex === 'medium'
-          ? Math.min(4, capAniso)
-          : resolvedTex === 'high'
-            ? Math.min(8, capAniso)
-            : Math.min(16, capAniso);
+    textures.applyQuality(resolvedTex, 1);
 
-    textures.applyQuality(resolvedTex, capAniso);
-    for (const tex of glbTextures) {
-      tex.minFilter = THREE.LinearMipmapLinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      tex.anisotropy = currentGlbAniso;
-      tex.needsUpdate = true;
-    }
-
-    // Distant texture-blur transition threshold (keeps normal texture softly blurred at range)
-    texDistUniform.value =
-      resolvedTex === 'low'
-        ? 46.0
-        : resolvedTex === 'medium'
-          ? 64.0
-          : resolvedTex === 'high'
-            ? 84.0
-            : 106.0;
-    if (resolvedShadow === 'off') {
-      sunLight.castShadow = false;
-    } else {
-      const mobile = isMobileHardware();
-      sunLight.castShadow = true;
-      const mapDim =
-        resolvedShadow === 'low'
-          ? 512
-          : resolvedShadow === 'medium'
-            ? 1024
-            : resolvedShadow === 'high'
-              ? 2048
-              : mobile
-                ? 2048
-                : 4096;
-      const frustumHalf =
-        resolvedShadow === 'low'
-          ? 58
-          : resolvedShadow === 'medium'
-            ? 78
-            : resolvedShadow === 'high'
-              ? 102
-              : 124;
-      sunLight.shadow.mapSize.set(mapDim, mapDim);
-      sunLight.shadow.camera.left = -frustumHalf;
-      sunLight.shadow.camera.right = frustumHalf;
-      sunLight.shadow.camera.top = frustumHalf;
-      sunLight.shadow.camera.bottom = -frustumHalf;
-      sunLight.shadow.camera.near = 8;
-      sunLight.shadow.camera.far = 290;
-      sunLight.shadow.camera.updateProjectionMatrix();
-      sunLight.shadow.radius =
-        resolvedShadow === 'low'
-          ? 1.0
-          : resolvedShadow === 'medium'
-            ? 1.5
-            : resolvedShadow === 'high'
-              ? 2.1
-              : 2.6;
-      sunLight.shadow.bias = resolvedShadow === 'ultra' ? -0.00032 : -0.00048;
-      sunLight.shadow.normalBias = resolvedShadow === 'ultra' ? 0.018 : 0.024;
-    }
+    // Classic Free Fire 2017: zero dynamic shadow maps, zero PBR env maps
+    sunLight.castShadow = false;
     if (sunLight.shadow.map) {
       sunLight.shadow.map.dispose();
       sunLight.shadow.map = null;
     }
+    scene.environment = null;
+    scene.environmentIntensity = 0;
 
     if (quality === 'low' || isSoftwareGl) {
-      baseFogNear = 70;
-      baseFogFar = 148;
-      baseCamFar = 175;
-      structureCullDist = 115;
-      sunLight.intensity = 1.95;
+      baseFogNear = 68;
+      baseFogFar = 138;
+      baseCamFar = 165;
+      structureCullDist = 112;
+      sunLight.intensity = 1.75;
       hemi.intensity = 1.62;
-      bermudaOceanSkirtMat.roughness = 0.72;
-      bermudaOceanSkirtMat.metalness = 0.02;
-      bermudaOceanSkirtMat.envMapIntensity = 0.4;
-      cloudMat.opacity = 0.6;
-      scene.environment = null;
-      scene.environmentIntensity = 0;
+      cloudMat.opacity = 0.65;
     } else if (quality === 'medium') {
-      baseFogNear = 102;
-      baseFogFar = 195;
-      baseCamFar = 230;
-      structureCullDist = 155;
-      sunLight.intensity = 1.98;
-      hemi.intensity = 1.38;
-      bermudaOceanSkirtMat.roughness = 0.32;
-      bermudaOceanSkirtMat.metalness = 0.2;
-      bermudaOceanSkirtMat.envMapIntensity = 0.9;
-      cloudMat.opacity = 0.74;
-      scene.environment = envMap;
-      scene.environmentIntensity = 0.58;
+      baseFogNear = 88;
+      baseFogFar = 165;
+      baseCamFar = 195;
+      structureCullDist = 145;
+      sunLight.intensity = 1.78;
+      hemi.intensity = 1.55;
+      cloudMat.opacity = 0.76;
     } else {
-      baseFogNear = 132;
-      baseFogFar = 245;
-      baseCamFar = 285;
-      structureCullDist = 195;
-      sunLight.intensity = 2.24;
-      hemi.intensity = 1.36;
-      bermudaOceanSkirtMat.roughness = 0.12;
-      bermudaOceanSkirtMat.metalness = 0.38;
-      bermudaOceanSkirtMat.envMapIntensity = 1.35;
-      cloudMat.opacity = 0.86;
-      scene.environment = envMap;
-      scene.environmentIntensity = 1.05;
+      baseFogNear = 108;
+      baseFogFar = 198;
+      baseCamFar = 230;
+      structureCullDist = 178;
+      sunLight.intensity = 1.85;
+      hemi.intensity = 1.52;
+      cloudMat.opacity = 0.84;
     }
-    fog.near = baseFogNear;
-    fog.far = baseFogFar;
-    camera.far = baseCamFar;
+    fog.near = baseFogNear * adaptiveFarFactor;
+    fog.far = baseFogFar * adaptiveFarFactor;
+    camera.far = baseCamFar * adaptiveFarFactor;
     camera.updateProjectionMatrix();
   };
 
@@ -2979,10 +2798,10 @@ export function createIslandWorld(
     const fwdX = hasFwd ? camFwdX! / fwdLen : 0;
     const fwdZ = hasFwd ? camFwdZ! / fwdLen : -1;
 
-    const targetFogNear = isAirborne ? Math.max(baseFogNear, 240) : baseFogNear;
-    const targetFogFar = isAirborne ? Math.max(baseFogFar, 460) : baseFogFar;
-    const targetCamFar = isAirborne ? Math.max(baseCamFar, 520) : baseCamFar;
-    if (fog.near !== targetFogNear || fog.far !== targetFogFar) {
+    const targetFogNear = (isAirborne ? Math.max(baseFogNear, 220) : baseFogNear) * adaptiveFarFactor;
+    const targetFogFar = (isAirborne ? Math.max(baseFogFar, 420) : baseFogFar) * adaptiveFarFactor;
+    const targetCamFar = (isAirborne ? Math.max(baseCamFar, 480) : baseCamFar) * adaptiveFarFactor;
+    if (Math.abs(fog.near - targetFogNear) > 0.5 || Math.abs(fog.far - targetFogFar) > 0.5) {
       fog.near = targetFogNear;
       fog.far = targetFogFar;
     }
@@ -3091,14 +2910,22 @@ export function createIslandWorld(
   };
 
   const dispose = () => {
+    const disposedGeos = new Set<THREE.BufferGeometry>();
+    const disposedMats = new Set<THREE.Material>();
     scene.traverse((obj) => {
       if ((obj as THREE.Mesh).isMesh) {
         const m = obj as THREE.Mesh;
         if (m.userData?.sharedWeaponAsset) return;
-        m.geometry.dispose();
-        const disposeMat = (mat: THREE.Material) => {
-          if (mat.userData?.disposeMap && (mat as THREE.MeshStandardMaterial).map) {
-            (mat as THREE.MeshStandardMaterial).map?.dispose();
+        if (m.geometry && !disposedGeos.has(m.geometry)) {
+          disposedGeos.add(m.geometry);
+          m.geometry.dispose();
+        }
+        const disposeMat = (mat: THREE.Material | undefined) => {
+          if (!mat || disposedMats.has(mat)) return;
+          disposedMats.add(mat);
+          const anyMat = mat as THREE.MeshLambertMaterial;
+          if (mat.userData?.disposeMap && anyMat.map) {
+            anyMat.map.dispose();
           }
           mat.dispose();
         };
@@ -3192,6 +3019,7 @@ export function createIslandWorld(
     spawnDroppedLoot,
     clearDroppedLoots,
     applyQuality,
+    setAdaptiveDrawDistance,
     updateDynamicProps,
     dispose,
   };

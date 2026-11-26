@@ -1257,7 +1257,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           }}
           className="pointer-events-none absolute z-20 whitespace-nowrap text-[10px] font-mono font-bold tabular-nums text-white/85"
         >
-          {hud.fps} FPS
+          {hud.fps} FPS | {hud.drawCalls} Calls | {hud.triangles} Tris
         </div>
       )}
 
