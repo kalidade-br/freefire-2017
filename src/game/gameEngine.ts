@@ -331,6 +331,7 @@ function lerpAngle(a: number, b: number, t: number): number {
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
+const _v4 = new THREE.Vector3();
 const _rayOrigin = new THREE.Vector3();
 const _rayDir = new THREE.Vector3();
 const _camTarget = new THREE.Vector3();
@@ -620,6 +621,11 @@ export class BattleRoyaleEngine {
   private recentUpDragPeak = 0;
   private pendingSemiFireUntilMs = 0;
   private firstShotDelayUntilMs = 0;
+  private sprayHoldDuration = 0;
+  private capaClimbEffort = 0;
+  private waitingForAimStick = false;
+  private aimStickWaitStartMs = 0;
+  private aimSnapConverged = false;
   private isDead = false;
   private isPlayerDowned = false;
   private playerBleedHp = 100;
@@ -3300,6 +3306,11 @@ export class BattleRoyaleEngine {
       this.lockedTargetId = null;
       this.aimRelockBlockedUntilRelease = false;
       this.lockedTargetWasStanding = false;
+      this.sprayHoldDuration = 0;
+      this.capaClimbEffort = 0;
+      this.waitingForAimStick = false;
+      this.aimStickWaitStartMs = 0;
+      this.aimSnapConverged = false;
       if (!attackerName || weaponShort === 'ELIM_ENV') {
         this.pushKillFeed('', this.playerNick, 'KNOCK_ENV', false, false);
       } else {
@@ -3488,6 +3499,11 @@ export class BattleRoyaleEngine {
     this.aimBreakAccum = 0;
     this.bugDoCapaTimer = 0;
     this.consecutiveShots = 0;
+    this.sprayHoldDuration = 0;
+    this.capaClimbEffort = 0;
+    this.waitingForAimStick = false;
+    this.aimStickWaitStartMs = 0;
+    this.aimSnapConverged = false;
 
     // Free Fire Double-AWM / Quick-Swap fluidity: switching guns cancels long bolt/pump lock
     const newW = this.getActiveWeaponState();
@@ -4200,6 +4216,12 @@ export class BattleRoyaleEngine {
     this.recentUpDragSum = 0;
     this.recentUpDragPeak = 0;
     this.pendingSemiFireUntilMs = 0;
+    this.firstShotDelayUntilMs = 0;
+    this.sprayHoldDuration = 0;
+    this.capaClimbEffort = 0;
+    this.waitingForAimStick = false;
+    this.aimStickWaitStartMs = 0;
+    this.aimSnapConverged = false;
     this.vaultTimer = 0;
     this.canVaultWindow = false;
     this.revivingBotId = null;
@@ -4753,6 +4775,11 @@ export class BattleRoyaleEngine {
     this.localVehicleSeat = null;
     this.lastExitedVehicleState = null;
     this.firstShotDelayUntilMs = 0;
+    this.sprayHoldDuration = 0;
+    this.capaClimbEffort = 0;
+    this.waitingForAimStick = false;
+    this.aimStickWaitStartMs = 0;
+    this.aimSnapConverged = false;
     this.prevCharYawForTurn = 0;
     this.headshotFlashTimer = 0;
     this.combatIconPopup = null;
@@ -7678,21 +7705,53 @@ export class BattleRoyaleEngine {
     const punchBlockedThisFrame = this.activeSlot === 4 && this.stance === 'prone';
     const weaponFireDown = rawWeaponFireDown && !punchBlockedThisFrame;
 
-    if (!weaponFireDown || performance.now() - this.slotLastShotTime[this.activeSlot] > 380) {
+    const nowFrameMs = performance.now();
+    if (!weaponFireDown || nowFrameMs - this.slotLastShotTime[this.activeSlot] > 380) {
       this.consecutiveShots = 0;
     }
 
-    if (!weaponFireDown) {
+    const assistAllowed =
+      !this.isSwimming &&
+      this.settings.aimAssistMode === 'default' &&
+      Boolean(activeDef?.supportsAimAssist) &&
+      !this.isPlacingGloo &&
+      !this.isHoldingGrenade;
+
+    const renderReach = this.getEnemyRenderDist() + 10;
+    const assistMaxRange = activeDef
+      ? activeDef.category === 'SG'
+        ? Math.min(activeDef.range + 14, 52)
+        : activeDef.category === 'HG' || activeDef.category === 'SMG'
+          ? Math.min(renderReach + 6, activeDef.range + (this.isAiming ? 24 : 12))
+          : Math.min(renderReach + 18, activeDef.range + (this.isAiming ? 32 : 15))
+      : 2.85;
+
+    const bufferedTapSnap =
+      this.waitingForAimStick &&
+      nowFrameMs <= this.pendingSemiFireUntilMs &&
+      this.lockedTargetId !== null;
+    const firingOrTapSnap = weaponFireDown || bufferedTapSnap;
+
+    if (!firingOrTapSnap) {
       this.lockedTargetId = null;
       this.aimRelockBlockedUntilRelease = false;
       this.lockedTargetWasStanding = false;
       this.aimBreakAccum = 0;
       this.aimFocusZone = 'chest';
+      this.sprayHoldDuration = 0;
+      this.capaClimbEffort = 0;
+      this.waitingForAimStick = false;
+      this.aimSnapConverged = false;
       if (this.stance !== 'crouch') {
         this.wasLockedWhileCrouched = false;
       }
-    } else if (justStartedFiring || justStartedAiming) {
+    } else if (justStartedFiring) {
       this.aimRelockBlockedUntilRelease = false;
+      this.sprayHoldDuration = 0;
+      this.capaClimbEffort = 0;
+      this.aimSnapConverged = false;
+    } else if (weaponFireDown) {
+      this.sprayHoldDuration += dt;
     }
 
     if (
@@ -7704,27 +7763,43 @@ export class BattleRoyaleEngine {
       !this.isHoldingGrenade &&
       !punchBlockedThisFrame
     ) {
-      const nowFirePress = performance.now();
-      const usePreShotSnapDelay =
+      const canStickPreShot =
         !this.wasFireDown &&
-        this.settings.aimAssistMode === 'default' &&
-        Boolean(WEAPONS[activeWeaponState.weaponId]?.supportsAimAssist);
-      if (usePreShotSnapDelay) {
-        // Brief ~55ms pre-first-shot snap delay so aim-assist settles cleanly before the first bullet leaves
-        this.firstShotDelayUntilMs = nowFirePress + 55;
-        this.pendingSemiFireUntilMs = nowFirePress + 280;
+        assistAllowed &&
+        !this.aimRelockBlockedUntilRelease;
+      const snapCandidate = canStickPreShot
+        ? this.lockedTargetId
+          ? this.getResolvedAimTarget(this.lockedTargetId)
+          : this.findAimAssistTarget(this.isAiming ? 0.33 : 0.28, assistMaxRange)
+        : null;
+      if (snapCandidate) {
+        // Hold shot for a few rapid ms until aim-assist sticks directly onto the enemy body
+        this.lockedTargetId = snapCandidate.id;
+        this.lockedTargetWasStanding = !snapCandidate.isLowPose;
+        this.aimBreakAccum = 0;
+        this.aimFocusZone = 'chest';
+        this.waitingForAimStick = true;
+        this.aimStickWaitStartMs = nowFrameMs;
+        this.aimSnapConverged = false;
+        this.firstShotDelayUntilMs = nowFrameMs + 34;
+        this.pendingSemiFireUntilMs = nowFrameMs + 300;
       } else {
-        this.pendingSemiFireUntilMs = nowFirePress + 240;
+        this.waitingForAimStick = false;
+        this.aimSnapConverged = true;
+        this.firstShotDelayUntilMs = 0;
+        this.pendingSemiFireUntilMs = nowFrameMs + 240;
       }
     }
     if (
-      (!weaponFireDown && performance.now() > this.pendingSemiFireUntilMs) ||
+      (!weaponFireDown && nowFrameMs > this.pendingSemiFireUntilMs) ||
       justSwitchedSlot ||
       this.isPlacingGloo ||
       this.isHoldingGrenade ||
       this.isSwimming
     ) {
       this.firstShotDelayUntilMs = 0;
+      this.waitingForAimStick = false;
+      this.aimSnapConverged = false;
     }
     if (justSwitchedSlot || this.isPlacingGloo || this.isHoldingGrenade || this.isSwimming) {
       this.pendingSemiFireUntilMs = 0;
@@ -7740,49 +7815,33 @@ export class BattleRoyaleEngine {
       ? Math.max(rawCamHeight, waterSurfaceY + 0.58 - this.pos.y)
       : rawCamHeight;
 
-    // Classic Free Fire Aim-Assist config check before applying look input
-    const assistAllowed =
-      !this.isSwimming &&
-      this.settings.aimAssistMode === 'default' &&
-      Boolean(activeDef?.supportsAimAssist) &&
-      !this.isPlacingGloo &&
-      !this.isHoldingGrenade;
+    // Progressive spray fatigue: crisp early grip -> loses strength while holding -> unsticks until trigger release
+    const holdGraceSec = activeDef && activeDef.fireRateMs > 250 ? 0.50 : 0.32;
+    const holdWindowSec = activeDef && activeDef.fireRateMs > 250 ? 1.15 : 0.74;
+    const timeFatigue = THREE.MathUtils.clamp(
+      (this.sprayHoldDuration - holdGraceSec) / holdWindowSec,
+      0,
+      1,
+    );
+    const shotFatigue = THREE.MathUtils.clamp((this.consecutiveShots - 3) / 7.5, 0, 1);
+    const sprayFatigue = Math.max(timeFatigue, shotFatigue * 0.90);
+    const gripStrength = THREE.MathUtils.clamp(1.0 - sprayFatigue, 0, 1);
+    const sprayTrack = Math.max(0.18, gripStrength);
 
-    // Progressive spray fatigue: crisp 4-shot capa burst window, then holds strong tracking without dropping off target
-    const sprayControl =
-      this.consecutiveShots <= 4
-        ? 1.0
-        : Math.max(0.15, 1.0 - (this.consecutiveShots - 4) * 0.14);
-    const sprayTrack = Math.max(0.84, sprayControl);
-
-    const renderReach = this.getEnemyRenderDist() + 10;
-    const assistMaxRange = activeDef
-      ? activeDef.category === 'SG'
-        ? Math.min(activeDef.range + 14, 52)
-        : activeDef.category === 'HG' || activeDef.category === 'SMG'
-          ? Math.min(renderReach + 6, activeDef.range + (this.isAiming ? 24 : 12))
-          : Math.min(renderReach + 18, activeDef.range + (this.isAiming ? 32 : 15))
-      : 2.85;
-
-    // Camera Look with per-scope sensitivity (zero weapon recoil)
+    // Camera Look with per-scope sensitivity (free aim when scoping without firing)
     const sensScale = this.getScopeSensitivityScale(activeScope);
-    const adsTargetFriction =
-      assistAllowed &&
-      this.isAiming &&
-      !weaponFireDown &&
-      !justStartedAiming &&
-      this.aimEnemyLockedTarget
-        ? 0.62
-        : 1.0;
-    const sens = 0.0028 * sensScale * adsTargetFriction;
+    const sens = 0.0028 * sensScale;
     const invert = this.settings.invertY ? -1 : 1;
     const rawYawInput = -edges.dx * sens;
     const rawPitchInput = -edges.dy * sens * invert;
     const absRawYawIn = Math.abs(rawYawInput);
 
-    // Strong sticky fire lock; hard flicks or sustained pulls still break free cleanly
+    // Sticky fire lock while holding trigger; weakens with spray fatigue and breaks cleanly on flick/fatigue
     const hasActiveFireLock =
-      assistAllowed && weaponFireDown && !justStartedFiring && this.lockedTargetId !== null;
+      assistAllowed &&
+      firingOrTapSnap &&
+      !justStartedFiring &&
+      this.lockedTargetId !== null;
     let deferredPitchApplied = false;
 
     if (hasActiveFireLock) {
@@ -7792,7 +7851,11 @@ export class BattleRoyaleEngine {
       if (lockPreview) {
         lockPreview.getChest(_v1);
         lockPreview.getHead(_v3);
-        const trackYawPt = this.aimFocusZone === 'head' ? _v3 : _v1;
+        const upperT = lockPreview.isLowPose ? 0.22 : 0.40;
+        const trackYawPt =
+          this.aimFocusZone === 'head'
+            ? _v3
+            : _v4.copy(_v1).lerp(_v3, upperT);
         const lockAim = this.computeExactAnglesToTarget(
           trackYawPt.x,
           trackYawPt.y,
@@ -7812,7 +7875,7 @@ export class BattleRoyaleEngine {
         this.aimBreakAccum = Math.max(0, this.aimBreakAccum - dt * 3.2);
       }
 
-      const breakSprayFloor = Math.max(0.85, sprayControl);
+      const breakSprayFloor = Math.max(0.45, gripStrength);
       const breakFlick = 0.38 * breakSprayFloor;
       const breakAccumLimit = 1.15 * breakSprayFloor;
       if (
@@ -7820,17 +7883,18 @@ export class BattleRoyaleEngine {
         this.aimBreakAccum > breakAccumLimit ||
         rawPitchInput < -0.058
       ) {
-        // Player pulled away — release lock immediately without jumping to another target
+        // Player pulled away — release lock immediately until trigger release
         this.lockedTargetId = null;
         this.aimRelockBlockedUntilRelease = true;
         this.lockedTargetWasStanding = false;
         this.aimBreakAccum = 0;
         this.wasLockedWhileCrouched = false;
         this.aimFocusZone = 'chest';
+        this.waitingForAimStick = false;
         this.yaw += rawYawInput;
         this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput, -1.05, 1.18);
       } else {
-        const horizSlip = THREE.MathUtils.lerp(0.18, 0.06, sprayTrack);
+        const horizSlip = THREE.MathUtils.lerp(0.58, 0.06, sprayTrack);
         this.yaw += rawYawInput * horizSlip;
         deferredPitchApplied = true;
       }
@@ -7843,7 +7907,7 @@ export class BattleRoyaleEngine {
     this.recentUpDragSum *= Math.exp(-15 * dt);
     this.recentUpDragPeak *= Math.exp(-11 * dt);
     if (edges.dy * invert < -0.14 || rawPitchInput > 0.00012) {
-      this.pullingUpTimer = 0.38;
+      this.pullingUpTimer = 0.34;
       if (rawPitchInput > 0.0001) {
         this.recentUpDragSum = Math.min(0.24, this.recentUpDragSum + rawPitchInput);
         this.recentUpDragPeak = Math.max(this.recentUpDragPeak, rawPitchInput);
@@ -7851,29 +7915,76 @@ export class BattleRoyaleEngine {
     }
 
     // Track if crouched with target inside crosshair area (even before firing, for Bug do Capa)
-    if (this.stance === 'crouch' && activeDef && !weaponFireDown) {
+    if (this.stance === 'crouch' && activeDef && !firingOrTapSnap) {
       const crouchPreview = this.findAimAssistTarget(this.isAiming ? 0.17 : 0.14, assistMaxRange);
       if (crouchPreview) {
         this.wasLockedWhileCrouched = true;
       }
     }
 
-    // Classic Free Fire Aim-Assist ("Mira Gruda" + "Subir Capa" + Fadiga de Spray)
+    // Free Fire Aim-Assist:
+    // 1) Opening scope snaps ONCE to upper chest/low neck without following moving targets
+    // 2) Firing centers tightly on upper chest/low neck, waits rapid ms until stuck before firing,
+    //    adds realistic recoil on capa/spray, loses grip over continuous hold and unsticks until fire release.
     this.aimAssistActive = false;
     let justAimSnapped = false;
     let aimConvergedThisFrame = false;
 
     if (assistAllowed && activeDef) {
-      if (weaponFireDown) {
-        if (justStartedAiming) {
-          // If player opens scope while holding fire, refresh snap cleanly onto closest target
+      if (justStartedAiming && !firingOrTapSnap) {
+        const scopeSnapTarget = this.findAimAssistTarget(0.32, assistMaxRange);
+        if (scopeSnapTarget) {
+          scopeSnapTarget.getChest(_v1);
+          scopeSnapTarget.getHead(_v3);
+          const chestAim = this.computeExactAnglesToTarget(
+            _v1.x,
+            _v1.y,
+            _v1.z,
+            targetCamHeight,
+            targetShoulderOffset,
+          );
+          const headAim = this.computeExactAnglesToTarget(
+            _v3.x,
+            _v3.y,
+            _v3.z,
+            targetCamHeight,
+            targetShoulderOffset,
+          );
+          if (chestAim.horiz > 0.15) {
+            const upperChestT = scopeSnapTarget.isLowPose ? 0.22 : 0.40;
+            const snapYaw = lerpAngle(chestAim.yaw, headAim.yaw, upperChestT);
+            const snapPitch = THREE.MathUtils.lerp(chestAim.pitch, headAim.pitch, upperChestT);
+            let dYaw = snapYaw - this.yaw;
+            while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+            while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+            this.yaw += dYaw;
+            this.pitch = THREE.MathUtils.clamp(snapPitch, -1.05, 1.18);
+            aimConvergedThisFrame = true;
+            justAimSnapped = true;
+          }
+        }
+      } else if (firingOrTapSnap) {
+        if (justStartedAiming && !this.aimRelockBlockedUntilRelease) {
           this.lockedTargetId = null;
           this.lockedTargetWasStanding = false;
           this.aimBreakAccum = 0;
           this.aimFocusZone = 'chest';
         }
+
+        // If continuous trigger hold depleted grip force -> release lock until player stops firing and starts again
+        if (gripStrength <= 0.04 && !this.waitingForAimStick && this.lockedTargetId !== null) {
+          this.lockedTargetId = null;
+          this.aimRelockBlockedUntilRelease = true;
+          this.lockedTargetWasStanding = false;
+          this.aimBreakAccum = 0;
+          this.wasLockedWhileCrouched = false;
+          this.aimAssistActive = false;
+          this.aimFocusZone = 'chest';
+          this.pitch = THREE.MathUtils.clamp(this.pitch + 0.015, -1.05, 1.18);
+        }
+
         let target: ReturnType<BattleRoyaleEngine['getResolvedAimTarget']> = null;
-        if (this.lockedTargetId) {
+        if (this.lockedTargetId && !this.aimRelockBlockedUntilRelease) {
           const existing = this.getResolvedAimTarget(this.lockedTargetId);
           if (existing) {
             existing.getChest(_v2);
@@ -7894,6 +8005,7 @@ export class BattleRoyaleEngine {
               this.aimRelockBlockedUntilRelease = true;
               this.aimBreakAccum = 0;
               this.aimFocusZone = 'chest';
+              this.waitingForAimStick = false;
             }
           } else {
             this.lockedTargetId = null;
@@ -7901,13 +8013,14 @@ export class BattleRoyaleEngine {
             this.aimRelockBlockedUntilRelease = true;
             this.aimBreakAccum = 0;
             this.aimFocusZone = 'chest';
+            this.waitingForAimStick = false;
           }
         }
 
         if (
           !target &&
           !this.aimRelockBlockedUntilRelease &&
-          (justStartedFiring || justStartedAiming || this.consecutiveShots <= 4)
+          (justStartedFiring || justStartedAiming || this.consecutiveShots <= 3)
         ) {
           const coneRad =
             justStartedFiring || justStartedAiming
@@ -7915,8 +8028,8 @@ export class BattleRoyaleEngine {
                 ? 0.33
                 : 0.28
               : this.isAiming
-                ? 0.27
-                : 0.22;
+                ? 0.25
+                : 0.20;
           target = this.findAimAssistTarget(coneRad, assistMaxRange);
           if (target) {
             this.lockedTargetId = target.id;
@@ -7956,7 +8069,15 @@ export class BattleRoyaleEngine {
 
           if (chestAim.horiz > 0.15) {
             aimConvergedThisFrame = true;
-            let deltaYaw = chestAim.yaw - this.yaw;
+            const upperChestT = target.isLowPose ? 0.22 : 0.40;
+            const upperChestPitch = THREE.MathUtils.lerp(
+              chestAim.pitch,
+              headAim.pitch,
+              upperChestT,
+            );
+            const upperChestYaw = lerpAngle(chestAim.yaw, headAim.yaw, upperChestT);
+
+            let deltaYaw = upperChestYaw - this.yaw;
             while (deltaYaw > Math.PI) deltaYaw -= Math.PI * 2;
             while (deltaYaw < -Math.PI) deltaYaw += Math.PI * 2;
 
@@ -7964,57 +8085,63 @@ export class BattleRoyaleEngine {
             const horizOffsetAtTarget = Math.abs(Math.sin(deltaYaw)) * chestAim.horiz;
             const alreadyOnHead =
               horizOffsetAtTarget <= 0.24 &&
-              currentHitWorldY >= _v3.y - 0.19 &&
+              currentHitWorldY >= _v3.y - 0.18 &&
               currentHitWorldY <= _v3.y + 0.19;
 
-            const chestPitch = chestAim.pitch;
             const headPitch = headAim.pitch;
             const headTopPitch = Math.max(headPitch + 0.012, headTopAim.pitch);
-            const chestHeadSpan = Math.max(0.014, headPitch - chestPitch);
-            const neckPitch = THREE.MathUtils.lerp(chestPitch, headPitch, 0.56);
-            const zoneT = (this.pitch - chestPitch) / chestHeadSpan;
+            const chestHeadSpan = Math.max(0.012, headPitch - upperChestPitch);
+            const neckPitch = THREE.MathUtils.lerp(
+              upperChestPitch,
+              headPitch,
+              target.isLowPose ? 0.48 : 0.45,
+            );
+            const neckYaw = lerpAngle(upperChestYaw, headAim.yaw, 0.45);
+            const zoneT = (this.pitch - upperChestPitch) / chestHeadSpan;
 
-            this.aimAssistActive = sprayControl > 0.3;
+            this.aimAssistActive = gripStrength > 0.12;
             if (this.stance === 'crouch' && !target.isLowPose) {
               this.wasLockedWhileCrouched = true;
               this.crouchLockedDist = chestAim.horiz;
             }
 
-            if (justStartedFiring || justStartedAiming) {
+            if (justStartedFiring || justStartedAiming || this.waitingForAimStick) {
               const activeUpPull = Math.max(
-                rawPitchInput * 3.8,
-                this.recentUpDragSum * 1.55,
-                this.recentUpDragPeak * 4.2,
+                rawPitchInput * 3.6,
+                this.recentUpDragSum * 1.45,
+                this.recentUpDragPeak * 3.8,
               );
-              let startPitch = chestPitch;
-              if (alreadyOnHead || (horizOffsetAtTarget <= 0.34 && zoneT >= 0.58 && this.pitch <= headTopPitch + 0.01)) {
+              let startPitch = upperChestPitch;
+              if (
+                alreadyOnHead ||
+                (horizOffsetAtTarget <= 0.30 && zoneT >= 0.64 && this.pitch <= headTopPitch + 0.01)
+              ) {
                 this.aimFocusZone = 'head';
                 startPitch = headPitch;
-              } else if (horizOffsetAtTarget <= 0.36 && zoneT >= 0.40 && activeUpPull < 0.004) {
+              } else if (horizOffsetAtTarget <= 0.32 && zoneT >= 0.42 && activeUpPull < 0.004) {
                 this.aimFocusZone = 'neck';
                 startPitch = neckPitch;
               } else {
                 this.aimFocusZone = 'chest';
-                startPitch = chestPitch;
+                startPitch = upperChestPitch;
               }
 
               if (this.aimFocusZone !== 'head' && activeUpPull >= 0.004) {
-                // One-tap Capa ("Desert / Doze / 1-tiro"): pulling up as you fire climbs smoothly from chest/neck to head
                 const oneTapMult =
                   !activeDef.automatic ||
                   activeDef.category === 'HG' ||
                   activeDef.category === 'SG'
-                    ? 1.50
-                    : 1.25;
+                    ? 1.40
+                    : 1.15;
                 const climb0 = THREE.MathUtils.clamp(
-                  (activeUpPull * oneTapMult - 0.003) / Math.max(0.014, chestHeadSpan * 0.65),
+                  (activeUpPull * oneTapMult - 0.003) / Math.max(0.012, chestHeadSpan * 0.72),
                   0,
                   1,
                 );
                 startPitch = THREE.MathUtils.lerp(startPitch, headPitch, climb0);
-                if (climb0 >= 0.64) {
+                if (climb0 >= 0.68) {
                   this.aimFocusZone = 'head';
-                } else if (climb0 >= 0.34 && this.aimFocusZone === 'chest') {
+                } else if (climb0 >= 0.35 && this.aimFocusZone === 'chest') {
                   this.aimFocusZone = 'neck';
                 }
               }
@@ -8023,45 +8150,70 @@ export class BattleRoyaleEngine {
                 this.aimFocusZone === 'head'
                   ? headAim.yaw
                   : this.aimFocusZone === 'neck'
-                    ? lerpAngle(chestAim.yaw, headAim.yaw, 0.55)
-                    : chestAim.yaw;
+                    ? neckYaw
+                    : upperChestYaw;
               let deltaYaw0 = targetYaw0 - this.yaw;
               while (deltaYaw0 > Math.PI) deltaYaw0 -= Math.PI * 2;
               while (deltaYaw0 < -Math.PI) deltaYaw0 += Math.PI * 2;
 
-              const snapBlend = justStartedAiming ? 0.99 : 0.98;
-              this.yaw += deltaYaw0 * snapBlend;
-              this.pitch = THREE.MathUtils.clamp(
-                THREE.MathUtils.lerp(this.pitch, startPitch, snapBlend),
-                -1.05,
-                1.18,
-              );
-              if (justStartedAiming) {
-                justAimSnapped = true;
+              if (this.waitingForAimStick) {
+                // Smooth rapid pull over a few ms so bullet only fires once aim sticks onto enemy
+                const pullAlpha = justStartedFiring ? 0.74 : 1 - Math.exp(-94 * dt);
+                this.yaw += deltaYaw0 * pullAlpha;
+                this.pitch = THREE.MathUtils.clamp(
+                  THREE.MathUtils.lerp(this.pitch, startPitch, pullAlpha),
+                  -1.05,
+                  1.18,
+                );
+
+                let remYaw = targetYaw0 - this.yaw;
+                while (remYaw > Math.PI) remYaw -= Math.PI * 2;
+                while (remYaw < -Math.PI) remYaw += Math.PI * 2;
+                const remPitch = startPitch - this.pitch;
+                const tolYaw = Math.max(0.014, Math.min(0.044, 0.22 / Math.max(1.5, chestAim.horiz)));
+                const tolPitch = Math.max(0.018, Math.min(0.056, 0.28 / Math.max(1.5, chestAim.horiz)));
+                if (Math.abs(remYaw) <= tolYaw && Math.abs(remPitch) <= tolPitch) {
+                  this.yaw += remYaw;
+                  this.pitch = THREE.MathUtils.clamp(startPitch, -1.05, 1.18);
+                  this.aimSnapConverged = true;
+                  justAimSnapped = true;
+                }
+              } else {
+                const snapBlend = justStartedAiming ? 0.99 : 0.96;
+                this.yaw += deltaYaw0 * snapBlend;
+                this.pitch = THREE.MathUtils.clamp(
+                  THREE.MathUtils.lerp(this.pitch, startPitch, snapBlend),
+                  -1.05,
+                  1.18,
+                );
+                this.aimSnapConverged = true;
+                if (justStartedAiming) {
+                  justAimSnapped = true;
+                }
               }
             } else {
-              // Update dynamic zone with hysteresis so chest/neck/head tracking never oscillates wildly
+              // Update dynamic zone with hysteresis (resting center = upper chest / low neck)
               if (rawPitchInput > 0.00012) {
-                if (zoneT >= 0.50) {
+                if (zoneT >= 0.56) {
                   this.aimFocusZone = 'head';
-                } else if (zoneT >= 0.25 && this.aimFocusZone === 'chest') {
+                } else if (zoneT >= 0.28 && this.aimFocusZone === 'chest') {
                   this.aimFocusZone = 'neck';
                 }
               } else if (rawPitchInput < -0.0008) {
-                if (zoneT < 0.34) {
+                if (zoneT < 0.36) {
                   this.aimFocusZone = 'chest';
-                } else if (zoneT < 0.70 && this.aimFocusZone === 'head') {
+                } else if (zoneT < 0.72 && this.aimFocusZone === 'head') {
                   this.aimFocusZone = 'neck';
                 }
               } else {
                 if (this.aimFocusZone === 'chest') {
-                  if (zoneT >= 0.64) this.aimFocusZone = 'head';
-                  else if (zoneT >= 0.42) this.aimFocusZone = 'neck';
+                  if (zoneT >= 0.68) this.aimFocusZone = 'head';
+                  else if (zoneT >= 0.45 && this.pullingUpTimer > 0) this.aimFocusZone = 'neck';
                 } else if (this.aimFocusZone === 'neck') {
-                  if (zoneT >= 0.66) this.aimFocusZone = 'head';
-                  else if (zoneT < 0.22 && this.pullingUpTimer <= 0) this.aimFocusZone = 'chest';
+                  if (zoneT >= 0.70) this.aimFocusZone = 'head';
+                  else if (zoneT < 0.26 || this.pullingUpTimer <= 0) this.aimFocusZone = 'chest';
                 } else if (zoneT < 0.44) {
-                  this.aimFocusZone = zoneT < 0.22 && this.pullingUpTimer <= 0 ? 'chest' : 'neck';
+                  this.aimFocusZone = zoneT < 0.24 && this.pullingUpTimer <= 0 ? 'chest' : 'neck';
                 }
               }
 
@@ -8069,14 +8221,15 @@ export class BattleRoyaleEngine {
                 this.aimFocusZone === 'head'
                   ? headAim.yaw
                   : this.aimFocusZone === 'neck'
-                    ? lerpAngle(chestAim.yaw, headAim.yaw, 0.55)
-                    : chestAim.yaw;
+                    ? neckYaw
+                    : upperChestYaw;
               let deltaYawZone = targetYawZone - this.yaw;
               while (deltaYawZone > Math.PI) deltaYawZone -= Math.PI * 2;
               while (deltaYawZone < -Math.PI) deltaYawZone += Math.PI * 2;
 
-              // Strong, sticky horizontal tracking across bursts and sprays
-              const yawLambda = (this.isAiming ? 46 : 40) * sprayTrack;
+              // Centering force weakens progressively as player holds fire continuously
+              const gripFactor = 0.20 + 0.80 * gripStrength;
+              const yawLambda = (this.isAiming ? 46 : 40) * gripFactor;
               this.yaw += deltaYawZone * (1 - Math.exp(-yawLambda * dt));
 
               if (this.bugDoCapaTimer > 0 && !target.isLowPose) {
@@ -8088,34 +8241,38 @@ export class BattleRoyaleEngine {
                       ? 1.0
                       : Math.max(0.55, 1.0 - (chestAim.horiz - 85) / 140);
                 const bugPitch = THREE.MathUtils.lerp(
-                  chestAim.pitch,
+                  upperChestPitch,
                   headAim.pitch + 0.004,
                   distQuality,
                 );
                 this.pitch = THREE.MathUtils.damp(
                   this.pitch,
                   bugPitch,
-                  38 * Math.max(0.75, sprayControl),
+                  38 * Math.max(0.35, gripStrength),
                   dt,
                 );
               } else if (rawPitchInput > 0.00012) {
-                // Smooth chest-to-head Capa drag with anti-overshoot cushion around head
-                const climbScale = THREE.MathUtils.clamp(chestHeadSpan / 0.031, 0.80, 1.38);
+                this.capaClimbEffort = Math.min(
+                  1.6,
+                  this.capaClimbEffort + dt * 1.35 + rawPitchInput * 3.0,
+                );
+                // Smooth upper-chest-to-head Capa climb with recoil/weight resistance as grip weakens
+                const climbScale = THREE.MathUtils.clamp(chestHeadSpan / 0.025, 0.78, 1.34);
                 const oneShotBoost =
                   !activeDef.automatic ||
                   activeDef.category === 'HG' ||
                   activeDef.category === 'SG'
-                    ? 1.38
-                    : 1.20;
-                const headCushionStart = headPitch - chestHeadSpan * 0.16;
+                    ? 1.32
+                    : 1.12;
+                const gripClimbMult = THREE.MathUtils.lerp(0.62, 1.10, gripStrength);
+                const headCushionStart = headPitch - chestHeadSpan * 0.18;
 
                 if (this.pitch < headCushionStart) {
-                  const scaledUp = rawPitchInput * climbScale * oneShotBoost;
+                  const scaledUp = rawPitchInput * climbScale * oneShotBoost * gripClimbMult;
                   const nextPitch = this.pitch + scaledUp;
-                  // Cushion landing if single frame would overshoot straight past the head
                   this.pitch = THREE.MathUtils.clamp(
                     nextPitch > headTopPitch && rawPitchInput < 0.032
-                      ? THREE.MathUtils.lerp(headPitch, nextPitch, 0.22)
+                      ? THREE.MathUtils.lerp(headPitch, nextPitch, 0.24)
                       : nextPitch,
                     -1.05,
                     1.18,
@@ -8128,7 +8285,10 @@ export class BattleRoyaleEngine {
                     1,
                   );
                   const upCushion =
-                    rawPitchInput > 0.032 ? 1.0 : THREE.MathUtils.lerp(0.50, 0.15, headDepth);
+                    rawPitchInput > 0.032
+                      ? 1.0
+                      : THREE.MathUtils.lerp(0.46, 0.16, headDepth) *
+                        THREE.MathUtils.lerp(1.45, 0.90, gripStrength);
                   this.pitch = THREE.MathUtils.clamp(
                     this.pitch + rawPitchInput * upCushion,
                     -1.05,
@@ -8137,7 +8297,7 @@ export class BattleRoyaleEngine {
                 }
 
                 if (this.pitch > headTopPitch + 0.060 || rawPitchInput > 0.048) {
-                  // User pulled deliberately past the head — unstick cleanly!
+                  // Pulled deliberately past head — unstick until fire release
                   this.lockedTargetId = null;
                   this.aimRelockBlockedUntilRelease = true;
                   this.lockedTargetWasStanding = false;
@@ -8148,7 +8308,9 @@ export class BattleRoyaleEngine {
                 } else if (this.pitch >= headCushionStart && this.pitch <= headTopPitch + 0.025) {
                   this.aimFocusZone = 'head';
                   const headMagnet =
-                    (this.isAiming ? 36 : 31) * sprayTrack * (rawPitchInput < 0.018 ? 1.0 : 0.65);
+                    (this.isAiming ? 34 : 29) *
+                    gripFactor *
+                    (rawPitchInput < 0.018 ? 1.0 : 0.62);
                   this.pitch = THREE.MathUtils.clamp(
                     THREE.MathUtils.damp(this.pitch, headPitch, headMagnet, dt),
                     -1.05,
@@ -8166,7 +8328,7 @@ export class BattleRoyaleEngine {
                   this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput, -1.05, 1.18);
                 } else {
                   this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput * 0.42, -1.05, 1.18);
-                  if (this.pitch < chestPitch - 0.075) {
+                  if (this.pitch < upperChestPitch - 0.085) {
                     this.lockedTargetId = null;
                     this.lockedTargetWasStanding = false;
                     this.aimRelockBlockedUntilRelease = true;
@@ -8176,18 +8338,21 @@ export class BattleRoyaleEngine {
                   }
                 }
               } else {
-                const dampRate = (this.isAiming ? 36 : 31) * sprayTrack;
+                const dampRate = (this.isAiming ? 36 : 31) * gripFactor;
                 const zoneTargetPitch =
                   this.aimFocusZone === 'head'
                     ? headPitch
                     : this.aimFocusZone === 'neck'
                       ? neckPitch
-                      : chestPitch;
-                if (this.aimFocusZone === 'chest' && this.pullingUpTimer > 0 && this.pitch > chestPitch) {
-                  // Preserve upward climb progress right after dragging up instead of snapping back down
+                      : upperChestPitch;
+                if (
+                  this.aimFocusZone === 'chest' &&
+                  this.pullingUpTimer > 0 &&
+                  this.pitch > upperChestPitch
+                ) {
                   this.pitch = THREE.MathUtils.clamp(
                     THREE.MathUtils.damp(this.pitch, neckPitch, dampRate * 0.35, dt),
-                    chestPitch,
+                    upperChestPitch,
                     headTopPitch + 0.048,
                   );
                 } else {
@@ -8695,7 +8860,7 @@ export class BattleRoyaleEngine {
 
     // Update camera BEFORE firing so aim-assist snaps apply cleanly with zero rotational skew or scope-open delay!
     const snapCameraNow =
-      (justStartedFiring && this.aimAssistActive) ||
+      (justStartedFiring && this.aimAssistActive && this.aimSnapConverged) ||
       justAimSnapped ||
       isFirstPersonAds ||
       justStoppedAiming ||
@@ -8709,7 +8874,7 @@ export class BattleRoyaleEngine {
       snapCameraNow,
     );
 
-    // Fire or Melee Punch AFTER camera & aim-assist sync (with pre-first-shot snap delay + buffered taps)
+    // Fire or Melee Punch AFTER camera & aim-assist sync (waits rapid ms until aim sticks onto enemy)
     const nowMs = performance.now();
     const bufferedWeaponTap =
       this.activeSlot !== 4 &&
@@ -8718,13 +8883,19 @@ export class BattleRoyaleEngine {
       !this.isPlacingGloo &&
       !this.isHoldingGrenade &&
       nowMs <= this.pendingSemiFireUntilMs;
+    const stickTimedOut =
+      this.waitingForAimStick && nowMs - this.aimStickWaitStartMs >= 115;
+    const stickGateReady =
+      !this.waitingForAimStick ||
+      (nowMs >= this.firstShotDelayUntilMs && (this.aimSnapConverged || stickTimedOut));
+
     if ((weaponFireDown || bufferedWeaponTap) && weaponFireAllowed) {
       if (this.activeSlot === 4 && weaponFireDown) {
         if (this.stance !== 'prone' && nowMs - this.slotLastShotTime[4] >= 390) {
           this.slotLastShotTime[4] = nowMs;
           this.performMeleePunch();
         }
-      } else if (activeWeaponState && !this.isReloading && nowMs >= this.firstShotDelayUntilMs) {
+      } else if (activeWeaponState && !this.isReloading && stickGateReady) {
         const def = WEAPONS[activeWeaponState.weaponId];
         const canFire = def.automatic
           ? weaponFireDown || bufferedWeaponTap
@@ -8733,6 +8904,8 @@ export class BattleRoyaleEngine {
           this.slotLastShotTime[this.activeSlot] = nowMs;
           this.pendingSemiFireUntilMs = 0;
           this.firstShotDelayUntilMs = 0;
+          this.waitingForAimStick = false;
+          this.aimSnapConverged = false;
           this.fireActiveWeapon(activeWeaponState);
         }
       }
@@ -9976,6 +10149,31 @@ export class BattleRoyaleEngine {
 
     if (pelletTotalDmg > 0 && pelletHitPoint) {
       this.pushDamagePopup(pelletHitPoint, pelletTotalDmg, pelletAnyHead, pelletArmor);
+    }
+
+    // Recoil feel when climbing for capa or holding sustained spray
+    if (
+      this.settings.aimAssistMode === 'default' &&
+      def.supportsAimAssist &&
+      (this.aimFocusZone !== 'chest' || this.pullingUpTimer > 0 || this.consecutiveShots >= 2)
+    ) {
+      let recoilAttachMult = 1.0;
+      if (slotState.attachments.foregrip === 'grip') recoilAttachMult *= 0.72;
+      if (slotState.attachments.muzzle === 'compensator') recoilAttachMult *= 0.78;
+      if (this.isAiming && slotState.attachments.stock === 'stock') recoilAttachMult *= 0.85;
+      const sprayFatigueKick = THREE.MathUtils.clamp((this.consecutiveShots - 1) / 7, 0, 1);
+      const isTryingCapa = this.aimFocusZone !== 'chest' || this.pullingUpTimer > 0;
+      const baseV = def.category === 'SG' || def.category === 'HG' ? 0.0044 : 0.0022;
+      const kickV = isTryingCapa
+        ? baseV * (0.40 + 0.95 * sprayFatigueKick) * recoilAttachMult
+        : 0;
+      const kickH =
+        (Math.random() - 0.5) *
+        0.0038 *
+        ((isTryingCapa ? 0.35 : 0.14) + 1.15 * sprayFatigueKick) *
+        recoilAttachMult;
+      this.pitch = THREE.MathUtils.clamp(this.pitch + kickV, -1.05, 1.18);
+      this.yaw += kickH;
     }
   }
 
