@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { soundEngine } from '../game/audio';
 import { GameState } from '../game/types';
+import winterlandsLoadingBg from '../assets/images/winterlands_loading_hd_1795808029951.jpg';
 
 interface BootAndLoadingProps {
   state: GameState.BOOT | GameState.LOADING;
@@ -275,9 +276,9 @@ export const BootAndLoadingScreen: React.FC<BootAndLoadingProps> = ({
       onPointerDown={() => soundEngine.unlock()}
       className="fixed inset-0 z-50 bg-black text-white select-none overflow-hidden"
     >
-      {/* Classic Widescreen Free Fire Loading Artwork */}
+      {/* Winterlands Free Fire Loading Artwork (HD) */}
       <img
-        src="/assets/loading_bg.jpg"
+        src={winterlandsLoadingBg}
         alt="Carregando Free Fire"
         referrerPolicy="no-referrer"
         className="w-full h-full object-cover object-center"

@@ -220,6 +220,25 @@ function getWorldLimbDir(root: THREE.Object3D, aName: string, bName: string, fal
   return d.normalize();
 }
 
+function computePosedWorldMinY(root: THREE.Object3D): number | null {
+  root.updateMatrixWorld(true);
+  let minY = Infinity;
+  const v = new THREE.Vector3();
+  root.traverse((obj) => {
+    const sm = obj as THREE.SkinnedMesh;
+    if (!sm.isSkinnedMesh || !sm.geometry || !sm.skeleton) return;
+    const pos = sm.geometry.getAttribute('position');
+    if (!pos) return;
+    sm.skeleton.update();
+    for (let i = 0; i < pos.count; i++) {
+      sm.applyBoneTransform(i, v.fromBufferAttribute(pos, i));
+      v.applyMatrix4(sm.matrixWorld);
+      if (Number.isFinite(v.y) && v.y < minY) minY = v.y;
+    }
+  });
+  return Number.isFinite(minY) ? minY : null;
+}
+
 function buildRunLoopFromRunGlb(
   runScene: THREE.Group,
   runClip: THREE.AnimationClip,
@@ -287,6 +306,7 @@ function buildRunLoopFromRunGlb(
     : new THREE.Vector3(0, 0.9, 0);
   const dstSpine2 = dstTemp.getObjectByName('mixamorigSpine2');
   const dstSpine2NeutralQ = dstSpine2 ? dstSpine2.quaternion.clone() : null;
+  const dstSpine2BindW = dstSpine2 ? dstSpine2.getWorldQuaternion(new THREE.Quaternion()) : null;
 
   const runClone = SkeletonUtils.clone(runScene) as THREE.Group;
   runClone.updateMatrixWorld(true);
@@ -377,6 +397,45 @@ function buildRunLoopFromRunGlb(
       buf[f * 4 + 2] = qLocal.z;
       buf[f * 4 + 3] = qLocal.w;
     }
+
+    // Keep Neck smoothly aligned between Spine1/Spine2 and Head during FF_Run_Loop
+    const nkNode = dstNodes.get('mixamorigNeck');
+    const hdNode = dstNodes.get('mixamorigHead');
+    const s2Node = dstTemp.getObjectByName('mixamorigSpine2');
+    const nkBuf = quatBuffers.get('mixamorigNeck');
+    const hdBuf = quatBuffers.get('mixamorigHead');
+    const nkBind = dstBindWorldQ.get('mixamorigNeck');
+    const hdBind = dstBindWorldQ.get('mixamorigHead');
+    if (nkNode && hdNode && s2Node && nkBuf && hdBuf && nkBind && hdBind && dstSpine2BindW) {
+      dstTemp.updateMatrixWorld(true);
+      const qS2W = s2Node.getWorldQuaternion(new THREE.Quaternion());
+      const qNkW = nkNode.getWorldQuaternion(new THREE.Quaternion());
+      const qHdW = hdNode.getWorldQuaternion(new THREE.Quaternion());
+      const qS2D = qS2W.clone().multiply(dstSpine2BindW.clone().invert());
+      const qNkD = qNkW.clone().multiply(nkBind.clone().invert());
+      const qHdD = qHdW.clone().multiply(hdBind.clone().invert());
+      const qMidD = qS2D.clone().slerp(qHdD, 0.55);
+      qNkD.slerp(qMidD, 0.55);
+      const qNewNkW = qNkD.multiply(nkBind).normalize();
+      if (nkNode.parent) {
+        nkNode.parent.getWorldQuaternion(qParentW);
+        qLocal.copy(qParentW).invert().multiply(qNewNkW).normalize();
+      } else {
+        qLocal.copy(qNewNkW);
+      }
+      nkNode.quaternion.copy(qLocal);
+      nkBuf[f * 4] = qLocal.x;
+      nkBuf[f * 4 + 1] = qLocal.y;
+      nkBuf[f * 4 + 2] = qLocal.z;
+      nkBuf[f * 4 + 3] = qLocal.w;
+
+      qLocal.copy(qNewNkW).invert().multiply(qHdW).normalize();
+      hdNode.quaternion.copy(qLocal);
+      hdBuf[f * 4] = qLocal.x;
+      hdBuf[f * 4 + 1] = qLocal.y;
+      hdBuf[f * 4 + 2] = qLocal.z;
+      hdBuf[f * 4 + 3] = qLocal.w;
+    }
   }
 
   action.stop();
@@ -460,6 +519,8 @@ function buildFFPack(
   wrapper.add(rawScene);
   wrapper.updateMatrixWorld(true);
 
+  const isAutoRigged = modelId === 'maxim' || modelId === 'kelly' || modelId.includes(':');
+
   // Measure source skeleton bind-pose limb directions in upright +Z world space
   srcScene.updateMatrixWorld(true);
   const srcDirArmL = getWorldLimbDir(srcScene, 'upperarm_l', 'lowerarm_l', new THREE.Vector3(1, 0, 0));
@@ -468,8 +529,10 @@ function buildFFPack(
   const srcDirForeR = getWorldLimbDir(srcScene, 'lowerarm_r', 'hand_r', new THREE.Vector3(-1, 0, 0));
   const srcDirLegL = getWorldLimbDir(srcScene, 'thigh_l', 'calf_l', new THREE.Vector3(0, -1, 0));
   const srcDirShinL = getWorldLimbDir(srcScene, 'calf_l', 'foot_l', new THREE.Vector3(0, -1, 0));
+  const srcDirFootL = getWorldLimbDir(srcScene, 'foot_l', 'ball_l', new THREE.Vector3(0, -0.44, 0.90));
   const srcDirLegR = getWorldLimbDir(srcScene, 'thigh_r', 'calf_r', new THREE.Vector3(0, -1, 0));
   const srcDirShinR = getWorldLimbDir(srcScene, 'calf_r', 'foot_r', new THREE.Vector3(0, -1, 0));
+  const srcDirFootR = getWorldLimbDir(srcScene, 'foot_r', 'ball_r', new THREE.Vector3(0, -0.44, 0.90));
 
   // Align destination limbs to match source bind-pose directions before sampling bind quats
   alignBoneToWorldDir(wrapper, 'mixamorigLeftArm', 'mixamorigLeftForeArm', srcDirArmL);
@@ -480,6 +543,16 @@ function buildFFPack(
   alignBoneToWorldDir(wrapper, 'mixamorigLeftLeg', 'mixamorigLeftFoot', srcDirShinL);
   alignBoneToWorldDir(wrapper, 'mixamorigRightUpLeg', 'mixamorigRightLeg', srcDirLegR);
   alignBoneToWorldDir(wrapper, 'mixamorigRightLeg', 'mixamorigRightFoot', srcDirShinR);
+  if (isAutoRigged) {
+    alignBoneToWorldDir(wrapper, 'mixamorigLeftFoot', 'mixamorigLeftToeBase', srcDirFootL);
+    alignBoneToWorldDir(wrapper, 'mixamorigRightFoot', 'mixamorigRightToeBase', srcDirFootR);
+    // Re-ground hips vertically so soles sit flush at y = 0 after straightening bent/staggered legs
+    const posedMinY = computePosedWorldMinY(wrapper);
+    const groundHips = wrapper.getObjectByName('mixamorigHips');
+    if (posedMinY !== null && groundHips && Math.abs(posedMinY) > 1e-4) {
+      groundHips.position.y -= posedMinY / FF_SCENE_SCALE;
+    }
+  }
   wrapper.updateMatrixWorld(true);
 
   // Measure head height & crown offset in aligned standing pose
@@ -509,6 +582,31 @@ function buildFFPack(
     if (db) {
       dstNodes.set(dstName, db);
       dstBindWorldQ.set(dstName, db.getWorldQuaternion(new THREE.Quaternion()));
+    }
+  }
+
+  const actualHeadChainBindW = new Map<string, THREE.Quaternion>();
+  for (const bName of ['mixamorigSpine2', 'mixamorigNeck', 'mixamorigHead'] as const) {
+    const db = dstNodes.get(bName);
+    if (db) actualHeadChainBindW.set(bName, db.getWorldQuaternion(new THREE.Quaternion()));
+  }
+
+  // Auto-rigged characters have upright (+Y up, +Z forward) bind spine/neck/head bones;
+  // align their virtual bind ref to adam.glb's spine/neck/head bind frame so Spine2-Neck-Head stay straight instead of inheriting UE4's -13°/+17° S-tilt.
+  if (isAutoRigged) {
+    const spineChainPairs: ReadonlyArray<readonly [string, string]> = [
+      ['spine_01', 'mixamorigSpine'],
+      ['spine_02', 'mixamorigSpine1'],
+      ['spine_03', 'mixamorigSpine2'],
+      ['neck_01', 'mixamorigNeck'],
+      ['Head', 'mixamorigHead'],
+    ];
+    for (let s = 0; s < spineChainPairs.length; s++) {
+      const [srcN, dstN] = spineChainPairs[s];
+      const sbQ = srcBindWorldQ.get(srcN);
+      if (sbQ && dstBindWorldQ.has(dstN)) {
+        dstBindWorldQ.set(dstN, sbQ.clone());
+      }
     }
   }
 
@@ -571,7 +669,8 @@ function buildFFPack(
 
       if (hipsPosBuf && srcPelvis && dstHips && dstHips.parent) {
         srcPelvis.getWorldPosition(tmpSrcPos);
-        const worldDeltaY = tmpSrcPos.y - srcHipsBindWorldY;
+        const hipsYScale = isAutoRigged ? dstHipsBindWorldPos.y / Math.max(0.2, srcHipsBindWorldY) : 1;
+        const worldDeltaY = (tmpSrcPos.y - srcHipsBindWorldY) * hipsYScale;
         tmpDstWorldTargetPos.copy(dstHipsBindWorldPos);
         tmpDstWorldTargetPos.y += worldDeltaY;
         dstHips.parent.worldToLocal(tmpDstWorldTargetPos);
@@ -605,7 +704,7 @@ function buildFFPack(
         db.quaternion.copy(qLocal);
         db.updateMatrixWorld(false);
 
-        if ((modelId === 'adam' || modelId === 'maxim') && (dstName === 'mixamorigLeftShoulder' || dstName === 'mixamorigRightShoulder')) {
+        if ((modelId === 'adam' || isAutoRigged) && (dstName === 'mixamorigLeftShoulder' || dstName === 'mixamorigRightShoulder')) {
           const baseShQ = savedLocalQuats.get(dstName);
           if (baseShQ) {
             qLocal.copy(baseShQ).slerp(qLocal, 0.78).normalize();
@@ -620,8 +719,72 @@ function buildFFPack(
         buf[f * 4 + 3] = qLocal.w;
       }
 
-      // For straight T-pose meshes (Adam & Maxim), softly limit extreme (>60°) elbow bends so arms never crease or over-fold
-      if (modelId === 'adam' || modelId === 'maxim') {
+      // Softly smooth Neck between chest & head and dampen extreme sideways Head roll on custom skins & Eva
+      if (isAutoRigged || modelId === 'eva') {
+        const s2Node = dstNodes.get('mixamorigSpine2');
+        const nkNode = dstNodes.get('mixamorigNeck');
+        const hdNode = dstNodes.get('mixamorigHead');
+        const nkBuf = quatBuffers.get('mixamorigNeck');
+        const hdBuf = quatBuffers.get('mixamorigHead');
+        const s2BindActual = actualHeadChainBindW.get('mixamorigSpine2');
+        const nkBindActual = actualHeadChainBindW.get('mixamorigNeck');
+        const hdBindActual = actualHeadChainBindW.get('mixamorigHead');
+        if (s2Node && nkNode && hdNode && nkBuf && hdBuf && s2BindActual && nkBindActual && hdBindActual) {
+          wrapper.updateMatrixWorld(true);
+          const qS2W = s2Node.getWorldQuaternion(new THREE.Quaternion());
+          const qNkW = nkNode.getWorldQuaternion(new THREE.Quaternion());
+          const qHdW = hdNode.getWorldQuaternion(new THREE.Quaternion());
+
+          const qS2Delta = qS2W.clone().multiply(s2BindActual.clone().invert());
+          const qNkDelta = qNkW.clone().multiply(nkBindActual.clone().invert());
+          const qHdDelta = qHdW.clone().multiply(hdBindActual.clone().invert());
+
+          // Dampen sideways Head roll beyond ~3.4° so aiming/idle head posture stays upright instead of crooked
+          const headFwdW = new THREE.Vector3(0, 0, 1).applyQuaternion(qHdDelta);
+          const headUpW = new THREE.Vector3(0, 1, 0).applyQuaternion(qHdDelta);
+          const leftNoRoll = new THREE.Vector3(0, 1, 0).cross(headFwdW);
+          if (leftNoRoll.lengthSq() > 1e-4) {
+            leftNoRoll.normalize();
+            const upNoRoll = headFwdW.clone().cross(leftNoRoll).normalize();
+            const roll = Math.atan2(headUpW.dot(leftNoRoll), headUpW.dot(upNoRoll));
+            if (Math.abs(roll) > 0.06) {
+              const targetRoll = Math.sign(roll) * (0.06 + (Math.abs(roll) - 0.06) * 0.28);
+              const qRollFix = new THREE.Quaternion().setFromAxisAngle(headFwdW, roll - targetRoll);
+              qHdDelta.premultiply(qRollFix).normalize();
+            }
+          }
+          const qNewHdW = qHdDelta.clone().multiply(hdBindActual).normalize();
+
+          // Bridge Neck smoothly between Spine2 and Head so it never twists or kinks independently
+          const qMidDelta = qS2Delta.clone().slerp(qHdDelta, 0.52);
+          qNkDelta.slerp(qMidDelta, isAutoRigged ? 0.72 : 0.65);
+          const qNewNkW = qNkDelta.multiply(nkBindActual).normalize();
+
+          if (nkNode.parent) {
+            nkNode.parent.getWorldQuaternion(qParentW);
+            qLocal.copy(qParentW).invert().multiply(qNewNkW).normalize();
+          } else {
+            qLocal.copy(qNewNkW);
+          }
+          nkNode.quaternion.copy(qLocal);
+          nkNode.updateMatrixWorld(false);
+          nkBuf[f * 4] = qLocal.x;
+          nkBuf[f * 4 + 1] = qLocal.y;
+          nkBuf[f * 4 + 2] = qLocal.z;
+          nkBuf[f * 4 + 3] = qLocal.w;
+
+          qLocal.copy(qNewNkW).invert().multiply(qNewHdW).normalize();
+          hdNode.quaternion.copy(qLocal);
+          hdNode.updateMatrixWorld(false);
+          hdBuf[f * 4] = qLocal.x;
+          hdBuf[f * 4 + 1] = qLocal.y;
+          hdBuf[f * 4 + 2] = qLocal.z;
+          hdBuf[f * 4 + 3] = qLocal.w;
+        }
+      }
+
+      // Softly limit extreme (>60°) elbow bends on auto-rigged / T-pose meshes so arms never crease or over-fold
+      if (modelId === 'adam' || isAutoRigged) {
         wrapper.updateMatrixWorld(true);
         const elbowPairs: ReadonlyArray<readonly [string, string, string]> = [
           ['mixamorigLeftArm', 'mixamorigLeftForeArm', 'mixamorigLeftHand'],

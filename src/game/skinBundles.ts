@@ -74,22 +74,33 @@ function registerSpecGlossPlugin(loader: GLTFLoader): void {
   }));
 }
 
-let catalogEntries: SkinCatalogBundleRef[] = [
-  {
-    id: 'male:1',
-    gender: 'male',
-    number: 1,
-    url: '/skin/male/1.glb',
-    fallbackUrl: `${SKIN_CDN_BASE}/male/1.glb`,
-  },
-  {
-    id: 'female:1',
-    gender: 'female',
-    number: 1,
-    url: '/skin/female/1.glb',
-    fallbackUrl: `${SKIN_CDN_BASE}/female/1.glb`,
-  },
-];
+const DEFAULT_MALE_SKIN_COUNT = 6;
+const DEFAULT_FEMALE_SKIN_COUNT = 1;
+
+function createDefaultSkinCatalogEntries(): SkinCatalogBundleRef[] {
+  const entries: SkinCatalogBundleRef[] = [];
+  for (let n = 1; n <= DEFAULT_MALE_SKIN_COUNT; n++) {
+    entries.push({
+      id: `male:${n}`,
+      gender: 'male',
+      number: n,
+      url: `/skin/male/${n}.glb`,
+      fallbackUrl: `${SKIN_CDN_BASE}/male/${n}.glb`,
+    });
+  }
+  for (let n = 1; n <= DEFAULT_FEMALE_SKIN_COUNT; n++) {
+    entries.push({
+      id: `female:${n}`,
+      gender: 'female',
+      number: n,
+      url: `/skin/female/${n}.glb`,
+      fallbackUrl: `${SKIN_CDN_BASE}/female/${n}.glb`,
+    });
+  }
+  return entries;
+}
+
+let catalogEntries: SkinCatalogBundleRef[] = createDefaultSkinCatalogEntries();
 let catalogFetched = false;
 let catalogPromise: Promise<SkinCatalogBundleRef[]> | null = null;
 const loadedBundles = new Map<string, LoadedSkinBundle>();
@@ -148,13 +159,37 @@ export function getSkinBundlesLoadingStatus(): {
   };
 }
 
+function mergeCatalogEntries(
+  incoming: SkinCatalogBundleRef[],
+): SkinCatalogBundleRef[] {
+  const byId = new Map<string, SkinCatalogBundleRef>();
+  for (const def of createDefaultSkinCatalogEntries()) {
+    byId.set(def.id, def);
+  }
+  for (const item of incoming) {
+    if (!item || typeof item.id !== 'string') continue;
+    const prev = byId.get(item.id);
+    byId.set(item.id, {
+      ...item,
+      fallbackUrl: item.fallbackUrl ?? prev?.fallbackUrl ?? `${SKIN_CDN_BASE}/${item.gender}/${item.number}.glb`,
+    });
+  }
+  return Array.from(byId.values()).sort((a, b) => {
+    if (a.gender !== b.gender) return a.gender === 'male' ? -1 : 1;
+    return a.number - b.number;
+  });
+}
+
 export async function discoverSkinCatalog(): Promise<SkinCatalogBundleRef[]> {
   if (catalogFetched) return catalogEntries;
   if (catalogPromise) return catalogPromise;
 
+  const rawApiBase = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
+  const catalogUrl = rawApiBase ? `${rawApiBase}/api/skins/catalog` : '/api/skins/catalog';
+
   catalogPromise = (async () => {
     try {
-      const resp = await fetch('/api/skins/catalog');
+      const resp = await fetch(catalogUrl);
       if (resp.ok) {
         const json = (await resp.json()) as {
           male?: SkinCatalogBundleRef[];
@@ -165,11 +200,11 @@ export async function discoverSkinCatalog(): Promise<SkinCatalogBundleRef[]> {
           ...(Array.isArray(json.female) ? json.female : []),
         ];
         if (merged.length > 0) {
-          catalogEntries = merged;
+          catalogEntries = mergeCatalogEntries(merged);
         }
       }
     } catch {
-      // Fallback to default male/1 & female/1
+      // Fallback to default male/1..6 & female/1
     } finally {
       catalogFetched = true;
     }
@@ -234,11 +269,38 @@ function toClassicLambertMaterial(
   return next;
 }
 
+let sharedThumbnailRenderer: THREE.WebGLRenderer | null = null;
+
+function getSharedThumbnailRenderer(): THREE.WebGLRenderer {
+  if (sharedThumbnailRenderer) {
+    const gl = sharedThumbnailRenderer.getContext();
+    if (gl && !gl.isContextLost()) {
+      return sharedThumbnailRenderer;
+    }
+    sharedThumbnailRenderer.dispose();
+    sharedThumbnailRenderer = null;
+  }
+  const renderer = new THREE.WebGLRenderer({
+    alpha: true,
+    antialias: true,
+    powerPreference: 'high-performance',
+    preserveDrawingBuffer: true,
+    depth: true,
+    stencil: false,
+  });
+  renderer.setPixelRatio(1);
+  renderer.setSize(192, 248, false);
+  renderer.setClearColor(0x000000, 0);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.NoToneMapping;
+  sharedThumbnailRenderer = renderer;
+  return renderer;
+}
+
 function renderFullOutfitThumbnail(
   rawScene: THREE.Group,
   gender: SkinGender,
 ): string | null {
-  let renderer: THREE.WebGLRenderer | null = null;
   const previewGeoms: THREE.BufferGeometry[] = [];
   try {
     rawScene.updateMatrixWorld(true);
@@ -336,19 +398,8 @@ function renderFullOutfitThumbnail(
     previewGroup.rotation.y = -0.26;
     previewGroup.updateMatrixWorld(true);
 
-    renderer = new THREE.WebGLRenderer({
-      alpha: true,
-      antialias: true,
-      powerPreference: 'high-performance',
-      preserveDrawingBuffer: true,
-      depth: true,
-      stencil: false,
-    });
-    renderer.setPixelRatio(1);
-    renderer.setSize(192, 248, false);
-    renderer.setClearColor(0x000000, 0);
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.NoToneMapping;
+    const renderer = getSharedThumbnailRenderer();
+    renderer.clear();
 
     const scene = new THREE.Scene();
     scene.add(
@@ -386,7 +437,6 @@ function renderFullOutfitThumbnail(
     for (let i = 0; i < previewGeoms.length; i++) {
       previewGeoms[i].dispose();
     }
-    renderer?.dispose();
   }
 }
 
@@ -502,6 +552,6 @@ export function ensureSkinBundleLoaded(bundleId: string): Promise<LoadedSkinBund
 
 export async function preloadSkinBundles(): Promise<void> {
   const refs = await discoverSkinCatalog();
-  await Promise.all(refs.slice(0, 12).map((r) => ensureSkinBundleLoaded(r.id)));
+  await Promise.all(refs.map((r) => ensureSkinBundleLoaded(r.id)));
   notifyListeners();
 }

@@ -1,4 +1,10 @@
-import { PlayerStance, WeaponId } from './types';
+import {
+  LOBBY_MUSIC_TRACKS,
+  LobbyMusicTrackId,
+  normalizeLobbyMusicTrack,
+  PlayerStance,
+  WeaponId,
+} from './types';
 
 export type FlightAudioMode = 'none' | 'airplane' | 'skydiving' | 'parachute';
 export type LobbyMusicMode = 'off' | 'lobby' | 'waiting' | 'drop';
@@ -281,18 +287,27 @@ class SoundEngine {
   private vehicleGain: GainNode | null = null;
   private vehicleFilter: BiquadFilterNode | null = null;
 
-  // Lobby 2017 Music
+  // Lobby Music (default: Natal 2018)
   private lobbyAudio: HTMLAudioElement | null = null;
   private lobbyMusicMode: LobbyMusicMode = 'off';
+  private lobbyMusicTrack: LobbyMusicTrackId = 'natal_2018';
+  private lobbyAudioTrackId: LobbyMusicTrackId | null = null;
   private lobbyFadeTimer: number | null = null;
   private booyahAudio: HTMLAudioElement | null = null;
   private booyahFallbackTimer: number | null = null;
   private recentRemoteShots: number[] = [];
   private lastSafeDmgAudioMs = 0;
 
-  public configure(volume: number, muted: boolean): void {
+  public configure(
+    volume: number,
+    muted: boolean,
+    lobbyMusicTrack?: LobbyMusicTrackId,
+  ): void {
     this.volume = Math.max(0, Math.min(1, volume));
     this.muted = muted;
+    if (lobbyMusicTrack !== undefined) {
+      this.setLobbyMusicTrack(lobbyMusicTrack);
+    }
     if (this.masterGain && this.ctx) {
       this.masterGain.gain.setTargetAtTime(
         this.muted ? 0 : this.volume,
@@ -390,14 +405,77 @@ class SoundEngine {
     });
   }
 
+  private getLobbyTrackUrl(trackId: LobbyMusicTrackId): string | null {
+    const found = LOBBY_MUSIC_TRACKS.find((t) => t.id === trackId);
+    return found ? found.url : LOBBY_MUSIC_TRACKS[0].url;
+  }
+
+  public setLobbyMusicTrack(track: LobbyMusicTrackId): void {
+    const next = normalizeLobbyMusicTrack(track);
+    if (this.lobbyMusicTrack === next) return;
+    this.lobbyMusicTrack = next;
+    const el = this.lobbyAudio;
+    if (el) {
+      const nextUrl = this.getLobbyTrackUrl(next);
+      if (!nextUrl) {
+        if (!el.paused) {
+          el.pause();
+        }
+        el.volume = 0;
+        el.currentTime = 0;
+        this.lobbyAudioTrackId = 'off';
+      } else if (this.lobbyAudioTrackId !== next) {
+        const shouldResume =
+          this.lobbyMusicMode !== 'off' && !this.muted && this.volume > 0.001;
+        el.pause();
+        el.src = nextUrl;
+        el.currentTime = 0;
+        el.load();
+        this.lobbyAudioTrackId = next;
+        if (shouldResume) {
+          el.play().catch(() => {
+            // Wait for unlock gesture
+          });
+        }
+      }
+    }
+    this.syncLobbyMusicPlayback(this.lobbyMusicMode !== 'off');
+  }
+
   private ensureLobbyAudio(): HTMLAudioElement | null {
     if (typeof Audio === 'undefined') return null;
+    const url = this.getLobbyTrackUrl(this.lobbyMusicTrack);
+    if (!url) return null;
     if (!this.lobbyAudio) {
-      const el = new Audio('/audio/lobby_2017.mp3');
+      const el = new Audio(url);
       el.loop = true;
       el.preload = 'auto';
       el.volume = 0;
+      el.onerror = () => {
+        if (
+          this.lobbyMusicTrack === 'natal_2018' &&
+          !el.src.includes('/audio/lobby_2017.mp3')
+        ) {
+          el.src = '/audio/lobby_2017.mp3';
+          el.load();
+          if (
+            this.lobbyMusicMode !== 'off' &&
+            !this.muted &&
+            this.volume > 0.001
+          ) {
+            el.play().catch(() => {
+              // ignore
+            });
+          }
+        }
+      };
       this.lobbyAudio = el;
+      this.lobbyAudioTrackId = this.lobbyMusicTrack;
+    } else if (this.lobbyAudioTrackId !== this.lobbyMusicTrack) {
+      this.lobbyAudio.src = url;
+      this.lobbyAudio.currentTime = 0;
+      this.lobbyAudio.load();
+      this.lobbyAudioTrackId = this.lobbyMusicTrack;
     }
     return this.lobbyAudio;
   }
@@ -409,12 +487,12 @@ class SoundEngine {
   }
 
   private getTargetLobbyVolume(): number {
-    if (this.muted || this.volume <= 0.001) return 0;
+    if (this.muted || this.volume <= 0.001 || this.lobbyMusicTrack === 'off') return 0;
     return Math.max(0, Math.min(1, this.volume * LOBBY_MUSIC_GAIN[this.lobbyMusicMode]));
   }
 
   private syncLobbyMusicPlayback(attemptPlay = false): void {
-    const el = this.ensureLobbyAudio();
+    const el = this.lobbyAudio ?? this.ensureLobbyAudio();
     if (!el) return;
     const target = this.getTargetLobbyVolume();
 

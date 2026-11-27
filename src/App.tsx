@@ -1187,6 +1187,7 @@ export default function App() {
   const handleUpdateSettings = (next: GameSettings) => {
     setSettings(next);
     saveSettings(next);
+    soundEngine.configure(next.soundVolume, next.muted, next.lobbyMusicTrack);
     engineRef.current?.applyQualitySettings(next);
   };
 

@@ -1486,12 +1486,15 @@ export async function createExpressApp(
       );
     }
     if (found.length === 0) {
-      found.push({
-        id: `${gender}:1`,
-        gender,
-        number: 1,
-        url: `${SKIN_CDN_BASE}/${gender}/1.glb`,
-      });
+      const defaultCount = gender === 'male' ? 6 : 1;
+      for (let n = 1; n <= defaultCount; n++) {
+        found.push({
+          id: `${gender}:${n}`,
+          gender,
+          number: n,
+          url: `${SKIN_CDN_BASE}/${gender}/${n}.glb`,
+        });
+      }
     }
     return found;
   }
@@ -1521,16 +1524,18 @@ export async function createExpressApp(
       const result = await skinCatalogInFlight;
       return res.json(result);
     } catch {
+      const maleFallback: SkinBundleCatalogEntry[] = [];
+      for (let n = 1; n <= 6; n++) {
+        maleFallback.push({
+          id: `male:${n}`,
+          gender: 'male',
+          number: n,
+          url: `/skin/male/${n}.glb`,
+          fallbackUrl: `${SKIN_CDN_BASE}/male/${n}.glb`,
+        });
+      }
       return res.json({
-        male: [
-          {
-            id: 'male:1',
-            gender: 'male',
-            number: 1,
-            url: '/skin/male/1.glb',
-            fallbackUrl: `${SKIN_CDN_BASE}/male/1.glb`,
-          },
-        ],
+        male: maleFallback,
         female: [
           {
             id: 'female:1',

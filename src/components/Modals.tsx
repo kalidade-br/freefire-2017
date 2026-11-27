@@ -10,6 +10,8 @@ import {
   Lock,
   Sparkles,
   Ban,
+  Shirt,
+  Music,
 } from 'lucide-react';
 import {
   FREE_PLAYER_AVATARS,
@@ -41,7 +43,9 @@ import {
   GraphicsQuality,
   KEY_BINDING_GROUPS,
   KeyBindAction,
+  LOBBY_MUSIC_TRACKS,
   MESTRE_MIN_PTS,
+  normalizeLobbyMusicTrack,
   NetworkSyncPreset,
   normalizeCharacterModelId,
   PlayerAvatarId,
@@ -460,7 +464,12 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({
                           }`}
                         />
                       ) : (
-                        <RefreshCw className="w-6 h-6 text-neutral-500 animate-spin" />
+                        <div className="flex flex-col items-center justify-center gap-1 text-neutral-300">
+                          <Shirt className="w-6 h-6 text-amber-400/80" />
+                          <span className="text-[10px] font-black uppercase tracking-wider">
+                            {bundle.gender === 'female' ? 'Fem' : 'Masc'} #{bundle.number}
+                          </span>
+                        </div>
                       )}
 
                       {selected && (
@@ -923,7 +932,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 : 'border-transparent text-neutral-400 hover:text-white'
             }`}
           >
-            GRÁFICOS
+            SOM & GRÁF.
           </button>
         </div>
 
@@ -1531,6 +1540,56 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   }
                   className="w-full accent-amber-500"
                 />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between font-bold uppercase text-neutral-300 mb-1.5">
+                  <span className="flex items-center gap-1.5">
+                    <Music className="w-3.5 h-3.5 text-amber-400" />
+                    MÚSICA DO LOBBY
+                  </span>
+                  {settings.muted && (
+                    <span className="text-[10px] text-rose-400 font-mono">
+                      ÁUDIO MUDO
+                    </span>
+                  )}
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {LOBBY_MUSIC_TRACKS.map((track) => {
+                    const activeTrack =
+                      normalizeLobbyMusicTrack(settings.lobbyMusicTrack) === track.id;
+                    return (
+                      <button
+                        key={track.id}
+                        type="button"
+                        onClick={() => {
+                          soundEngine.unlock();
+                          soundEngine.playUiClick(700);
+                          onChangeSettings({
+                            ...settings,
+                            lobbyMusicTrack: track.id,
+                          });
+                        }}
+                        className={`py-2 px-1.5 border cursor-pointer flex flex-col items-center text-center gap-0.5 ${
+                          activeTrack
+                            ? 'bg-amber-500 text-black border-amber-400'
+                            : 'bg-[#1a2028] border-neutral-700 hover:border-neutral-500 text-neutral-200'
+                        }`}
+                      >
+                        <span className="font-black uppercase text-[11px] leading-tight">
+                          {track.label}
+                        </span>
+                        <span
+                          className={`text-[9px] leading-tight ${
+                            activeTrack ? 'text-black/80 font-bold' : 'text-neutral-400'
+                          }`}
+                        >
+                          {track.sub}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               <div>

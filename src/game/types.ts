@@ -751,6 +751,41 @@ export const DEFAULT_GG_MOUSE_PRO: GgMouseProConfig = {
   },
 };
 
+export type LobbyMusicTrackId = 'natal_2018' | 'classic_2017' | 'off';
+
+export interface LobbyMusicTrackOption {
+  id: LobbyMusicTrackId;
+  label: string;
+  sub: string;
+  url: string | null;
+}
+
+export const LOBBY_MUSIC_TRACKS: readonly LobbyMusicTrackOption[] = [
+  {
+    id: 'natal_2018',
+    label: 'Natal 2018 (Padrão)',
+    sub: 'Tema Winterlands 2018',
+    url: 'https://kalidade-br.github.io/freefire-2017/som/natal-2018.m4a',
+  },
+  {
+    id: 'classic_2017',
+    label: 'Clássica 2017',
+    sub: 'Tema Lobby Original',
+    url: '/audio/lobby_2017.mp3',
+  },
+  {
+    id: 'off',
+    label: 'Desligada',
+    sub: 'Sem música no lobby',
+    url: null,
+  },
+];
+
+export function normalizeLobbyMusicTrack(raw?: unknown): LobbyMusicTrackId {
+  if (raw === 'classic_2017' || raw === 'off' || raw === 'natal_2018') return raw;
+  return 'natal_2018';
+}
+
 export interface GameSettings {
   sensitivity: number; // 0.2 .. 2.5 (Geral)
   redDotSensitivity: number; // 0.2 .. 2.5 (1x / Red Dot)
@@ -764,6 +799,7 @@ export interface GameSettings {
   shadowQuality?: ShadowQuality;
   soundVolume: number; // 0 .. 1
   muted: boolean;
+  lobbyMusicTrack?: LobbyMusicTrackId;
   showFps: boolean;
   controlMode: ControlMode;
   invertY: boolean;

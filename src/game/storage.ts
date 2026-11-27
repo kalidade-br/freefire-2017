@@ -23,6 +23,7 @@ import {
   MacroStepAction,
   NetworkSyncPreset,
   normalizeCharacterModelId,
+  normalizeLobbyMusicTrack,
   PlayerProfile,
   sanitizeEquippedSkins,
   ShadowQuality,
@@ -195,6 +196,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   shadowQuality: isMobileHardware() ? 'off' : 'low',
   soundVolume: 0.75,
   muted: false,
+  lobbyMusicTrack: 'natal_2018',
   showFps: true,
   controlMode: 'auto',
   invertY: false,
@@ -457,6 +459,7 @@ export function loadSettings(): GameSettings {
         parsed.textureQuality ?? defaultTextureForQuality(parsed.quality ?? resolvedQuality),
       shadowQuality:
         parsed.shadowQuality ?? defaultShadowForQuality(parsed.quality ?? resolvedQuality),
+      lobbyMusicTrack: normalizeLobbyMusicTrack(parsed.lobbyMusicTrack),
       emulatorMode: Boolean(parsed.emulatorMode),
       aimToggleMode: Boolean(parsed.aimToggleMode),
       networkSyncPreset:

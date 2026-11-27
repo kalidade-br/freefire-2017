@@ -1032,7 +1032,11 @@ export class BattleRoyaleEngine {
       }
     });
 
-    soundEngine.configure(initialSettings.soundVolume, initialSettings.muted);
+    soundEngine.configure(
+      initialSettings.soundVolume,
+      initialSettings.muted,
+      initialSettings.lobbyMusicTrack,
+    );
     this.resetPlayerForWaiting();
     this.startLoop();
   }
@@ -1184,7 +1188,11 @@ export class BattleRoyaleEngine {
 
   public applyQualitySettings(settings: GameSettings): void {
     this.settings = settings;
-    soundEngine.configure(settings.soundVolume, settings.muted);
+    soundEngine.configure(
+      settings.soundVolume,
+      settings.muted,
+      settings.lobbyMusicTrack,
+    );
     multiplayerClient.configureNetwork({
       syncPreset: settings.networkSyncPreset ?? 'fast',
       lowLatencyMode: settings.networkLowLatency ?? true,

@@ -17,6 +17,7 @@ import { loadCharacterConfig, loadProfile } from '../game/storage';
 import { auth, googleAuthProvider } from '../lib/firebase';
 import { loadOrCreateFirestoreProfile } from '../lib/firestoreProfile';
 import { PublicPlayerAccount } from '../shared/multiplayerTypes';
+import winterlandsLoginBg from '../assets/images/winterlands_login_hd_1795808030589.jpg';
 
 interface MainMenuScreenProps {
   onPlay: () => void;
@@ -210,20 +211,21 @@ export const MainMenuScreen: React.FC<MainMenuScreenProps> = ({
       }}
       className="fixed inset-0 z-40 bg-black flex items-center justify-center overflow-hidden select-none text-white"
     >
-      {/* Clean Skydiving Free Fire 2017 Background (zero baked-in buttons/text) */}
+      {/* Winterlands Free Fire Login / Pre-Lobby Background (HD, clean) */}
       <div className="relative w-full h-full overflow-hidden flex flex-col">
         <img
-          src="/assets/start_bg_clean.jpg"
+          src={winterlandsLoginBg}
           alt="Free Fire Battlegrounds"
-          className="absolute inset-0 w-full h-full object-cover object-center pointer-events-none brightness-[0.88] contrast-[1.04]"
+          referrerPolicy="no-referrer"
+          className="absolute inset-0 w-full h-full object-cover object-center pointer-events-none brightness-[0.96] contrast-[1.03]"
         />
 
-        {/* Subtle legibility gradient over center & top-right without hiding artwork */}
+        {/* Subtle legibility gradient along top-right & bottom center */}
         <div
           className="pointer-events-none absolute inset-0"
           style={{
             background:
-              'radial-gradient(ellipse 65% 60% at 50% 52%, rgba(8, 12, 18, 0.45) 0%, rgba(8, 12, 18, 0.14) 70%, rgba(5, 8, 12, 0.42) 100%)',
+              'linear-gradient(180deg, rgba(6,10,16,0.28) 0%, rgba(6,10,16,0.04) 38%, rgba(6,10,16,0.18) 62%, rgba(5,8,12,0.58) 100%)',
           }}
         />
 
@@ -325,46 +327,29 @@ export const MainMenuScreen: React.FC<MainMenuScreenProps> = ({
           </div>
         </header>
 
-        {/* Responsive Center Stage: scales cleanly on tiny mobile landscape (320px tall) and desktop */}
-        <main className="relative z-20 flex-1 min-h-0 flex flex-col items-center justify-center px-3 pb-3 overflow-y-auto pointer-events-none">
-          <div className="pointer-events-auto w-full max-w-md flex flex-col items-center my-auto">
-            {/* Classic Weathered FREE FIRE · BATTLEGROUNDS Display Logo */}
-            <div className="flex flex-col items-center mb-3 sm:mb-6 [@media(max-height:420px)]:mb-2">
-              <div className="flex items-center justify-center gap-1 sm:gap-1.5 drop-shadow-[0_4px_16px_rgba(0,0,0,0.92)]">
-                <span className="text-[clamp(1.75rem,5.5vw,3.75rem)] font-black tracking-[0.04em] text-neutral-100 leading-none font-sans">
-                  FREE F
-                </span>
-                <svg
-                  viewBox="0 0 24 64"
-                  className="w-[clamp(0.9rem,2.2vw,1.5rem)] h-[clamp(2rem,5.2vw,3.5rem)] -mx-0.5 shrink-0"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M12 2 L16 14 L15 39 L18 42 L15 44 L14 60 L10 60 L9 44 L6 42 L9 39 L9 12 Z"
-                    fill="#ea8c15"
-                  />
-                  <path d="M12 2 L16 14 L15 39 L12 39 Z" fill="#f5b027" />
-                </svg>
-                <span className="text-[clamp(1.75rem,5.5vw,3.75rem)] font-black tracking-[0.04em] text-neutral-100 leading-none font-sans">
-                  RE
-                </span>
-              </div>
-
-              <div className="mt-1.5 sm:mt-2 px-4 sm:px-9 py-0.5 sm:py-1 border-y border-white/40 bg-black/30">
-                <div className="text-[9px] sm:text-xs font-medium tracking-[0.45em] sm:tracking-[0.65em] uppercase text-white/90 text-center pl-[0.45em] sm:pl-[0.65em]">
-                  BATTLEGROUNDS
-                </div>
-              </div>
-            </div>
-
+        {/* Responsive Lower-Center Stage: keeps artwork's FREE FIRE title clear above interactive controls */}
+        <main className="relative z-20 flex-1 min-h-0 flex flex-col items-center justify-end px-3 pb-[11vh] sm:pb-[14vh] [@media(max-height:460px)]:pb-3 overflow-y-auto pointer-events-none">
+          <div className="pointer-events-auto w-full max-w-md flex flex-col items-center">
             {authError && (
-              <div className="mb-2.5 max-w-xs sm:max-w-sm w-full bg-red-950/92 border border-red-400 px-2.5 py-1.5 text-[10px] sm:text-[11px] font-mono text-red-100 text-center shadow-xl">
+              <div className="mb-2.5 max-w-xs sm:max-w-sm w-full bg-red-950/95 border border-red-400 px-2.5 py-1.5 text-[10px] sm:text-[11px] font-mono text-red-100 text-center shadow-xl">
                 {authError}
               </div>
             )}
 
             {isLoggedIn ? (
-              <div className="flex flex-col items-center gap-2 sm:gap-3 w-full max-w-[270px] sm:max-w-xs">
+              <div className="flex flex-col items-center gap-2 sm:gap-2.5 w-full max-w-[300px] sm:max-w-[340px]">
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleUnlockAndPlay();
+                  }}
+                  className="w-full py-2.5 sm:py-3.5 bg-gradient-to-b from-[#ffce2e] via-[#f4ab05] to-[#df8d00] hover:brightness-110 active:scale-[0.98] border border-[#ffe483] text-[#1a1102] font-extrabold text-xs sm:text-base uppercase tracking-[0.12em] shadow-[0_8px_28px_rgba(0,0,0,0.85)] cursor-pointer transition-all"
+                >
+                  START GAME
+                </button>
+
                 <button
                   type="button"
                   onClick={(e) => {
@@ -372,7 +357,7 @@ export const MainMenuScreen: React.FC<MainMenuScreenProps> = ({
                     soundEngine.unlock();
                     onOpenAuth();
                   }}
-                  className="max-w-full flex items-center gap-1.5 px-2.5 py-1 bg-black/65 hover:bg-black/85 border border-white/30 text-[10px] sm:text-[11px] font-mono text-white/95 cursor-pointer transition-colors"
+                  className="max-w-full flex items-center gap-1.5 px-2.5 py-1 bg-black/75 hover:bg-black/90 border border-white/30 text-[10px] sm:text-[11px] font-mono text-white/95 cursor-pointer transition-colors shadow-lg"
                 >
                   {isGuest || !account ? (
                     <>
@@ -391,21 +376,9 @@ export const MainMenuScreen: React.FC<MainMenuScreenProps> = ({
                     </>
                   )}
                 </button>
-
-                <button
-                  type="button"
-                  disabled={busy !== null}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleUnlockAndPlay();
-                  }}
-                  className="w-52 sm:w-64 py-2 sm:py-3 bg-gradient-to-b from-[#d89004] via-[#c78002] to-[#a96802] hover:brightness-110 active:scale-[0.98] border border-[#f5c451]/70 text-[#1a1102] font-bold text-xs sm:text-base uppercase tracking-[0.08em] shadow-[0_6px_24px_rgba(0,0,0,0.8)] cursor-pointer transition-all"
-                >
-                  START GAME
-                </button>
               </div>
             ) : (
-              <div className="w-full max-w-[275px] sm:max-w-[320px] flex flex-col items-stretch gap-2">
+              <div className="w-full max-w-[285px] sm:max-w-[330px] flex flex-col items-stretch gap-2 bg-black/75 border border-white/25 p-2.5 sm:p-3 shadow-[0_10px_30px_rgba(0,0,0,0.85)]">
                 <button
                   type="button"
                   disabled={busy !== null}
@@ -444,7 +417,7 @@ export const MainMenuScreen: React.FC<MainMenuScreenProps> = ({
                       e.stopPropagation();
                       void handleGuestStart();
                     }}
-                    className="py-2 sm:py-2.5 px-2.5 bg-[#15303b]/92 hover:bg-[#1c4454] border border-cyan-300/60 text-cyan-100 font-bold text-[11px] sm:text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-lg cursor-pointer disabled:opacity-60 transition-colors"
+                    className="py-2 sm:py-2.5 px-2.5 bg-[#15303b]/95 hover:bg-[#1c4454] border border-cyan-300/60 text-cyan-100 font-bold text-[11px] sm:text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-lg cursor-pointer disabled:opacity-60 transition-colors"
                   >
                     <UserCheck className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
                     <span>{busy === 'guest' ? '...' : 'CONVIDADO'}</span>
