@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { preloadAdamAssets } from './adamAssets';
+import { preloadSkinBundles } from './skinBundles';
 import { BERMUDA_GLB_WATER_Y, preloadExternalWorldAssets } from './externalAssets';
 import { soundEngine } from './audio';
 import {
@@ -374,11 +375,8 @@ interface BulletTracer {
 
 interface BulletImpactVfx {
   mesh: THREE.Mesh;
-  vx: number;
-  vy: number;
-  vz: number;
+  mat: THREE.MeshBasicMaterial;
   life: number;
-  maxLife: number;
   active: boolean;
 }
 
@@ -394,7 +392,7 @@ interface RemoteHumanEntity {
   isTeamLeader: boolean;
   rig: CharacterRig;
   animator: CharacterAnimator;
-  animAccum: number;
+  animAccum?: number;
   hitMeshes: THREE.Mesh[];
   targetPos: THREE.Vector3;
   targetYaw: number;
@@ -451,17 +449,10 @@ export class BattleRoyaleEngine {
     opacity: 0.9,
   });
   private impactPool: BulletImpactVfx[] = [];
-  private impactGeo = new THREE.BoxGeometry(0.11, 0.11, 0.11);
-  private impactWallMat = new THREE.MeshBasicMaterial({
-    color: 0xfde047,
-    transparent: true,
-    opacity: 0.9,
-  });
-  private impactHitMat = new THREE.MeshBasicMaterial({
-    color: 0xff6b2b,
-    transparent: true,
-    opacity: 0.95,
-  });
+  private impactGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
+  private remoteHitMat = new THREE.MeshBasicMaterial({ visible: false });
+  private remoteChestHitGeo = new THREE.BoxGeometry(0.64, 0.84, 0.50);
+  private remoteHeadHitGeo = new THREE.SphereGeometry(0.26, 8, 6);
   private solidObstaclesNoTerrain: THREE.Object3D[] = [];
   private solidObstaclesActive: THREE.Object3D[] = [];
   private activeObstaclesLastRefresh = -1;
@@ -519,7 +510,7 @@ export class BattleRoyaleEngine {
     vel: THREE.Vector3;
     active: boolean;
   }> = [];
-  private explosionGeo = new THREE.SphereGeometry(1, 14, 10);
+  private explosionGeo = new THREE.SphereGeometry(1, 12, 8);
   private explosionVfx: Array<{
     mesh: THREE.Mesh;
     mat: THREE.MeshBasicMaterial;
@@ -530,10 +521,10 @@ export class BattleRoyaleEngine {
   // Periodic AirDrop system (crate + parachute + vertical sky beacon + ground ring)
   private airDropCrateGeo = new THREE.BoxGeometry(1.48, 1.35, 1.48);
   private airDropStripeGeo = new THREE.BoxGeometry(1.54, 0.28, 1.54);
-  private airDropChuteGeo = new THREE.SphereGeometry(2.15, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.5);
+  private airDropChuteGeo = new THREE.SphereGeometry(2.15, 12, 7, 0, Math.PI * 2, 0, Math.PI * 0.5);
   private airDropCordGeo = new THREE.CylinderGeometry(0.025, 0.025, 2.8, 5);
-  private airDropBeamGeo = new THREE.CylinderGeometry(0.45, 0.78, 165, 12, 1, true);
-  private airDropRingGeo = new THREE.RingGeometry(1.15, 1.58, 22);
+  private airDropBeamGeo = new THREE.CylinderGeometry(0.45, 0.78, 165, 10, 1, true);
+  private airDropRingGeo = new THREE.RingGeometry(1.15, 1.58, 18);
   private airDropCrateMat = new THREE.MeshLambertMaterial({
     color: 0x3f4739,
   });
@@ -774,6 +765,9 @@ export class BattleRoyaleEngine {
 
   // Online Multiplayer Room State (50ms WS + HTTP fallback)
   private onlineRoomId: string | null = null;
+  private onlineJoinedAtMs = 0;
+  private onlineConsecutive404 = 0;
+  private onlineConsecutiveEmptyKicks = 0;
   private onlineAccountId = 0;
   private onlineHostAccountId = 0;
   private onlineTeamId = 1;
@@ -827,14 +821,14 @@ export class BattleRoyaleEngine {
   private fpsAccumTime = 0;
   private fpsFrames = 0;
   private currentFps = 60;
-  private lastDrawCalls = 0;
-  private lastTriangles = 0;
-  private basePixelRatio = 1.0;
-  private currentPixelRatio = 1.0;
-  private adaptivePixelScale = 1.0;
-  private adaptiveDrawDistFactor = 1.0;
-  private highFpsStreak = 0;
   private simFrameIndex = 0;
+  private lastRenderCalls = 0;
+  private lastRenderTris = 0;
+  private basePixelRatio = 1;
+  private adaptiveResFactor = 1.0;
+  private adaptiveFarScale = 1.0;
+  private fpsLowStreak = 0;
+  private fpsHighStreak = 0;
   private currentCharConfig: CharacterConfig;
 
   constructor(
@@ -854,12 +848,13 @@ export class BattleRoyaleEngine {
     this.onBackpackRequest = onBackpackRequest;
     this.onOpenShopRequest = onOpenShopRequest;
 
-    // 1. Create a single WebGLRenderer tuned for mobile FF 2017 performance
+    // 1. Create a single WebGLRenderer with progressive fallbacks (never trigger WEBGL_lose_context on a probe!)
     const { renderer, isSoftwareGl } = this.createSafeRenderer(initialSettings);
     this.renderer = renderer;
     this.isSoftwareGl = isSoftwareGl;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.NoToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.shadowMap.enabled = false;
     this.applyQualitySettings(initialSettings);
     this.renderer.setSize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
@@ -867,14 +862,14 @@ export class BattleRoyaleEngine {
     this.renderer.domElement.addEventListener('webglcontextrestored', this.onWebGLContextRestored);
     container.appendChild(this.renderer.domElement);
 
-    // 2. Procedural textures (1x anisotropy for mobile speed) & scenes (zero PBR envMap)
+    // 3. Classic mobile procedural textures & scenes (anisotropy = 1, zero IBL)
     const maxAniso = 1;
     this.textures = createProceduralTextures(maxAniso);
     this.glooSkin = initialChar.glooSkin === 'ffwc' ? 'ffwc' : 'classic';
     this.glooAssets = createGlooVariantAssets(maxAniso);
     preloadAllWeaponTextures();
 
-    this.lobbyScene = createLobbyScene(this.textures, null);
+    this.lobbyScene = createLobbyScene(this.textures);
     this.lobbyRig = createCharacterRig(
       initialChar,
       this.textures.camoParachute,
@@ -884,7 +879,7 @@ export class BattleRoyaleEngine {
     this.lobbyRig.setBackWeapons(null, null);
     this.lobbyScene.characterAnchor.add(this.lobbyRig.root);
 
-    this.world = createIslandWorld(this.textures, null);
+    this.world = createIslandWorld(this.textures);
     this.applyQualitySettings(initialSettings);
     for (let i = 0; i < this.world.targets.length; i++) {
       this.targetById.set(this.world.targets[i].id, this.world.targets[i]);
@@ -893,19 +888,26 @@ export class BattleRoyaleEngine {
     this.rebuildSolidObstaclesNoTerrain();
     for (let i = 0; i < 16; i++) {
       const mesh = new THREE.Mesh(this.tracerGeo, this.tracerMat);
+      mesh.visible = false;
       mesh.castShadow = false;
       mesh.receiveShadow = false;
-      mesh.visible = false;
+      mesh.frustumCulled = true;
       this.world.scene.add(mesh);
       this.tracerPool.push({ mesh, life: 0, active: false });
     }
-    for (let i = 0; i < 24; i++) {
-      const mesh = new THREE.Mesh(this.impactGeo, this.impactWallMat);
+    for (let i = 0; i < 16; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xfde047,
+        transparent: true,
+        opacity: 0.9,
+      });
+      const mesh = new THREE.Mesh(this.impactGeo, mat);
+      mesh.visible = false;
       mesh.castShadow = false;
       mesh.receiveShadow = false;
-      mesh.visible = false;
+      mesh.frustumCulled = true;
       this.world.scene.add(mesh);
-      this.impactPool.push({ mesh, vx: 0, vy: 0, vz: 0, life: 0, maxLife: 0.22, active: false });
+      this.impactPool.push({ mesh, mat, life: 0, active: false });
     }
 
     // Tactical Gloo Wall preview + Grenade trajectory line + projectile & explosion pools
@@ -1153,6 +1155,7 @@ export class BattleRoyaleEngine {
 
     const texLevel =
       settings.textureQuality ?? defaultTextureForQuality(settings.quality);
+    const shadowLevel = 'off' as const;
 
     const mobile = isMobileHardware();
     const resPct = THREE.MathUtils.clamp(
@@ -1165,29 +1168,33 @@ export class BattleRoyaleEngine {
       ? 1.0
       : mobile
         ? 1.0
-        : Math.min(1.5, Math.max(dpr, 1.0));
-    const scale = Math.max(0.5, Math.min(mobile ? 1.0 : 1.5, (resPct / 100) * maxScale));
+        : Math.min(1.35, dpr);
+    const scale = Math.max(0.65, Math.min(maxScale, (resPct / 100) * maxScale));
     this.basePixelRatio = scale;
-    this.adaptivePixelScale = 1.0;
-    this.adaptiveDrawDistFactor = 1.0;
-    this.highFpsStreak = 0;
-    this.currentPixelRatio = scale;
+    this.adaptiveResFactor = 1.0;
+    this.adaptiveFarScale = 1.0;
+    this.fpsLowStreak = 0;
+    this.fpsHighStreak = 0;
 
     this.renderer.setPixelRatio(scale);
-    this.renderer.domElement.style.imageRendering = scale < 0.72 ? 'pixelated' : 'auto';
+    this.renderer.domElement.style.imageRendering = resPct < 35 ? 'pixelated' : 'auto';
     if (this.lobbyScene && this.world) {
       this.handleResize();
     }
     this.renderer.shadowMap.enabled = false;
     this.renderer.toneMapping = THREE.NoToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
 
     const maxAniso = 1;
     if (this.textures) {
       this.textures.applyQuality(texLevel, maxAniso);
     }
     if (this.world) {
-      this.world.applyQuality(settings.quality, this.isSoftwareGl, texLevel, 'off', maxAniso);
-      this.world.setAdaptiveDrawDistance(this.adaptiveDrawDistFactor);
+      this.world.applyQuality(settings.quality, this.isSoftwareGl, texLevel, shadowLevel, maxAniso);
+      this.world.setAdaptiveDrawScale(1.0);
+      this.world.camera.far =
+        settings.quality === 'low' ? 158 : settings.quality === 'high' ? 242 : 198;
+      this.world.camera.updateProjectionMatrix();
     }
   }
 
@@ -1234,7 +1241,11 @@ export class BattleRoyaleEngine {
     this.world.scene.add(this.playerRig.root);
     this.syncPlayerWeaponAndBackVisuals();
 
-    upgradeBotsToAdam(this.world.targets, this.textures.camoParachute, this.textures.contactShadow);
+    upgradeBotsToAdam(
+      this.world.targets,
+      this.textures.camoParachute,
+      this.textures.contactShadow,
+    );
   }
 
   public setLobbySquadMembers(
@@ -1242,13 +1253,18 @@ export class BattleRoyaleEngine {
       accountId: number;
       nickname: string;
       modelId: CharacterModelId;
+      character?: Partial<CharacterConfig>;
       isLeader: boolean;
       isSelf: boolean;
     }>,
   ): void {
     const active = members.slice(0, 4);
     const sig = active
-      .map((m) => `${m.accountId}:${m.modelId}:${m.isSelf ? 1 : 0}`)
+      .map((m) => {
+        const s = m.character?.equippedSkins;
+        const skinSig = s ? `${s.head ?? ''},${s.mask ?? ''},${s.shirt ?? ''},${s.pants ?? ''},${s.shoes ?? ''}` : '';
+        return `${m.accountId}:${m.modelId}:${m.isSelf ? 1 : 0}:${skinSig}`;
+      })
       .join('|');
     if (sig === this.lobbySquadSignature) return;
     this.lobbySquadSignature = sig;
@@ -1291,12 +1307,14 @@ export class BattleRoyaleEngine {
         const rig = createCharacterRig(
           {
             ...this.currentCharConfig,
+            ...(m.character ?? {}),
             id: preset.id,
             name: preset.name,
             modelId: preset.modelId,
             hairStyle: preset.hairStyle,
             vestEnabled: false,
-            backpackEnabled: true,
+            backpackEnabled: m.character?.backpackEnabled ?? true,
+            equippedSkins: m.character?.equippedSkins,
           },
           this.textures.camoParachute,
           this.textures.contactShadow,
@@ -1410,6 +1428,7 @@ export class BattleRoyaleEngine {
       preloadExternalWorldAssets((pct, label) => {
         if (!this.disposed) reportDuringLoading(Math.min(78, pct), label);
       }),
+      preloadSkinBundles().catch(() => undefined),
     ]);
 
     this.loadTimers.push(
@@ -1555,6 +1574,9 @@ export class BattleRoyaleEngine {
     this.gameVariant = isGlad ? 'gladiadores' : 'br';
 
     this.onlineRoomId = joinInfo.roomId;
+    this.onlineJoinedAtMs = Date.now();
+    this.onlineConsecutive404 = 0;
+    this.onlineConsecutiveEmptyKicks = 0;
     this.onlineAccountId = joinInfo.yourAccountId;
     this.onlineHostAccountId = joinInfo.hostAccountId;
     this.onlineTeamId = joinInfo.yourTeamId;
@@ -1609,6 +1631,9 @@ export class BattleRoyaleEngine {
 
   private clearOnlineRoomState(): void {
     this.onlineRoomId = null;
+    this.onlineJoinedAtMs = 0;
+    this.onlineConsecutive404 = 0;
+    this.onlineConsecutiveEmptyKicks = 0;
     this.onlineAccountId = 0;
     this.onlineHostAccountId = 0;
     this.onlineTeamId = 1;
@@ -1687,14 +1712,13 @@ export class BattleRoyaleEngine {
       ? this.stateMachine.getState() === GameState.PLAYING
       : this.stateMachine.getState() === GameState.WAITING;
 
-    const hitMat = new THREE.MeshBasicMaterial({ visible: false });
-    const chestHit = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.84, 0.50), hitMat);
+    const chestHit = new THREE.Mesh(this.remoteChestHitGeo, this.remoteHitMat);
     chestHit.position.set(0, rig.spineMount && rig.isAdam ? -0.06 : 0.16, 0);
     chestHit.userData.remoteAccountId = slot.accountId;
     chestHit.userData.isHeadshot = false;
     (rig.spineMount ?? rig.torso).add(chestHit);
 
-    const headHit = new THREE.Mesh(new THREE.SphereGeometry(0.26, 8, 6), hitMat);
+    const headHit = new THREE.Mesh(this.remoteHeadHitGeo, this.remoteHitMat);
     headHit.position.set(
       0,
       rig.headMount && rig.isAdam ? (rig.helmetOffsetY ?? 0.14) + 0.005 : 0.08,
@@ -1718,7 +1742,6 @@ export class BattleRoyaleEngine {
       isTeamLeader: Boolean(slot.isTeamLeader),
       rig,
       animator: new CharacterAnimator(),
-      animAccum: 0,
       hitMeshes: [chestHit, headHit],
       targetPos: new THREE.Vector3(spawnX, spawnY, spawnZ),
       targetYaw: isGlad ? (rIsNorth ? 0 : Math.PI) : 0,
@@ -1909,12 +1932,27 @@ export class BattleRoyaleEngine {
   private handleMultiplayerEvent(ev: MultiplayerServerEvent): void {
     if (!this.onlineRoomId) return;
 
-    if (ev.type === 'match_kicked' && (!ev.roomId || ev.roomId === this.onlineRoomId)) {
-      this.returnToLobby();
+    if (ev.type === 'match_kicked') {
+      if (ev.roomId === this.onlineRoomId) {
+        this.returnToLobby();
+        return;
+      }
+      if (!ev.roomId) {
+        if (Date.now() - this.onlineJoinedAtMs < 2500) {
+          return;
+        }
+        this.onlineConsecutiveEmptyKicks += 1;
+        if (this.onlineConsecutiveEmptyKicks >= 3) {
+          this.returnToLobby();
+        }
+        return;
+      }
       return;
     }
 
     if (ev.type === 'room_snapshot' && ev.snapshot.roomId === this.onlineRoomId) {
+      this.onlineConsecutiveEmptyKicks = 0;
+      this.onlineConsecutive404 = 0;
       this.applyRoomSnapshot(ev.snapshot);
       return;
     }
@@ -2678,6 +2716,7 @@ export class BattleRoyaleEngine {
       void multiplayerClient
         .syncRoomHttp(this.onlineRoomId, push, acts.length > 0 ? acts : undefined)
         .then(() => {
+          this.onlineConsecutive404 = 0;
           if (hadExitedVeh) {
             this.lastExitedVehicleState = null;
           }
@@ -2685,7 +2724,10 @@ export class BattleRoyaleEngine {
         .catch((err: unknown) => {
           const status = (err as { status?: number } | null)?.status;
           if (status === 404 && this.onlineRoomId) {
-            this.returnToLobby();
+            this.onlineConsecutive404 += 1;
+            if (this.onlineConsecutive404 >= 3) {
+              this.returnToLobby();
+            }
           }
         })
         .finally(() => {
@@ -2836,48 +2878,54 @@ export class BattleRoyaleEngine {
         hasRemoteWeapon && !st.isHealing && !st.isReviving;
 
       const remoteDef = st.weaponId ? WEAPONS[st.weaponId] : null;
+      if (entity.rig.root.visible) {
+        const dPlayerSq =
+          (prevPos.x - this.pos.x) * (prevPos.x - this.pos.x) +
+          (prevPos.z - this.pos.z) * (prevPos.z - this.pos.z);
+        const animStride = dPlayerSq > 52 * 52 ? 3 : dPlayerSq > 24 * 24 ? 2 : 1;
+        entity.animAccum = (entity.animAccum ?? 0) + dt;
+        if (
+          animStride === 1 ||
+          ((this.simFrameIndex + (entity.accountId & 7)) % animStride === 0)
+        ) {
+          const animDt = entity.animAccum;
+          entity.animAccum = 0;
+          entity.animator.update(entity.rig, {
+            dt: animDt,
+            speed: moveSpeed,
+            stance: st.stance,
+            isGrounded: st.isGrounded ?? (st.flightPhase === 'landed' || st.flightPhase === 'waiting'),
+            isSprinting: st.isSprinting,
+            isAiming: st.isAiming,
+            isFiring: Boolean(st.isFiring),
+            isReloading: Boolean(st.isReloading),
+            isHealing: Boolean(st.isHealing),
+            isReviving: Boolean(st.isReviving),
+            isVaulting: Boolean(st.isVaulting),
+            vaultProgress: st.vaultProgress ?? 0,
+            isLobby: false,
+            isSkydiving: st.flightPhase === 'dropping',
+            isParachuting: st.flightPhase === 'parachute',
+            isDead: st.eliminated,
+            isDowned: st.isDowned,
+            isDriving: Boolean(st.activeVehicleId),
+            isSwimming: st.isSwimming,
+            isOnSurfboard: st.isOnSurfboard,
+            hasWeapon: hasRemoteWeapon,
+            hasMoveInput: moveSpeed > 0.35,
+            weaponCategory: hasRemoteWeapon && remoteDef ? remoteDef.category : null,
+            pitchRad: st.pitch,
+            turnDeltaRad,
+            moveLocalX,
+            moveLocalZ,
+          });
+        }
+      }
+
       const isSpectatedHuman =
         this.isSpectating &&
         this.spectateTargetRef?.kind === 'human' &&
         this.spectateTargetRef.accountId === entity.accountId;
-      const rDx = prevPos.x - this.pos.x;
-      const rDz = prevPos.z - this.pos.z;
-      const rDistSq = rDx * rDx + rDz * rDz;
-      const rAnimStride = isSpectatedHuman || rDistSq <= 28 * 28 ? 1 : rDistSq <= 55 * 55 ? 2 : 3;
-      entity.animAccum += dt;
-      if (rAnimStride === 1 || (this.simFrameIndex + entity.accountId) % rAnimStride === 0) {
-        const animDt = entity.animAccum;
-        entity.animAccum = 0;
-        entity.animator.update(entity.rig, {
-          dt: animDt,
-          speed: moveSpeed,
-          stance: st.stance,
-          isGrounded: st.isGrounded ?? (st.flightPhase === 'landed' || st.flightPhase === 'waiting'),
-          isSprinting: st.isSprinting,
-          isAiming: st.isAiming,
-          isFiring: Boolean(st.isFiring),
-          isReloading: Boolean(st.isReloading),
-          isHealing: Boolean(st.isHealing),
-          isReviving: Boolean(st.isReviving),
-          isVaulting: Boolean(st.isVaulting),
-          vaultProgress: st.vaultProgress ?? 0,
-          isLobby: false,
-          isSkydiving: st.flightPhase === 'dropping',
-          isParachuting: st.flightPhase === 'parachute',
-          isDead: st.eliminated,
-          isDowned: st.isDowned,
-          isDriving: Boolean(st.activeVehicleId),
-          isSwimming: st.isSwimming,
-          isOnSurfboard: st.isOnSurfboard,
-          hasWeapon: hasRemoteWeapon,
-          hasMoveInput: moveSpeed > 0.35,
-          weaponCategory: hasRemoteWeapon && remoteDef ? remoteDef.category : null,
-          pitchRad: st.pitch,
-          turnDeltaRad,
-          moveLocalX,
-          moveLocalZ,
-        });
-      }
       const isGroundRemote =
         state === GameState.PLAYING &&
         !st.eliminated &&
@@ -3998,6 +4046,10 @@ export class BattleRoyaleEngine {
       this.explosionVfx[i].active = false;
       this.explosionVfx[i].mesh.visible = false;
     }
+    for (let i = 0; i < this.impactPool.length; i++) {
+      this.impactPool[i].active = false;
+      this.impactPool[i].mesh.visible = false;
+    }
     this.world.resetMatchLoots();
     this.world.loots.forEach((l) => {
       l.mesh.visible = false;
@@ -4657,6 +4709,10 @@ export class BattleRoyaleEngine {
       this.explosionVfx[i].active = false;
       this.explosionVfx[i].mesh.visible = false;
     }
+    for (let i = 0; i < this.impactPool.length; i++) {
+      this.impactPool[i].active = false;
+      this.impactPool[i].mesh.visible = false;
+    }
 
     this.world.resetMatchLoots();
     this.world.syncProximityLoot(startX, startZ, 56);
@@ -5012,66 +5068,68 @@ export class BattleRoyaleEngine {
     }
   }
 
+  private applyAdaptiveQuality(nextResFactor: number, nextFarScale: number): void {
+    const clampedRes = Math.max(0.65, Math.min(1.0, nextResFactor));
+    const clampedFar = Math.max(0.68, Math.min(1.0, nextFarScale));
+    if (
+      Math.abs(clampedRes - this.adaptiveResFactor) < 0.01 &&
+      Math.abs(clampedFar - this.adaptiveFarScale) < 0.01
+    ) {
+      return;
+    }
+    this.adaptiveResFactor = clampedRes;
+    this.adaptiveFarScale = clampedFar;
+    const targetPr = Math.max(0.65, this.basePixelRatio * this.adaptiveResFactor);
+    if (Math.abs(this.renderer.getPixelRatio() - targetPr) > 0.01) {
+      this.renderer.setPixelRatio(targetPr);
+      this.handleResize();
+    }
+    this.world.setAdaptiveDrawScale(this.adaptiveFarScale);
+  }
+
   private startLoop(): void {
     const tick = () => {
       if (this.disposed || this.contextLost) return;
       const rawDt = this.clock.getDelta();
       const dt = Math.min(rawDt, 0.05);
       this.elapsed += dt;
+      this.simFrameIndex = (this.simFrameIndex + 1) & 0x7fffffff;
 
-      this.fpsAccumTime += rawDt;
-      this.fpsFrames++;
-      if (this.fpsAccumTime >= 0.5) {
-        this.currentFps = Math.round(this.fpsFrames / this.fpsAccumTime);
-        this.fpsAccumTime = 0;
-        this.fpsFrames = 0;
+      if (rawDt <= 0.25) {
+        this.fpsAccumTime += rawDt;
+        this.fpsFrames++;
+        if (this.fpsAccumTime >= 0.6) {
+          this.currentFps = Math.round(this.fpsFrames / this.fpsAccumTime);
+          this.fpsAccumTime = 0;
+          this.fpsFrames = 0;
 
-        // Dynamic mobile resolution & draw distance scaling to lock ~60 FPS
-        if (!this.isSoftwareGl && this.world) {
-          const mobile = isMobileHardware();
-          const maxPr = mobile ? 1.0 : 1.5;
-          if (this.currentFps < 45) {
-            this.highFpsStreak = 0;
-            const prevScale = this.adaptivePixelScale;
-            const prevDist = this.adaptiveDrawDistFactor;
-            this.adaptivePixelScale = Math.max(0.65, this.adaptivePixelScale - 0.1);
-            this.adaptiveDrawDistFactor = Math.max(0.58, this.adaptiveDrawDistFactor - 0.1);
-            const nextPr = THREE.MathUtils.clamp(
-              this.basePixelRatio * this.adaptivePixelScale,
-              0.65,
-              maxPr,
-            );
-            if (Math.abs(nextPr - this.currentPixelRatio) > 0.02 || Math.abs(prevScale - this.adaptivePixelScale) > 0.01) {
-              this.currentPixelRatio = nextPr;
-              this.renderer.setPixelRatio(nextPr);
-            }
-            if (Math.abs(prevDist - this.adaptiveDrawDistFactor) > 0.01) {
-              this.world.setAdaptiveDrawDistance(this.adaptiveDrawDistFactor);
-            }
-          } else if (this.currentFps >= 57) {
-            this.highFpsStreak++;
-            if (
-              this.highFpsStreak >= 4 &&
-              (this.adaptivePixelScale < 1.0 || this.adaptiveDrawDistFactor < 1.0)
+          if (!this.isSoftwareGl) {
+            if (this.currentFps < 45) {
+              this.fpsLowStreak += 1;
+              this.fpsHighStreak = 0;
+              if (this.fpsLowStreak >= 1) {
+                this.applyAdaptiveQuality(
+                  this.adaptiveResFactor - 0.08,
+                  this.adaptiveFarScale - 0.08,
+                );
+              }
+            } else if (
+              this.currentFps >= 57 &&
+              (this.adaptiveResFactor < 0.99 || this.adaptiveFarScale < 0.99)
             ) {
-              const prevDist = this.adaptiveDrawDistFactor;
-              this.adaptivePixelScale = Math.min(1.0, this.adaptivePixelScale + 0.05);
-              this.adaptiveDrawDistFactor = Math.min(1.0, this.adaptiveDrawDistFactor + 0.05);
-              const nextPr = THREE.MathUtils.clamp(
-                this.basePixelRatio * this.adaptivePixelScale,
-                0.65,
-                maxPr,
-              );
-              if (Math.abs(nextPr - this.currentPixelRatio) > 0.02) {
-                this.currentPixelRatio = nextPr;
-                this.renderer.setPixelRatio(nextPr);
+              this.fpsLowStreak = 0;
+              this.fpsHighStreak += 1;
+              if (this.fpsHighStreak >= 3) {
+                this.fpsHighStreak = 0;
+                this.applyAdaptiveQuality(
+                  this.adaptiveResFactor + 0.04,
+                  this.adaptiveFarScale + 0.04,
+                );
               }
-              if (Math.abs(prevDist - this.adaptiveDrawDistFactor) > 0.01) {
-                this.world.setAdaptiveDrawDistance(this.adaptiveDrawDistFactor);
-              }
+            } else {
+              this.fpsLowStreak = 0;
+              this.fpsHighStreak = 0;
             }
-          } else {
-            this.highFpsStreak = 0;
           }
         }
       }
@@ -5118,7 +5176,6 @@ export class BattleRoyaleEngine {
   }
 
   private updateSimulation(dt: number): void {
-    this.simFrameIndex = (this.simFrameIndex + 1) & 0x3fffffff;
     const state = this.stateMachine.getState();
 
     // Update continuous flight / wind audio loop
@@ -5186,9 +5243,11 @@ export class BattleRoyaleEngine {
         this.animator.update(this.lobbyExtraRigs[i], lobbyAnimState);
       }
 
+      const isSoloLobbyFraming = this.lobbySquadTargetZ <= 4.0;
+      const lobbyFocusX = isSoloLobbyFraming ? 0.52 : 0;
       this.lobbyScene.camera.position.x = THREE.MathUtils.damp(
         this.lobbyScene.camera.position.x,
-        0,
+        lobbyFocusX,
         8,
         dt,
       );
@@ -5204,7 +5263,7 @@ export class BattleRoyaleEngine {
         8,
         dt,
       );
-      this.lobbyScene.camera.lookAt(0, 0.84, 0);
+      this.lobbyScene.camera.lookAt(lobbyFocusX, 0.86, 0);
       return;
     }
 
@@ -5244,7 +5303,7 @@ export class BattleRoyaleEngine {
     this.updateThrownGrenades(dt);
     this.updateExplosionVfx(dt);
     this.updateTracers(dt);
-    this.updateImpacts(dt);
+    this.updateImpactVfx(dt);
     this.hitmarkerTimer = Math.max(0, this.hitmarkerTimer - dt);
     this.headshotFlashTimer = Math.max(0, this.headshotFlashTimer - dt);
     this.damageFlashTimer = Math.max(0, this.damageFlashTimer - dt);
@@ -9070,6 +9129,7 @@ export class BattleRoyaleEngine {
     mesh.rotation.y = wallYaw;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
+    mesh.frustumCulled = true;
     mesh.userData.glooId = id;
     this.world.scene.add(mesh);
 
@@ -9562,9 +9622,7 @@ export class BattleRoyaleEngine {
         }
       }
 
-      let didHitTargetOrObstacle = false;
-      let hitCharSpark = false;
-
+      let hitEnemyVisual = false;
       if (tHit) {
         const glbWallDist = this.raycastActiveGlbWall(
           this.raycaster.ray.origin,
@@ -9578,10 +9636,8 @@ export class BattleRoyaleEngine {
         );
         if (glbWallDist !== null && (wallHits.length === 0 || glbWallDist <= wallHits[0].distance)) {
           endDist = glbWallDist;
-          didHitTargetOrObstacle = true;
         } else if (wallHits.length > 0) {
           endDist = wallHits[0].distance;
-          didHitTargetOrObstacle = true;
           const hitGlooId = wallHits[0].object.userData.glooId as string | undefined;
           const hitVehId = wallHits[0].object.userData.vehicleId as string | undefined;
           if (hitGlooId) {
@@ -9597,8 +9653,7 @@ export class BattleRoyaleEngine {
           }
         } else {
           endDist = tHit.distance;
-          didHitTargetOrObstacle = true;
-          hitCharSpark = true;
+          hitEnemyVisual = true;
           const tId = tHit.object.userData.targetId as string | undefined;
           const remoteAccId = tHit.object.userData.remoteAccountId as number | undefined;
           const isHead = Boolean(tHit.object.userData.isHeadshot);
@@ -9692,10 +9747,8 @@ export class BattleRoyaleEngine {
         );
         if (glbWallDist !== null && (wallHits.length === 0 || glbWallDist <= wallHits[0].distance)) {
           endDist = glbWallDist;
-          didHitTargetOrObstacle = true;
         } else if (wallHits.length > 0) {
           endDist = wallHits[0].distance;
-          didHitTargetOrObstacle = true;
           const hitGlooId = wallHits[0].object.userData.glooId as string | undefined;
           const hitVehId = wallHits[0].object.userData.vehicleId as string | undefined;
           if (hitGlooId) {
@@ -9709,18 +9762,16 @@ export class BattleRoyaleEngine {
           ) {
             this.detonateExplosiveBarrel(wallHits[0].instanceId);
           }
-        } else if (terrainDist < effectiveRange * 0.85) {
-          didHitTargetOrObstacle = true;
         }
       }
 
-      // Spawn pooled tracer & pooled impact spark from weapon muzzle toward ray point
+      // Spawn pooled tracer & pooled impact particle
       this.playerRig.muzzleFlash.getWorldPosition(_rayOrigin);
       _rayDir.copy(this.raycaster.ray.direction).normalize();
       _v2.copy(cam.position).addScaledVector(_rayDir, endDist);
       this.spawnTracer(_rayOrigin, _v2);
-      if (didHitTargetOrObstacle && p < 2) {
-        this.spawnImpact(_v2.x, _v2.y, _v2.z, hitCharSpark);
+      if (p === 0 && (hitEnemyVisual || endDist < effectiveRange * 0.96)) {
+        this.spawnImpact(_v2, hitEnemyVisual);
       }
       if (this.onlineRoomId && p === 0) {
         this.queueOrSendRoomAction({
@@ -11054,16 +11105,16 @@ export class BattleRoyaleEngine {
         const moveLocalX = moveDist > 0.002 ? (dxMove * bRightX + dzMove * bRightZ) / moveDist : 0;
         const moveLocalZ = moveDist > 0.002 ? (dxMove * bFwdX + dzMove * bFwdZ) / moveDist : 1;
 
-        const bDxCam = b.group.position.x - this.pos.x;
-        const bDzCam = b.group.position.z - this.pos.z;
-        const bDistSq = bDxCam * bDxCam + bDzCam * bDzCam;
-        const bAnimStride = bDistSq <= 26 * 26 ? 1 : bDistSq <= 55 * 55 ? 2 : 3;
+        const dBotSq =
+          (b.group.position.x - this.pos.x) * (b.group.position.x - this.pos.x) +
+          (b.group.position.z - this.pos.z) * (b.group.position.z - this.pos.z);
+        const botAnimStride = dBotSq > 52 * 52 ? 3 : dBotSq > 24 * 24 ? 2 : 1;
         b.animAccum = (b.animAccum ?? 0) + dt;
-        if (bAnimStride === 1 || (this.simFrameIndex + i) % bAnimStride === 0) {
-          const animDt = b.animAccum;
+        if (botAnimStride === 1 || ((this.simFrameIndex + i) % botAnimStride === 0)) {
+          const stepDt = b.animAccum;
           b.animAccum = 0;
           b.animator.update(b.rig, {
-            dt: animDt,
+            dt: stepDt,
             speed: isDying ? 0 : spd,
             stance: 'stand',
             isGrounded: b.airState === 'ground',
@@ -12383,11 +12434,9 @@ export class BattleRoyaleEngine {
             : bot.moveSpeed;
         const stepDist = botActualSpeed * dt;
 
-        // Multi-ray OBB obstacle avoidance (throttled for distant bots on low-end mobile CPUs)
+        // Multi-ray OBB obstacle avoidance (keep forward line while mid-jump/vaulting over obstacle)
         let hitSill = false;
-        const canRunSteer =
-          botCamDistSq <= 32 * 32 || (this.simFrameIndex + i) % 2 === 0;
-        if (bot.vaultTimer <= 0 && bot.vy === 0 && canRunSteer) {
+        if (bot.vaultTimer <= 0 && bot.vy === 0) {
           hitSill = this.steerBotDirection(
             bot,
             bx,
@@ -12469,17 +12518,22 @@ export class BattleRoyaleEngine {
           bot.group.position.z = nz;
         }
 
-        // OBB wall/prop/vehicle/gloo collision sliding (2-pass near player, single/throttled pass when distant)
+        // Exact same OBB wall/prop/vehicle/gloo collision sliding & floor platforms; throttle distant non-combat bots to every 2 frames
         const ignoreSill = bot.vaultTimer > 0;
-        const farColSkip =
-          !bot.isAlly && !isSpectatedBot && botCamDistSq > 42 * 42 && (this.simFrameIndex + i) % 2 !== 0;
-        const push1 = farColSkip
-          ? 0
-          : this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, ignoreSill);
+        const farNonCombat =
+          !isSpectatedBot &&
+          !bot.isAlly &&
+          bot.aiState !== 'combat' &&
+          botCamDistSq > 44 * 44;
+        const doCollisionThisFrame =
+          !farNonCombat || ((this.simFrameIndex + ord) & 1) === 0;
+        const push1 = doCollisionThisFrame
+          ? this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, ignoreSill)
+          : 0;
         const push2 =
-          farColSkip || (!bot.isAlly && !isSpectatedBot && botCamDistSq > 28 * 28)
-            ? 0
-            : this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, ignoreSill);
+          doCollisionThisFrame && !farNonCombat
+            ? this.resolveEntityHorizontalCollisions(bot.group.position, 0.36, null, ignoreSill)
+            : 0;
         bot.group.position.x = THREE.MathUtils.clamp(bot.group.position.x, botBounds.minX, botBounds.maxX);
         bot.group.position.z = THREE.MathUtils.clamp(bot.group.position.z, botBounds.minZ, botBounds.maxZ);
 
@@ -12717,29 +12771,32 @@ export class BattleRoyaleEngine {
       const botInWater = botSurfNow.inWater && !botSurfNow.onBridge;
 
       if (animateLimbs && bot.rig && bot.animator) {
-        bot.rig.activeWeaponId = bot.weaponId;
-        const botIsHealing = bot.aiState === 'heal';
-        const botIsReviving = false;
-        const botIsReloading = bot.reloadTimer > 0;
-        const botIsAiming =
-          bot.aiState === 'combat' &&
-          !bot.isRetreating &&
-          !isMoving &&
-          !botIsHealing &&
-          !botIsReviving &&
-          !botIsReloading &&
-          !botInWater;
-        const botIsSprinting =
-          botActualSpeed > 3.9 && !botInWater && !botIsHealing && !botIsReviving;
-        const botWeaponCat = WEAPONS[bot.weaponId]?.category ?? null;
-        bot.rig.weaponMount.visible = !botInWater && !botIsHealing && !botIsReviving;
-
-        const botAnimStride =
-          isSpectatedBot || botCamDistSq <= 26 * 26 ? 1 : botCamDistSq <= 55 * 55 ? 2 : 3;
+        const animStride =
+          isSpectatedBot || botCamDistSq <= 24 * 24
+            ? 1
+            : botCamDistSq <= 52 * 52
+              ? 2
+              : 3;
         bot.animAccum = (bot.animAccum ?? 0) + dt;
-        if (botAnimStride === 1 || (this.simFrameIndex + i) % botAnimStride === 0) {
-          const animDt = bot.animAccum;
+        if (animStride === 1 || ((this.simFrameIndex + ord) % animStride === 0)) {
+          const stepDt = bot.animAccum;
           bot.animAccum = 0;
+          bot.rig.activeWeaponId = bot.weaponId;
+          const botIsHealing = bot.aiState === 'heal';
+          const botIsReviving = false;
+          const botIsReloading = bot.reloadTimer > 0;
+          const botIsAiming =
+            bot.aiState === 'combat' &&
+            !bot.isRetreating &&
+            !isMoving &&
+            !botIsHealing &&
+            !botIsReviving &&
+            !botIsReloading &&
+            !botInWater;
+          const botIsSprinting =
+            botActualSpeed > 3.9 && !botInWater && !botIsHealing && !botIsReviving;
+          const botWeaponCat = WEAPONS[bot.weaponId]?.category ?? null;
+          bot.rig.weaponMount.visible = !botInWater && !botIsHealing && !botIsReviving;
 
           const curYaw = bot.group.rotation.y;
           const prevYaw = bot.netPrevYaw ?? curYaw;
@@ -12756,7 +12813,7 @@ export class BattleRoyaleEngine {
           const moveLocalZ = isMoving && botActualSpeed > 0.25 ? moveDirX * bFwdX + moveDirZ * bFwdZ : 1;
 
           bot.animator.update(bot.rig, {
-            dt: animDt,
+            dt: stepDt,
             speed: botActualSpeed,
             stance: 'stand',
             isGrounded: botGroundedNow,
@@ -12842,30 +12899,25 @@ export class BattleRoyaleEngine {
     }
   }
 
-  private spawnImpact(x: number, y: number, z: number, isCharacterHit: boolean): void {
-    for (let s = 0; s < 2; s++) {
-      let slot: BulletImpactVfx | undefined;
-      for (let i = 0; i < this.impactPool.length; i++) {
-        if (!this.impactPool[i].active) {
-          slot = this.impactPool[i];
-          break;
-        }
+  private spawnImpact(pos: THREE.Vector3, isEnemy: boolean): void {
+    let slot: BulletImpactVfx | undefined;
+    for (let i = 0; i < this.impactPool.length; i++) {
+      if (!this.impactPool[i].active) {
+        slot = this.impactPool[i];
+        break;
       }
-      if (!slot) slot = this.impactPool[0];
-      slot.active = true;
-      slot.maxLife = 0.2;
-      slot.life = slot.maxLife;
-      slot.mesh.material = isCharacterHit ? this.impactHitMat : this.impactWallMat;
-      slot.mesh.position.set(x, y, z);
-      slot.mesh.scale.setScalar(isCharacterHit ? 1.25 : 1.0);
-      slot.vx = (Math.random() - 0.5) * 4.5;
-      slot.vy = 1.2 + Math.random() * 2.8;
-      slot.vz = (Math.random() - 0.5) * 4.5;
-      slot.mesh.visible = true;
     }
+    if (!slot) slot = this.impactPool[0];
+    slot.active = true;
+    slot.life = 0.18;
+    slot.mesh.visible = true;
+    slot.mesh.position.copy(pos);
+    slot.mesh.scale.setScalar(isEnemy ? 1.15 : 0.9);
+    slot.mat.color.setHex(isEnemy ? 0xef4444 : 0xfef08a);
+    slot.mat.opacity = 0.92;
   }
 
-  private updateImpacts(dt: number): void {
+  private updateImpactVfx(dt: number): void {
     for (let i = 0; i < this.impactPool.length; i++) {
       const imp = this.impactPool[i];
       if (!imp.active) continue;
@@ -12875,12 +12927,9 @@ export class BattleRoyaleEngine {
         imp.mesh.visible = false;
         continue;
       }
-      imp.vy -= 14 * dt;
-      imp.mesh.position.x += imp.vx * dt;
-      imp.mesh.position.y += imp.vy * dt;
-      imp.mesh.position.z += imp.vz * dt;
-      const t = imp.life / imp.maxLife;
-      imp.mesh.scale.setScalar(Math.max(0.25, t));
+      const t = 1 - imp.life / 0.18;
+      imp.mesh.scale.setScalar(0.85 + t * 1.45);
+      imp.mat.opacity = (1 - t) * 0.9;
     }
   }
 
@@ -14693,11 +14742,11 @@ export class BattleRoyaleEngine {
       this.renderer.setClearColor(0x000000, 0);
       this.renderer.render(this.lobbyScene.scene, this.lobbyScene.camera);
     } else {
-      this.renderer.setClearColor(0x0e1217, 1);
+      this.renderer.setClearColor(0xaadfff, 1);
       this.renderer.render(this.world.scene, this.world.camera);
     }
-    this.lastDrawCalls = this.renderer.info.render.calls;
-    this.lastTriangles = this.renderer.info.render.triangles;
+    this.lastRenderCalls = this.renderer.info.render.calls;
+    this.lastRenderTris = this.renderer.info.render.triangles;
   }
 
   private buildHudSnapshot(): HudSnapshot {
@@ -14922,8 +14971,8 @@ export class BattleRoyaleEngine {
       killFeed: this.killFeed.map((k) => ({ ...k })),
       combatIconPopup: this.combatIconPopup ? { ...this.combatIconPopup } : null,
       fps: this.currentFps,
-      drawCalls: this.lastDrawCalls,
-      triangles: this.lastTriangles,
+      renderCalls: this.lastRenderCalls,
+      renderTris: this.lastRenderTris,
       pointerLocked: this.input.pointerLocked,
       mouseSuspended: this.input.mouseSuspended,
       mouseResetNotice: performance.now() - this.input.mouseResetTimestamp < 1450,
@@ -15399,8 +15448,12 @@ export class BattleRoyaleEngine {
     this.tracerGeo.dispose();
     this.tracerMat.dispose();
     this.impactGeo.dispose();
-    this.impactWallMat.dispose();
-    this.impactHitMat.dispose();
+    for (let i = 0; i < this.impactPool.length; i++) {
+      this.impactPool[i].mat.dispose();
+    }
+    this.remoteHitMat.dispose();
+    this.remoteChestHitGeo.dispose();
+    this.remoteHeadHitGeo.dispose();
     this.glooAssets.dispose();
     this.grenadeLineGeo.dispose();
     this.grenadeLineMat.dispose();

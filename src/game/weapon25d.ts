@@ -620,6 +620,7 @@ function createFallbackWeaponTexture(weaponId: WeaponId): THREE.CanvasTexture {
   }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 1;
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.magFilter = THREE.LinearFilter;
@@ -771,12 +772,12 @@ function getOrCreateCachedWeaponAssets(weaponId: WeaponId): CachedWeaponAssets {
   );
 
   const fallbackTex = createFallbackWeaponTexture(weaponId);
-  fallbackTex.anisotropy = 1;
   const planeMat = new THREE.MeshLambertMaterial({
     color: 0xffffff,
     map: fallbackTex,
-    emissive: new THREE.Color(0x282828),
-    emissiveIntensity: 1.0,
+    emissiveMap: fallbackTex,
+    emissive: new THREE.Color(0xffffff),
+    emissiveIntensity: 0.34,
     alphaTest: 0.35,
     transparent: false,
     side: THREE.DoubleSide,
@@ -804,6 +805,7 @@ function getOrCreateCachedWeaponAssets(weaponId: WeaponId): CachedWeaponAssets {
         tex.anisotropy = 1;
         tex.needsUpdate = true;
         planeMat.map = tex;
+        planeMat.emissiveMap = tex;
         planeMat.needsUpdate = true;
         fallbackTex.dispose();
       };
@@ -913,6 +915,7 @@ export function buildHybridWeaponModel(weaponId: WeaponId): THREE.Group {
   const markMesh = (m: THREE.Mesh) => {
     m.castShadow = false;
     m.receiveShadow = false;
+    m.frustumCulled = true;
     m.userData.sharedWeaponAsset = true;
     return m;
   };

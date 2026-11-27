@@ -47,6 +47,8 @@ function createFirestoreClient(): Firestore {
 export const db: Firestore = createFirestoreClient();
 export const auth = getAuth(app);
 export const googleAuthProvider = new GoogleAuthProvider();
+googleAuthProvider.addScope('profile');
+googleAuthProvider.addScope('email');
 googleAuthProvider.setCustomParameters({ prompt: 'select_account' });
 
 export enum OperationType {

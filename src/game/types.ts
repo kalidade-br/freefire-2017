@@ -80,6 +80,32 @@ export interface WeaponSlotState {
 }
 
 export type CharacterModelId = 'adam' | 'eva' | 'maxim' | 'kelly';
+export type SkinGender = 'male' | 'female';
+export type SkinSlotKey = 'head' | 'mask' | 'shirt' | 'pants' | 'shoes';
+export const SKIN_SLOT_KEYS: ReadonlyArray<SkinSlotKey> = ['head', 'mask', 'shirt', 'pants', 'shoes'];
+export type EquippedSkinLoadout = Partial<Record<SkinSlotKey, string>>;
+
+const SKIN_PIECE_ID_RE = /^(male|female):([1-9][0-9]{0,2}):(head|mask|shirt|pants|shoes)$/;
+
+export function sanitizeEquippedSkins(raw: unknown): EquippedSkinLoadout | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const src = raw as Record<string, unknown>;
+  const out: EquippedSkinLoadout = {};
+  let count = 0;
+  for (let i = 0; i < SKIN_SLOT_KEYS.length; i++) {
+    const slot = SKIN_SLOT_KEYS[i];
+    const val = src[slot];
+    if (typeof val !== 'string') continue;
+    const clean = val.trim();
+    const match = SKIN_PIECE_ID_RE.exec(clean);
+    if (match && match[3] === slot) {
+      out[slot] = clean;
+      count++;
+    }
+  }
+  return count > 0 ? out : undefined;
+}
+
 export type PlayerAvatarId =
   | 'default'
   | 'adam'
@@ -101,6 +127,7 @@ export interface CharacterConfig {
   modelId?: CharacterModelId;
   avatarId?: PlayerAvatarId;
   glooSkin?: GlooSkinId;
+  equippedSkins?: EquippedSkinLoadout;
   skinColor: string;
   hairStyle: 'buzz' | 'spiky' | 'cap' | 'helmet';
   hairColor: string;
@@ -193,7 +220,7 @@ export const DEFAULT_HUD_LAYOUT: HudLayoutConfig = {
   sprintBtn: { xPct: 13.5, yPct: 58, scale: 1.0, opacity: 0.9 },
   leftFireBtn: { xPct: 20.5, yPct: 58, scale: 1.0, opacity: 0.9 },
   joystick: { xPct: 15, yPct: 76, scale: 1.0, opacity: 0.9 },
-  fpsBadge: { xPct: 4.5, yPct: 96, scale: 1.0, opacity: 0.9 },
+  fpsBadge: { xPct: 23, yPct: 2.2, scale: 1.0, opacity: 0.9 },
   fireBtn: { xPct: 84, yPct: 68, scale: 1.0, opacity: 0.92 },
   aimBtn: { xPct: 93, yPct: 56, scale: 1.0, opacity: 0.9 },
   vaultBtn: { xPct: 93, yPct: 29, scale: 1.0, opacity: 0.95 },
@@ -230,7 +257,7 @@ export const DEFAULT_HUD_LAYOUT_SLOT_2: HudLayoutConfig = {
   sprintBtn: { xPct: 13.5, yPct: 58, scale: 1.05, opacity: 0.85 },
   leftFireBtn: { xPct: 16, yPct: 28, scale: 1.3, opacity: 0.92 },
   joystick: { xPct: 14, yPct: 77, scale: 0.95, opacity: 0.85 },
-  fpsBadge: { xPct: 4.5, yPct: 96, scale: 0.95, opacity: 0.85 },
+  fpsBadge: { xPct: 23, yPct: 2.2, scale: 0.95, opacity: 0.9 },
   fireBtn: { xPct: 83, yPct: 72, scale: 1.15, opacity: 0.9 },
   aimBtn: { xPct: 86, yPct: 48, scale: 1.15, opacity: 0.92 },
   vaultBtn: { xPct: 93, yPct: 47, scale: 1.05, opacity: 0.95 },
@@ -1078,8 +1105,8 @@ export interface HudSnapshot {
   killFeed: KillFeedEntry[];
   combatIconPopup: CombatIconPopup | null;
   fps: number;
-  drawCalls: number;
-  triangles: number;
+  renderCalls: number;
+  renderTris: number;
   pointerLocked: boolean;
   mouseSuspended: boolean;
   mouseResetNotice: boolean;

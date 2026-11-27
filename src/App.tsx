@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
+import { onAuthStateChanged, signOut, type User as FirebaseUser } from 'firebase/auth';
 import { soundEngine } from './game/audio';
 import { BattleRoyaleEngine } from './game/gameEngine';
-import { multiplayerClient } from './game/multiplayerClient';
+import { isGuestAccount, multiplayerClient } from './game/multiplayerClient';
 import { voiceChatManager } from './game/voiceChat';
 import { auth } from './lib/firebase';
 import { loadOrCreateFirestoreProfile, saveFirestoreProfile } from './lib/firestoreProfile';
@@ -251,8 +251,8 @@ const INITIAL_HUD: HudSnapshot = {
   killFeed: [],
   combatIconPopup: null,
   fps: 60,
-  drawCalls: 0,
-  triangles: 0,
+  renderCalls: 0,
+  renderTris: 0,
   pointerLocked: false,
   mouseSuspended: false,
   mouseResetNotice: false,
@@ -318,9 +318,21 @@ export default function App() {
   const accountRef = useRef<PublicPlayerAccount | null>(null);
   accountRef.current = account;
 
+  const [guestModeActive, setGuestModeActive] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem('zonazero2017_guest_mode_v1') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const guestModeActiveRef = useRef(guestModeActive);
+  guestModeActiveRef.current = guestModeActive;
+
   const [party, setParty] = useState<PartyState | null>(null);
   const partyRef = useRef<PartyState | null>(null);
   partyRef.current = party;
+  const prevPartyStatusRef = useRef<PartyState['status']>('idle');
 
   const [invites, setInvites] = useState<PartyInvitePayload[]>([]);
   const [autoFillBots, setAutoFillBots] = useState(true);
@@ -362,6 +374,8 @@ export default function App() {
     poolKey: string | null;
     isOffline: boolean;
   }>({ active: false, startedAtMs: 0, poolKey: null, isOffline: false });
+  const searchStateRef = useRef(searchState);
+  searchStateRef.current = searchState;
   const [searchElapsedSec, setSearchElapsedSec] = useState(0);
   const [searchingPools, setSearchingPools] = useState<SearchingPoolInfo[]>([]);
   const [showSearchingModal, setShowSearchingModal] = useState(false);
@@ -377,6 +391,9 @@ export default function App() {
   const prevGladPhaseRef = useRef<string | null>(null);
   const activeLaunchedRoomIdRef = useRef<string | null>(null);
   const firebaseUserRef = useRef<FirebaseUser | null>(null);
+  const syncedFirebaseUidRef = useRef<string | null>(null);
+  const inFlightGuestSessionRef = useRef<Promise<PublicPlayerAccount | null> | null>(null);
+  const startingMatchRef = useRef(false);
 
   // Auto-open Fullscreen on any click/tap + detect mobile portrait orientation
   useEffect(() => {
@@ -471,6 +488,7 @@ export default function App() {
     const nextVariant: GameVariant = nextParty.gameVariant === 'gladiadores' ? 'gladiadores' : 'br';
     const nextGladFormat: GladiadoresFormat =
       nextParty.gladiadoresFormat === '2v2' ? '2v2' : '1v1';
+    prevPartyStatusRef.current = nextParty.status;
     setParty(nextParty);
     setBrMapId(nextMap);
     setMatchMode(nextParty.mode);
@@ -493,6 +511,7 @@ export default function App() {
     if (!engineRef.current) return;
     if (activeLaunchedRoomIdRef.current === joinInfo.roomId) return;
     activeLaunchedRoomIdRef.current = joinInfo.roomId;
+    startingMatchRef.current = false;
     if (offlineLaunchTimerRef.current !== null) {
       window.clearTimeout(offlineLaunchTimerRef.current);
       offlineLaunchTimerRef.current = null;
@@ -509,7 +528,84 @@ export default function App() {
     );
   }, []);
 
-  // Hydrate existing session token & listen for multiplayer WS events
+  const setGuestPreference = useCallback((enabled: boolean) => {
+    guestModeActiveRef.current = enabled;
+    setGuestModeActive(enabled);
+    if (typeof window === 'undefined') return;
+    try {
+      if (enabled) {
+        window.localStorage.setItem('zonazero2017_guest_mode_v1', '1');
+      } else {
+        window.localStorage.removeItem('zonazero2017_guest_mode_v1');
+      }
+    } catch {
+      // Ignore storage failures
+    }
+  }, []);
+
+  const ensureGuestOnlineSession = useCallback(async (forceFresh = false): Promise<PublicPlayerAccount | null> => {
+    setGuestPreference(true);
+    if (!forceFresh && multiplayerClient.isAuthenticated() && accountRef.current) {
+      return accountRef.current;
+    }
+    if (inFlightGuestSessionRef.current) {
+      return inFlightGuestSessionRef.current;
+    }
+    const run = (async (): Promise<PublicPlayerAccount | null> => {
+      if (!forceFresh && multiplayerClient.isAuthenticated()) {
+        try {
+          const me = await multiplayerClient.getMe();
+          applyServerAccount(me.account);
+          syncPartyConfigState(me.party);
+          setInvites(me.invites);
+          return me.account;
+        } catch {
+          // Fall through to creating a fresh guest session
+        }
+      }
+      try {
+        const guest = await multiplayerClient.loginGuest({
+          nickname: profileRef.current.nickname,
+          character: characterRef.current,
+        });
+        applyServerAccount(guest.account);
+        syncPartyConfigState(guest.party);
+        setInvites(guest.invites);
+        return guest.account;
+      } catch {
+        return null;
+      } finally {
+        inFlightGuestSessionRef.current = null;
+      }
+    })();
+    inFlightGuestSessionRef.current = run;
+    return run;
+  }, [applyServerAccount, setGuestPreference, syncPartyConfigState]);
+
+  const handleFullLogout = useCallback(async () => {
+    setGuestPreference(false);
+    firebaseUserRef.current = null;
+    syncedFirebaseUidRef.current = null;
+    inFlightGuestSessionRef.current = null;
+    startingMatchRef.current = false;
+    activeLaunchedRoomIdRef.current = null;
+    if (offlineLaunchTimerRef.current !== null) {
+      window.clearTimeout(offlineLaunchTimerRef.current);
+      offlineLaunchTimerRef.current = null;
+    }
+    setSearchState({ active: false, startedAtMs: 0, poolKey: null, isOffline: false });
+    setSearchElapsedSec(0);
+    voiceChatManager.setLocalAccountId(null);
+    setAccount(null);
+    setParty(null);
+    setInvites([]);
+    await Promise.allSettled([
+      multiplayerClient.logout(),
+      signOut(auth),
+    ]);
+  }, [setGuestPreference]);
+
+  // Hydrate existing session token & listen for multiplayer WS events (mount ONCE)
   useEffect(() => {
     if (multiplayerClient.isAuthenticated()) {
       multiplayerClient
@@ -518,25 +614,49 @@ export default function App() {
           applyServerAccount(res.account);
           syncPartyConfigState(res.party);
           setInvites(res.invites);
+          if (isGuestAccount(res.account)) {
+            setGuestPreference(true);
+          }
         })
         .catch(() => {
-          // Invalid/expired token already cleared
+          if (guestModeActiveRef.current && !auth.currentUser) {
+            void ensureGuestOnlineSession(true);
+          }
         });
+    } else if (guestModeActiveRef.current && !auth.currentUser) {
+      void ensureGuestOnlineSession();
     }
 
     const unsubAuth = onAuthStateChanged(auth, (fbUser) => {
       firebaseUserRef.current = fbUser;
-      if (!fbUser) return;
+      if (!fbUser) {
+        syncedFirebaseUidRef.current = null;
+        return;
+      }
+
+      if (
+        syncedFirebaseUidRef.current === fbUser.uid &&
+        multiplayerClient.isAuthenticated() &&
+        accountRef.current &&
+        !isGuestAccount(accountRef.current)
+      ) {
+        return;
+      }
 
       void (async () => {
         try {
-          if (!multiplayerClient.isAuthenticated()) {
+          const shouldLinkOrLoginFirebase =
+            !multiplayerClient.isAuthenticated() || isGuestAccount(accountRef.current);
+
+          if (shouldLinkOrLoginFirebase) {
+            setGuestPreference(false);
             const idToken = await fbUser.getIdToken();
             const res = await multiplayerClient.loginWithFirebase({
               idToken,
               nickname: fbUser.displayName || profileRef.current.nickname,
               character: characterRef.current,
             });
+            syncedFirebaseUidRef.current = fbUser.uid;
             const fsProf = await loadOrCreateFirestoreProfile(
               fbUser,
               profileRef.current,
@@ -565,6 +685,9 @@ export default function App() {
                     ...res.account.character,
                     modelId: fsProf.characterModelId,
                     avatarId: fsProf.avatarId,
+                    equippedSkins:
+                      res.account.character?.equippedSkins ??
+                      characterRef.current.equippedSkins,
                   },
                 }
               : res.account;
@@ -572,6 +695,7 @@ export default function App() {
             syncPartyConfigState(res.party);
             setInvites(res.invites);
           } else {
+            syncedFirebaseUidRef.current = fbUser.uid;
             const fsProf = await loadOrCreateFirestoreProfile(
               fbUser,
               profileRef.current,
@@ -600,6 +724,9 @@ export default function App() {
                   ...accountRef.current.character,
                   modelId: fsProf.characterModelId,
                   avatarId: fsProf.avatarId,
+                  equippedSkins:
+                    accountRef.current.character?.equippedSkins ??
+                    characterRef.current.equippedSkins,
                 },
               });
             }
@@ -612,6 +739,7 @@ export default function App() {
 
     const unsub = multiplayerClient.subscribe((ev) => {
       if (ev.type === 'party_update') {
+        const prevStatus = prevPartyStatusRef.current;
         syncPartyConfigState(ev.party);
         if (ev.party.status === 'matchmaking') {
           setSearchState((cur) =>
@@ -620,9 +748,11 @@ export default function App() {
               : { active: true, startedAtMs: Date.now(), poolKey: null, isOffline: false },
           );
         } else if (ev.party.status === 'idle') {
-          setSearchState((cur) =>
-            cur.isOffline ? cur : { active: false, startedAtMs: 0, poolKey: null, isOffline: false },
-          );
+          if (prevStatus === 'matchmaking' && !startingMatchRef.current) {
+            setSearchState((cur) =>
+              cur.isOffline ? cur : { active: false, startedAtMs: 0, poolKey: null, isOffline: false },
+            );
+          }
         }
       } else if (ev.type === 'party_invite') {
         setInvites((prev) => {
@@ -639,7 +769,7 @@ export default function App() {
             poolKey: ev.status.poolKey ?? null,
             isOffline: false,
           });
-        } else {
+        } else if (!startingMatchRef.current) {
           setSearchState((cur) =>
             cur.isOffline ? cur : { active: false, startedAtMs: 0, poolKey: null, isOffline: false },
           );
@@ -652,7 +782,7 @@ export default function App() {
       unsub();
       unsubAuth();
     };
-  }, [applyServerAccount, launchOnlineRoom, syncPartyConfigState]);
+  }, [applyServerAccount, ensureGuestOnlineSession, launchOnlineRoom, setGuestPreference, syncPartyConfigState]);
 
   // Initial-lobby search timer ticker (0:00, 0:07...) & fallback status poll
   useEffect(() => {
@@ -674,7 +804,11 @@ export default function App() {
           .then((res) => {
             if (res.joinInfo) {
               launchOnlineRoom(res.joinInfo);
-            } else if (!res.search.searching) {
+            } else if (
+              !res.search.searching &&
+              !startingMatchRef.current &&
+              Date.now() - searchState.startedAtMs > 1500
+            ) {
               setSearchState((cur) =>
                 cur.isOffline
                   ? cur
@@ -683,7 +817,7 @@ export default function App() {
             }
           })
           .catch(() => undefined);
-      }, 1200);
+      }, 1000);
     }
 
     return () => {
@@ -719,6 +853,7 @@ export default function App() {
             accountId: account?.id ?? -1,
             nickname: profile.nickname,
             modelId: selfModelId,
+            character,
             isLeader: true,
             isSelf: true,
           },
@@ -733,6 +868,7 @@ export default function App() {
             m.accountId === account?.id
               ? selfModelId
               : normalizeCharacterModelId(m.character?.modelId),
+          character: m.accountId === account?.id ? character : m.character,
           isLeader: m.isLeader,
           isSelf: account ? m.accountId === account.id : false,
         })),
@@ -745,6 +881,7 @@ export default function App() {
           accountId: account?.id ?? -1,
           nickname: profile.nickname,
           modelId: selfModelId,
+          character,
           isLeader: true,
           isSelf: true,
         },
@@ -759,11 +896,12 @@ export default function App() {
           m.accountId === account?.id
             ? selfModelId
             : normalizeCharacterModelId(m.character?.modelId),
+        character: m.accountId === account?.id ? character : m.character,
         isLeader: m.isLeader,
         isSelf: account ? m.accountId === account.id : false,
       })),
     );
-  }, [account, character.modelId, gameState, gameVariant, gladiadoresFormat, matchMode, party, profile.nickname]);
+  }, [account, character, gameState, gameVariant, gladiadoresFormat, matchMode, party, profile.nickname]);
 
   // Release pointer lock when Backpack / Shop / Pause / Gladiadores Arsenal opens & handle keyboard shortcuts to close
   useEffect(() => {
@@ -885,7 +1023,7 @@ export default function App() {
     engine.setAutoFillBots(autoFillBots);
     setMapMeta(engine.getMapMetadata());
 
-    const unsub = engine.stateMachine.subscribe((next) => {
+    const unsub = engine.stateMachine.subscribe((next, prev) => {
       setGameState(next);
       setIsPaused(false);
       setIsBackpackOpen(false);
@@ -907,12 +1045,27 @@ export default function App() {
 
       if (next === GameState.LOBBY) {
         activeLaunchedRoomIdRef.current = null;
-        if (accountRef.current) {
+        const leftMatchFlow =
+          prev === GameState.LOADING ||
+          prev === GameState.WAITING ||
+          prev === GameState.AIRPLANE ||
+          prev === GameState.DROPPING ||
+          prev === GameState.PARACHUTE ||
+          prev === GameState.PLAYING ||
+          prev === GameState.WIN ||
+          prev === GameState.GAMEOVER ||
+          prev === GameState.MATCHMAKING;
+        if (leftMatchFlow && accountRef.current) {
           void multiplayerClient.leaveMatch();
-          void multiplayerClient.getParty().then((p) => {
-            syncPartyConfigState(p.party);
-            setInvites(p.invites);
-          }).catch(() => undefined);
+          void multiplayerClient
+            .getParty()
+            .then((p) => {
+              if (!searchStateRef.current.active && !startingMatchRef.current) {
+                syncPartyConfigState(p.party);
+              }
+              setInvites(p.invites);
+            })
+            .catch(() => undefined);
         }
       }
 
@@ -1266,7 +1419,8 @@ export default function App() {
 
   const handleStartMatch = async () => {
     if (!engineRef.current) return;
-    if (searchState.active) return;
+    if (searchStateRef.current.active || startingMatchRef.current) return;
+    startingMatchRef.current = true;
     soundEngine.unlock();
     soundEngine.playUiConfirm();
     engineRef.current.setGameVariant(gameVariant);
@@ -1276,28 +1430,39 @@ export default function App() {
     }
     const startedAt = Date.now();
     setSearchState({ active: true, startedAtMs: startedAt, poolKey: null, isOffline: false });
+
+    const matchConfig = {
+      gameVariant,
+      gladiadoresFormat,
+      mode: matchMode,
+      mapId: brMapId,
+      isRanked,
+      autoFillBots,
+    };
+
     try {
-      if (!multiplayerClient.isAuthenticated()) {
-        const guest = await multiplayerClient.loginGuest({
-          nickname: profileRef.current.nickname,
-          character: characterRef.current,
-        });
-        applyServerAccount(guest.account);
-        syncPartyConfigState(guest.party);
-        setInvites(guest.invites);
+      if (!multiplayerClient.isAuthenticated() || !accountRef.current) {
+        await ensureGuestOnlineSession();
       }
-      await multiplayerClient
-        .setPartyConfig({
-          gameVariant,
-          gladiadoresFormat,
-          mode: matchMode,
-          mapId: brMapId,
-          isRanked,
-          autoFillBots,
-        })
-        .then((cfg) => syncPartyConfigState(cfg.party))
-        .catch(() => undefined);
-      const res = await multiplayerClient.startMatchmaking();
+      let res: Awaited<ReturnType<typeof multiplayerClient.startMatchmaking>>;
+      try {
+        res = await multiplayerClient.startMatchmaking(matchConfig);
+      } catch (err) {
+        const status = (err as { status?: number } | null)?.status;
+        if (status === 401 && !auth.currentUser) {
+          await ensureGuestOnlineSession(true);
+          res = await multiplayerClient.startMatchmaking(matchConfig);
+        } else {
+          throw err;
+        }
+      }
+      if (res.joinInfo) {
+        launchOnlineRoom(res.joinInfo);
+        return;
+      }
+      if (res.party) {
+        syncPartyConfigState(res.party);
+      }
       setSearchState({
         active: true,
         startedAtMs: res.search.startedAtMs ?? startedAt,
@@ -1322,6 +1487,8 @@ export default function App() {
           engineRef.current?.startOfflineBrMatch();
         }
       }, 10_000);
+    } finally {
+      startingMatchRef.current = false;
     }
   };
 
@@ -1403,15 +1570,21 @@ export default function App() {
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-black">
-      {/* Fullscreen Nostalgic Lobby Backdrop behind transparent 3D character canvas */}
+      {/* Fullscreen Atmospheric Blurred Hangar / Lobby Backdrop behind transparent 3D character canvas */}
       {gameState === GameState.LOBBY && (
-        <div className="fixed inset-0 z-0 pointer-events-none">
+        <div className="fixed inset-0 z-0 pointer-events-none overflow-hidden">
           <img
             src="/assets/lobby_bg_clean.jpg"
-            alt="Lobby Free Fire Bermuda"
-            className="w-full h-full object-cover object-center"
+            alt="Lobby Free Fire"
+            className="w-full h-full object-cover object-center blur-[3px] brightness-[0.58] saturate-[0.76] scale-[1.03]"
           />
-          <div className="absolute inset-0 bg-gradient-to-b from-black/35 via-transparent to-black/45" />
+          <div
+            className="absolute inset-0"
+            style={{
+              background:
+                'radial-gradient(circle at 32% 48%, rgba(255,220,165,0.10) 0%, rgba(15,24,34,0.48) 55%, rgba(5,9,14,0.78) 100%)',
+            }}
+          />
         </div>
       )}
 
@@ -1435,14 +1608,33 @@ export default function App() {
         <MainMenuScreen
           nickname={profile.nickname}
           account={account}
+          hasActiveSession={Boolean(account || guestModeActive)}
           muted={settings.muted}
           onToggleMute={handleToggleMute}
           onPlay={() => {
             soundEngine.playUiConfirm();
+            if (!accountRef.current && !multiplayerClient.isAuthenticated()) {
+              void ensureGuestOnlineSession();
+            }
             engineRef.current?.stateMachine.transition(GameState.LOBBY);
           }}
+          onGuestLogin={async () => {
+            await ensureGuestOnlineSession();
+          }}
+          onGoogleAuthenticated={(acc) => {
+            setGuestPreference(false);
+            applyServerAccount(acc);
+            void multiplayerClient.getParty().then((p) => {
+              syncPartyConfigState(p.party);
+              setInvites(p.invites);
+            }).catch(() => undefined);
+          }}
+          onLogout={handleFullLogout}
           onOpenCharacter={() => {
             soundEngine.playUiClick();
+            if (!accountRef.current && !multiplayerClient.isAuthenticated()) {
+              void ensureGuestOnlineSession();
+            }
             engineRef.current?.stateMachine.transition(GameState.LOBBY);
             setShowCharModal(true);
           }}
@@ -1509,6 +1701,11 @@ export default function App() {
             soundEngine.playUiClick();
             setShowCharModal(true);
           }}
+          onOpenStore={() => {
+            soundEngine.playUiClick();
+            setArsenalInitialTab('avatars');
+            setShowArsenalModal(true);
+          }}
           onOpenArsenal={() => {
             soundEngine.playUiClick();
             setArsenalInitialTab('weapons');
@@ -1538,7 +1735,13 @@ export default function App() {
           onOpenFriends={() => {
             soundEngine.playUiClick();
             if (!account) {
-              setShowAuthModal(true);
+              void ensureGuestOnlineSession().then((guestAcc) => {
+                if (guestAcc) {
+                  setShowFriendsModal(true);
+                } else {
+                  setShowAuthModal(true);
+                }
+              });
             } else {
               setShowFriendsModal(true);
             }
@@ -1767,6 +1970,7 @@ export default function App() {
         <AuthModal
           currentAccount={account}
           onAuthenticated={(acc) => {
+            setGuestPreference(isGuestAccount(acc));
             applyServerAccount(acc);
             void multiplayerClient.getParty().then((p) => {
               syncPartyConfigState(p.party);
@@ -1774,11 +1978,13 @@ export default function App() {
             }).catch(() => undefined);
           }}
           onLoggedOut={() => {
+            setGuestPreference(false);
             firebaseUserRef.current = null;
             voiceChatManager.setLocalAccountId(null);
             setAccount(null);
             setParty(null);
             setInvites([]);
+            engineRef.current?.stateMachine.transition(GameState.MENU);
           }}
           onClose={() => {
             soundEngine.playUiClick();
@@ -2063,15 +2269,6 @@ export default function App() {
               Ativar Tela Cheia e Girar
             </button>
           </div>
-        </div>
-      )}
-
-      {gameState !== GameState.BOOT && (
-        <div
-          style={{ textShadow: '0 1px 2px rgba(0,0,0,0.95)' }}
-          className="pointer-events-none fixed top-0.5 left-1.5 z-[35] whitespace-nowrap rounded-none bg-black/35 px-1.5 py-0.5 font-mono text-[10px] font-bold tabular-nums text-white/90"
-        >
-          {hud.fps} FPS | {hud.drawCalls} Calls | {hud.triangles} Tris
         </div>
       )}
     </div>

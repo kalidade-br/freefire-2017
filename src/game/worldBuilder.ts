@@ -26,12 +26,6 @@ import {
 } from './characterBuilder';
 import { ProceduralTextureSet } from './textures';
 import {
-  batchRepeatedMeshesToInstanced,
-  createBlobShadowMesh,
-  ensureSkinnedMeshCullingSphere,
-  optimizeObjectFF2017,
-} from './materialOptimizer';
-import {
   AttachmentKind,
   BrMapId,
   BuildingNavZone,
@@ -315,7 +309,7 @@ export interface WorldHandle {
     shadowQuality?: ShadowQuality,
     maxAnisotropy?: number,
   ) => void;
-  setAdaptiveDrawDistance: (factor: number) => void;
+  setAdaptiveDrawScale: (scale: number) => void;
   updateDynamicProps: (
     dt: number,
     elapsed: number,
@@ -344,6 +338,23 @@ export const GLADIADORES_BOUNDS = {
   maxZ: GLADIADORES_ORIGIN.z + 21.0,
 } as const;
 
+const VENDING_CABINET_MAT = new THREE.MeshLambertMaterial({ color: 0x162231 });
+const VENDING_TRIM_MAT = new THREE.MeshLambertMaterial({
+  color: 0xf59e0b,
+  emissive: 0xd97706,
+  emissiveIntensity: 0.25,
+});
+const VENDING_SCREEN_MAT = new THREE.MeshLambertMaterial({
+  color: 0x38bdf8,
+  emissive: 0x0ea5e9,
+  emissiveIntensity: 0.78,
+});
+const VENDING_BODY_GEO = new THREE.BoxGeometry(1.35, 2.3, 0.95);
+const VENDING_SCREEN_GEO = new THREE.BoxGeometry(0.96, 1.02, 0.08);
+const VENDING_MARQUEE_GEO = new THREE.BoxGeometry(1.42, 0.3, 1.02);
+const VENDING_PILLAR_GEO = new THREE.BoxGeometry(0.12, 2.25, 1.0);
+const VENDING_TRAY_GEO = new THREE.BoxGeometry(0.88, 0.34, 0.16);
+
 function createVendingMachineProp(
   id: string,
   x: number,
@@ -359,38 +370,24 @@ function createVendingMachineProp(
   group.position.set(x, y, z);
   group.rotation.y = rotY;
 
-  const cabinetMat = new THREE.MeshLambertMaterial({
-    color: 0x162231,
-  });
-  const trimMat = new THREE.MeshLambertMaterial({
-    color: 0xf59e0b,
-    emissive: 0xd97706,
-    emissiveIntensity: 0.25,
-  });
-  const screenMat = new THREE.MeshLambertMaterial({
-    color: 0x38bdf8,
-    emissive: 0x0ea5e9,
-    emissiveIntensity: 0.78,
-  });
-
-  const body = new THREE.Mesh(new THREE.BoxGeometry(1.35, 2.3, 0.95), cabinetMat);
+  const body = new THREE.Mesh(VENDING_BODY_GEO, VENDING_CABINET_MAT);
   body.position.y = 1.15;
   body.castShadow = false;
   body.receiveShadow = false;
   body.userData.cullRoot = group;
 
-  const screen = new THREE.Mesh(new THREE.BoxGeometry(0.96, 1.02, 0.08), screenMat);
+  const screen = new THREE.Mesh(VENDING_SCREEN_GEO, VENDING_SCREEN_MAT);
   screen.position.set(0, 1.38, 0.47);
 
-  const marquee = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.3, 1.02), trimMat);
+  const marquee = new THREE.Mesh(VENDING_MARQUEE_GEO, VENDING_TRIM_MAT);
   marquee.position.set(0, 2.38, 0);
 
-  const pillarL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.25, 1.0), trimMat);
+  const pillarL = new THREE.Mesh(VENDING_PILLAR_GEO, VENDING_TRIM_MAT);
   pillarL.position.set(-0.66, 1.13, 0);
-  const pillarR = pillarL.clone();
+  const pillarR = new THREE.Mesh(VENDING_PILLAR_GEO, VENDING_TRIM_MAT);
   pillarR.position.set(0.66, 1.13, 0);
 
-  const tray = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.34, 0.16), trimMat);
+  const tray = new THREE.Mesh(VENDING_TRAY_GEO, VENDING_TRIM_MAT);
   tray.position.set(0, 0.46, 0.46);
 
   group.add(body, screen, marquee, pillarL, pillarR, tray);
@@ -413,6 +410,58 @@ function createVendingMachineProp(
   };
 }
 
+const VEH_SPORT_BODY_MAT = new THREE.MeshLambertMaterial({ color: 0x2563eb });
+const VEH_JEEP_BODY_MAT = new THREE.MeshLambertMaterial({ color: 0x4b5336 });
+const VEH_SPORT_ACCENT_MAT = new THREE.MeshLambertMaterial({ color: 0x111827 });
+const VEH_JEEP_ACCENT_MAT = new THREE.MeshLambertMaterial({ color: 0x2b3022 });
+const VEH_TIRE_MAT = new THREE.MeshLambertMaterial({ color: 0x18191d });
+const VEH_RIM_MAT = new THREE.MeshLambertMaterial({ color: 0xcbd5e1 });
+const VEH_GLASS_MAT = new THREE.MeshLambertMaterial({
+  color: 0x7dd3fc,
+  transparent: true,
+  opacity: 0.72,
+});
+const VEH_HEADLIGHT_MAT = new THREE.MeshLambertMaterial({
+  color: 0xfef08a,
+  emissive: 0xfacc15,
+  emissiveIntensity: 0.6,
+});
+const VEH_CHAR_MAT = new THREE.MeshLambertMaterial({ color: 0x18181b });
+const VEH_SMOKE_GEO = new THREE.SphereGeometry(0.42, 6, 5);
+const VEH_SMOKE_ORANGE_MAT = new THREE.MeshBasicMaterial({
+  color: 0xf97316,
+  transparent: true,
+  opacity: 0.72,
+});
+const VEH_SMOKE_DARK_MAT = new THREE.MeshBasicMaterial({
+  color: 0x262626,
+  transparent: true,
+  opacity: 0.72,
+});
+const VEH_SPORT_HULL_GEO = new THREE.BoxGeometry(1.98, 0.62, 4.1);
+const VEH_JEEP_HULL_GEO = new THREE.BoxGeometry(1.96, 0.74, 3.9);
+const VEH_SPORT_HOOD_GEO = new THREE.BoxGeometry(1.82, 0.36, 1.45);
+const VEH_JEEP_HOOD_GEO = new THREE.BoxGeometry(1.76, 0.44, 1.3);
+const VEH_SPORT_CAB_GEO = new THREE.BoxGeometry(1.72, 0.62, 1.75);
+const VEH_JEEP_CAB_GEO = new THREE.BoxGeometry(1.82, 0.84, 2.0);
+const VEH_SPORT_WIND_GEO = new THREE.BoxGeometry(1.56, 0.45, 0.08);
+const VEH_JEEP_WIND_GEO = new THREE.BoxGeometry(1.56, 0.55, 0.08);
+const VEH_BUMPER_GEO = new THREE.BoxGeometry(1.94, 0.24, 0.22);
+const VEH_HEADLIGHT_GEO = new THREE.BoxGeometry(0.28, 0.16, 0.08);
+const VEH_SPOILER_GEO = new THREE.BoxGeometry(1.86, 0.1, 0.34);
+const VEH_SPARE_TIRE_GEO = new THREE.CylinderGeometry(0.38, 0.38, 0.24, 8);
+VEH_SPARE_TIRE_GEO.rotateX(Math.PI / 2);
+const VEH_SPORT_WHEEL_GEO = new THREE.CylinderGeometry(0.36, 0.36, 0.3, 10);
+VEH_SPORT_WHEEL_GEO.rotateZ(Math.PI / 2);
+const VEH_JEEP_WHEEL_GEO = new THREE.CylinderGeometry(0.42, 0.42, 0.3, 10);
+VEH_JEEP_WHEEL_GEO.rotateZ(Math.PI / 2);
+const VEH_SPORT_HUB_GEO = new THREE.CylinderGeometry(0.36 * 0.52, 0.36 * 0.52, 0.32, 8);
+VEH_SPORT_HUB_GEO.rotateZ(Math.PI / 2);
+const VEH_JEEP_HUB_GEO = new THREE.CylinderGeometry(0.42 * 0.52, 0.42 * 0.52, 0.32, 8);
+VEH_JEEP_HUB_GEO.rotateZ(Math.PI / 2);
+const VEH_WRECK_HULL_GEO = new THREE.BoxGeometry(1.94, 0.72, 3.85);
+const VEH_WRECK_CAB_GEO = new THREE.BoxGeometry(1.74, 0.65, 1.85);
+
 function createDrivableVehicle(
   id: string,
   kind: VehicleKind,
@@ -434,47 +483,22 @@ function createDrivableVehicle(
   const chassisGroup = new THREE.Group();
   group.add(chassisGroup);
 
-  const bodyColor = isSports ? 0x2563eb : 0x4b5336;
-  const bodyMat = new THREE.MeshLambertMaterial({
-    color: bodyColor,
-  });
-  const accentMat = new THREE.MeshLambertMaterial({
-    color: isSports ? 0x111827 : 0x2b3022,
-  });
-  const tireMat = new THREE.MeshLambertMaterial({
-    color: 0x18191d,
-  });
-  const rimMat = new THREE.MeshLambertMaterial({
-    color: 0xcbd5e1,
-  });
-  const glassMat = new THREE.MeshLambertMaterial({
-    color: 0x7dd3fc,
-    transparent: true,
-    opacity: 0.72,
-  });
-  const headLightMat = new THREE.MeshBasicMaterial({
-    color: 0xfef08a,
-  });
+  const bodyMat = isSports ? VEH_SPORT_BODY_MAT : VEH_JEEP_BODY_MAT;
+  const accentMat = isSports ? VEH_SPORT_ACCENT_MAT : VEH_JEEP_ACCENT_MAT;
 
-  const hull = new THREE.Mesh(
-    new THREE.BoxGeometry(isSports ? 1.98 : 1.96, isSports ? 0.62 : 0.74, isSports ? 4.1 : 3.9),
-    bodyMat,
-  );
+  const hull = new THREE.Mesh(isSports ? VEH_SPORT_HULL_GEO : VEH_JEEP_HULL_GEO, bodyMat);
   hull.position.y = isSports ? 0.64 : 0.78;
   hull.castShadow = false;
   hull.receiveShadow = false;
   hull.userData.vehicleId = id;
 
-  const hood = new THREE.Mesh(
-    new THREE.BoxGeometry(isSports ? 1.82 : 1.76, isSports ? 0.36 : 0.44, isSports ? 1.45 : 1.3),
-    bodyMat,
-  );
+  const hood = new THREE.Mesh(isSports ? VEH_SPORT_HOOD_GEO : VEH_JEEP_HOOD_GEO, bodyMat);
   hood.position.set(0, isSports ? 0.84 : 1.05, isSports ? 1.2 : 1.15);
   hood.castShadow = false;
   hood.userData.vehicleId = id;
 
   const cabin = new THREE.Mesh(
-    new THREE.BoxGeometry(isSports ? 1.72 : 1.82, isSports ? 0.62 : 0.84, isSports ? 1.75 : 2.0),
+    isSports ? VEH_SPORT_CAB_GEO : VEH_JEEP_CAB_GEO,
     isSports ? accentMat : bodyMat,
   );
   cabin.position.set(0, isSports ? 1.2 : 1.52, isSports ? -0.35 : -0.52);
@@ -482,31 +506,30 @@ function createDrivableVehicle(
   cabin.userData.vehicleId = id;
 
   const windshield = new THREE.Mesh(
-    new THREE.BoxGeometry(1.56, isSports ? 0.45 : 0.55, 0.08),
-    glassMat,
+    isSports ? VEH_SPORT_WIND_GEO : VEH_JEEP_WIND_GEO,
+    VEH_GLASS_MAT,
   );
   windshield.position.set(0, isSports ? 1.22 : 1.54, isSports ? 0.54 : 0.46);
   windshield.rotation.x = isSports ? -0.35 : -0.18;
 
-  const bumperF = new THREE.Mesh(new THREE.BoxGeometry(1.94, 0.24, 0.22), accentMat);
+  const bumperF = new THREE.Mesh(VEH_BUMPER_GEO, accentMat);
   bumperF.position.set(0, 0.45, isSports ? 2.08 : 1.98);
-  const bumperR = bumperF.clone();
+  const bumperR = new THREE.Mesh(VEH_BUMPER_GEO, accentMat);
   bumperR.position.set(0, 0.48, isSports ? -2.08 : -1.98);
 
-  const hlL = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.08), headLightMat);
+  const hlL = new THREE.Mesh(VEH_HEADLIGHT_GEO, VEH_HEADLIGHT_MAT);
   hlL.position.set(-0.68, isSports ? 0.72 : 0.86, isSports ? 2.06 : 1.96);
-  const hlR = hlL.clone();
-  hlR.position.x = 0.68;
+  const hlR = new THREE.Mesh(VEH_HEADLIGHT_GEO, VEH_HEADLIGHT_MAT);
+  hlR.position.set(0.68, isSports ? 0.72 : 0.86, isSports ? 2.06 : 1.96);
 
   chassisGroup.add(hull, hood, cabin, windshield, bumperF, bumperR, hlL, hlR);
 
   if (isSports) {
-    const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.86, 0.1, 0.34), accentMat);
+    const spoiler = new THREE.Mesh(VEH_SPOILER_GEO, accentMat);
     spoiler.position.set(0, 1.28, -1.86);
     chassisGroup.add(spoiler);
   } else {
-    const spareTire = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 0.24, 10), tireMat);
-    spareTire.rotation.x = Math.PI / 2;
+    const spareTire = new THREE.Mesh(VEH_SPARE_TIRE_GEO, VEH_TIRE_MAT);
     spareTire.position.set(0, 0.96, -2.02);
     chassisGroup.add(spareTire);
   }
@@ -515,15 +538,13 @@ function createDrivableVehicle(
 
   // Wheels + Front Steering Pivots
   const wheelRadius = isSports ? 0.36 : 0.42;
-  const wheelGeo = new THREE.CylinderGeometry(wheelRadius, wheelRadius, 0.3, 12);
-  wheelGeo.rotateZ(Math.PI / 2);
-  const hubGeo = new THREE.CylinderGeometry(wheelRadius * 0.52, wheelRadius * 0.52, 0.32, 8);
-  hubGeo.rotateZ(Math.PI / 2);
+  const wheelGeo = isSports ? VEH_SPORT_WHEEL_GEO : VEH_JEEP_WHEEL_GEO;
+  const hubGeo = isSports ? VEH_SPORT_HUB_GEO : VEH_JEEP_HUB_GEO;
 
   const buildWheelMesh = () => {
-    const wMesh = new THREE.Mesh(wheelGeo, tireMat);
+    const wMesh = new THREE.Mesh(wheelGeo, VEH_TIRE_MAT);
     wMesh.castShadow = false;
-    const hub = new THREE.Mesh(hubGeo, rimMat);
+    const hub = new THREE.Mesh(hubGeo, VEH_RIM_MAT);
     wMesh.add(hub);
     return wMesh;
   };
@@ -552,14 +573,11 @@ function createDrivableVehicle(
 
   // Smoke & flame puff spheres over engine hood (<35% HP)
   const smokeMeshes: THREE.Mesh[] = [];
-  const smokeGeo = new THREE.SphereGeometry(0.42, 8, 6);
   for (let s = 0; s < 3; s++) {
-    const sMat = new THREE.MeshBasicMaterial({
-      color: s === 0 ? 0xf97316 : 0x262626,
-      transparent: true,
-      opacity: 0.72,
-    });
-    const sm = new THREE.Mesh(smokeGeo, sMat);
+    const sm = new THREE.Mesh(
+      VEH_SMOKE_GEO,
+      s === 0 ? VEH_SMOKE_ORANGE_MAT : VEH_SMOKE_DARK_MAT,
+    );
     sm.position.set((s - 1) * 0.25, 1.35 + s * 0.42, 1.25);
     sm.visible = false;
     chassisGroup.add(sm);
@@ -569,14 +587,11 @@ function createDrivableVehicle(
   // Charred Wreck shown on 0 HP destruction
   const burnedGroup = new THREE.Group();
   burnedGroup.visible = false;
-  const charMat = new THREE.MeshLambertMaterial({
-    color: 0x18181b,
-  });
-  const wreckedHull = new THREE.Mesh(new THREE.BoxGeometry(1.94, 0.72, 3.85), charMat);
+  const wreckedHull = new THREE.Mesh(VEH_WRECK_HULL_GEO, VEH_CHAR_MAT);
   wreckedHull.position.y = 0.45;
   wreckedHull.rotation.z = 0.04;
   wreckedHull.userData.vehicleId = id;
-  const wreckedCab = new THREE.Mesh(new THREE.BoxGeometry(1.74, 0.65, 1.85), charMat);
+  const wreckedCab = new THREE.Mesh(VEH_WRECK_CAB_GEO, VEH_CHAR_MAT);
   wreckedCab.position.set(0, 1.02, -0.45);
   wreckedCab.rotation.z = -0.05;
   wreckedCab.userData.vehicleId = id;
@@ -632,6 +647,28 @@ const BOT_SHIRT_PALETTE = [
 const BOT_PANTS_PALETTE = [
   0xc9b396, 0x2c333f, 0x3b424d, 0x4b4234, 0x222730,
 ];
+const BOT_SKIN_PALETTE = [0xd7a27e, 0xc98e6b, 0xe2b291, 0x9b684b];
+
+const BOT_SHIRT_MATS = BOT_SHIRT_PALETTE.map((c) => new THREE.MeshLambertMaterial({ color: c }));
+const BOT_PANTS_MATS = BOT_PANTS_PALETTE.map((c) => new THREE.MeshLambertMaterial({ color: c }));
+const BOT_SKIN_MATS = BOT_SKIN_PALETTE.map((c) => new THREE.MeshLambertMaterial({ color: c }));
+const BOT_VEST_MATS: Record<1 | 2 | 3, THREE.MeshLambertMaterial> = {
+  1: new THREE.MeshLambertMaterial({ color: 0x4d5d3d }),
+  2: new THREE.MeshLambertMaterial({ color: 0x2f3842 }),
+  3: new THREE.MeshLambertMaterial({ color: 0x1c1f26 }),
+};
+const BOT_HELM_MATS: Record<1 | 2 | 3, THREE.MeshLambertMaterial> = {
+  1: new THREE.MeshLambertMaterial({ color: 0x566444 }),
+  2: new THREE.MeshLambertMaterial({ color: 0x2c343d }),
+  3: new THREE.MeshLambertMaterial({ color: 0x181a1f }),
+};
+const BOT_CHEST_GEO = new THREE.CylinderGeometry(0.21, 0.17, 0.48, 8);
+const BOT_HEAD_GEO = new THREE.SphereGeometry(0.14, 10, 8);
+const BOT_THIGH_GEO = new THREE.CylinderGeometry(0.078, 0.064, 0.42, 6);
+const BOT_SHIN_GEO = new THREE.CylinderGeometry(0.06, 0.046, 0.42, 6);
+const BOT_ARM_GEO = new THREE.CylinderGeometry(0.052, 0.044, 0.25, 6);
+const BOT_FOREARM_GEO = new THREE.CylinderGeometry(0.043, 0.036, 0.24, 6);
+const BOT_PARACHUTE_GEO = new THREE.CylinderGeometry(1.45, 1.7, 1.0, 8, 1, true, 0, Math.PI);
 
 const BOT_EMPTY_WEAPON_RECORD = {} as Record<WeaponId, THREE.Group>;
 const BOT_SHARED_MUZZLE_GEO = new THREE.ConeGeometry(0.085, 0.24, 6);
@@ -640,8 +677,8 @@ const BOT_SHARED_MUZZLE_MAT = new THREE.MeshBasicMaterial({
   transparent: true,
   opacity: 0.92,
 });
-const BOT_SHARED_SHADOW_GEO = new THREE.PlaneGeometry(0.01, 0.01);
-const BOT_SHARED_SHADOW_MAT = new THREE.MeshBasicMaterial({ visible: false });
+const BOT_BLOB_SHADOW_GEO = new THREE.PlaneGeometry(1.15, 1.15);
+BOT_BLOB_SHADOW_GEO.rotateX(-Math.PI / 2);
 
 function createBotEntity(
   id: string,
@@ -650,8 +687,8 @@ function createBotEntity(
   z: number,
   rotY: number,
   idx: number,
-  camoTexture: THREE.Texture,
-  contactShadowTexture: THREE.Texture,
+  sharedParachuteMat: THREE.Material,
+  sharedBlobShadowMat: THREE.Material,
   weaponId: WeaponId,
   vestLevel: 0 | 1 | 2 | 3 = 0,
   helmetLevel: 0 | 1 | 2 | 3 = 0,
@@ -661,16 +698,9 @@ function createBotEntity(
   group.position.set(x, y, z);
   group.rotation.y = rotY;
 
-  const pantsMat = new THREE.MeshLambertMaterial({
-    color: BOT_PANTS_PALETTE[idx % BOT_PANTS_PALETTE.length],
-  });
-  const bodyMat = new THREE.MeshLambertMaterial({
-    color: BOT_SHIRT_PALETTE[idx % BOT_SHIRT_PALETTE.length],
-  });
-  const skinColors = [0xd7a27e, 0xc98e6b, 0xe2b291, 0x9b684b];
-  const headMat = new THREE.MeshLambertMaterial({
-    color: skinColors[idx % skinColors.length],
-  });
+  const pantsMat = BOT_PANTS_MATS[idx % BOT_PANTS_MATS.length];
+  const bodyMat = BOT_SHIRT_MATS[idx % BOT_SHIRT_MATS.length];
+  const headMat = BOT_SKIN_MATS[idx % BOT_SKIN_MATS.length];
 
   const pelvis = new THREE.Group();
   pelvis.position.set(0, 0.92, 0);
@@ -680,10 +710,11 @@ function createBotEntity(
   torso.position.set(0, 0.08, 0);
   pelvis.add(torso);
 
-  const chest = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.17, 0.48, 10), bodyMat);
+  const chest = new THREE.Mesh(BOT_CHEST_GEO, bodyMat);
   chest.scale.set(1.06, 1, 0.68);
   chest.position.y = 0.24;
   chest.castShadow = false;
+  chest.receiveShadow = false;
   chest.userData.targetId = id;
   torso.add(chest);
 
@@ -691,10 +722,11 @@ function createBotEntity(
   headGroup.position.set(0, 0.48, 0);
   torso.add(headGroup);
 
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 10), headMat);
+  const head = new THREE.Mesh(BOT_HEAD_GEO, headMat);
   head.scale.set(0.94, 1.06, 0.98);
   head.position.y = 0.18;
   head.castShadow = false;
+  head.receiveShadow = false;
   head.userData.targetId = id;
   head.userData.isHeadshot = true;
   headGroup.add(head);
@@ -703,14 +735,14 @@ function createBotEntity(
   const legLPivot = new THREE.Group();
   legLPivot.position.set(-0.095, -0.05, 0);
   pelvis.add(legLPivot);
-  const legL = new THREE.Mesh(new THREE.CylinderGeometry(0.078, 0.064, 0.42, 8), pantsMat);
+  const legL = new THREE.Mesh(BOT_THIGH_GEO, pantsMat);
   legL.position.y = -0.21;
   legL.castShadow = false;
   legLPivot.add(legL);
   const leftKnee = new THREE.Group();
   leftKnee.position.set(0, -0.42, 0);
   legLPivot.add(leftKnee);
-  const shinL = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.046, 0.42, 8), pantsMat);
+  const shinL = new THREE.Mesh(BOT_SHIN_GEO, pantsMat);
   shinL.position.y = -0.21;
   shinL.castShadow = false;
   leftKnee.add(shinL);
@@ -718,35 +750,28 @@ function createBotEntity(
   const legRPivot = new THREE.Group();
   legRPivot.position.set(0.095, -0.05, 0);
   pelvis.add(legRPivot);
-  const legR = new THREE.Mesh(new THREE.CylinderGeometry(0.078, 0.064, 0.42, 8), pantsMat);
+  const legR = new THREE.Mesh(BOT_THIGH_GEO, pantsMat);
   legR.position.y = -0.21;
   legR.castShadow = false;
   legRPivot.add(legR);
   const rightKnee = new THREE.Group();
   rightKnee.position.set(0, -0.42, 0);
   legRPivot.add(rightKnee);
-  const shinR = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.046, 0.42, 8), pantsMat);
+  const shinR = new THREE.Mesh(BOT_SHIN_GEO, pantsMat);
   shinR.position.y = -0.21;
   shinR.castShadow = false;
   rightKnee.add(shinR);
 
   // Vest & Helmet (hidden visuals — compatibility proxies)
-  const vestMat = new THREE.MeshLambertMaterial({
-    color: vestLevel === 3 ? 0x1c1f26 : vestLevel === 2 ? 0x2f3842 : 0x4d5d3d,
-  });
-  const vestMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.18, 0.36, 10), vestMat);
+  const vestMat = BOT_VEST_MATS[(vestLevel || 1) as 1 | 2 | 3];
+  const vestMesh = new THREE.Mesh(BOT_VEST_GEO, vestMat);
   vestMesh.scale.set(1.06, 1, 0.72);
   vestMesh.position.y = 0.24;
   vestMesh.visible = false;
   torso.add(vestMesh);
 
-  const helmMat = new THREE.MeshLambertMaterial({
-    color: helmetLevel === 3 ? 0x181a1f : helmetLevel === 2 ? 0x2c343d : 0x566444,
-  });
-  const helmetMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(0.165, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.58),
-    helmMat,
-  );
+  const helmMat = BOT_HELM_MATS[(helmetLevel || 1) as 1 | 2 | 3];
+  const helmetMesh = new THREE.Mesh(BOT_HELMET_GEO, helmMat);
   helmetMesh.position.y = 0.2;
   helmetMesh.visible = false;
   headGroup.add(helmetMesh);
@@ -755,26 +780,26 @@ function createBotEntity(
   const armLPivot = new THREE.Group();
   armLPivot.position.set(-0.24, 0.42, 0);
   torso.add(armLPivot);
-  const armL = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.044, 0.25, 8), bodyMat);
+  const armL = new THREE.Mesh(BOT_ARM_GEO, bodyMat);
   armL.position.set(0, -0.125, 0);
   armLPivot.add(armL);
   const leftElbow = new THREE.Group();
   leftElbow.position.set(0, -0.25, 0);
   armLPivot.add(leftElbow);
-  const forearmL = new THREE.Mesh(new THREE.CylinderGeometry(0.043, 0.036, 0.24, 8), headMat);
+  const forearmL = new THREE.Mesh(BOT_FOREARM_GEO, headMat);
   forearmL.position.set(0, -0.12, 0);
   leftElbow.add(forearmL);
 
   const armRPivot = new THREE.Group();
   armRPivot.position.set(0.24, 0.42, 0);
   torso.add(armRPivot);
-  const armR = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.044, 0.25, 8), bodyMat);
+  const armR = new THREE.Mesh(BOT_ARM_GEO, bodyMat);
   armR.position.set(0, -0.125, 0);
   armRPivot.add(armR);
   const rightElbow = new THREE.Group();
   rightElbow.position.set(0, -0.25, 0);
   armRPivot.add(rightElbow);
-  const forearmR = new THREE.Mesh(new THREE.CylinderGeometry(0.043, 0.036, 0.24, 8), headMat);
+  const forearmR = new THREE.Mesh(BOT_FOREARM_GEO, headMat);
   forearmR.position.set(0, -0.12, 0);
   rightElbow.add(forearmR);
 
@@ -804,13 +829,7 @@ function createBotEntity(
 
   // Bot Camo Parachute Canopy
   const parachuteGroup = new THREE.Group();
-  const parachuteMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(1.45, 1.7, 1.0, 8, 1, true, 0, Math.PI),
-    new THREE.MeshLambertMaterial({
-      map: camoTexture,
-      side: THREE.DoubleSide,
-    }),
-  );
+  const parachuteMesh = new THREE.Mesh(BOT_PARACHUTE_GEO, sharedParachuteMat);
   parachuteMesh.rotation.z = Math.PI / 2;
   parachuteMesh.rotation.y = Math.PI / 2;
   parachuteMesh.position.set(0, 1.8, 0);
@@ -824,7 +843,10 @@ function createBotEntity(
   const dummyBackMount2 = new THREE.Group();
   const surfboardGroup = new THREE.Group();
   surfboardGroup.visible = false;
-  const contactShadow = createBlobShadowMesh(contactShadowTexture, 0.56, 0.5);
+  const contactShadow = new THREE.Mesh(BOT_BLOB_SHADOW_GEO, sharedBlobShadowMat);
+  contactShadow.position.y = 0.022;
+  contactShadow.castShadow = false;
+  contactShadow.receiveShadow = false;
   group.add(contactShadow);
 
   const setBandageVisible = (visible: boolean) => {
@@ -1065,34 +1087,27 @@ export function upgradeBotsToAdam(
 ): void {
   if (!isAdamAssetsLoaded()) return;
 
-  const vestMats: Record<1 | 2 | 3, THREE.MeshLambertMaterial> = {
-    1: new THREE.MeshLambertMaterial({ color: 0x4d5d3d }),
-    2: new THREE.MeshLambertMaterial({ color: 0x2f3842 }),
-    3: new THREE.MeshLambertMaterial({ color: 0x1c1f26 }),
-  };
-  const helmMats: Record<1 | 2 | 3, THREE.MeshLambertMaterial> = {
-    1: new THREE.MeshLambertMaterial({ color: 0x566444 }),
-    2: new THREE.MeshLambertMaterial({ color: 0x2c343d }),
-    3: new THREE.MeshLambertMaterial({ color: 0x181a1f }),
-  };
-  const sharedParachuteGeo = new THREE.CylinderGeometry(1.45, 1.7, 1.0, 8, 1, true, 0, Math.PI);
+  const sharedParachuteGeo = BOT_PARACHUTE_GEO;
   const sharedParachuteMat = new THREE.MeshLambertMaterial({
     map: camoTexture,
     side: THREE.DoubleSide,
   });
+  const sharedBlobMat = contactShadowTexture
+    ? new THREE.MeshBasicMaterial({
+        map: contactShadowTexture,
+        transparent: true,
+        depthWrite: false,
+        opacity: 0.52,
+      })
+    : new THREE.MeshBasicMaterial({ visible: false });
   const armUpVec = new THREE.Vector3(0, 1, 0);
 
   for (let i = 0; i < targets.length; i++) {
     const bot = targets[i];
     if (bot.isAdam) continue;
 
-    // Clean up initial procedural children & geometries
+    // Clean up initial procedural children without disposing module-level shared BOT_* geometries
     bot.rig?.dispose();
-    bot.group.traverse((obj) => {
-      if ((obj as THREE.Mesh).isMesh && !obj.userData?.sharedWeaponAsset) {
-        (obj as THREE.Mesh).geometry?.dispose();
-      }
-    });
     while (bot.group.children.length > 0) {
       bot.group.remove(bot.group.children[0]);
     }
@@ -1107,6 +1122,7 @@ export function upgradeBotsToAdam(
     visualRoot.add(cloned);
     bot.group.add(visualRoot);
 
+    // Share base Lambert material across all bots of the same modelId (massive draw/shader savings)
     let bodyMat: THREE.MeshLambertMaterial | undefined;
     cloned.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
@@ -1114,11 +1130,8 @@ export function upgradeBotsToAdam(
       mesh.castShadow = false;
       mesh.receiveShadow = false;
       mesh.frustumCulled = true;
-      if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) {
-        ensureSkinnedMeshCullingSphere(mesh as THREE.SkinnedMesh, 1.65);
-      }
       const origMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-      if (!bodyMat && origMat && (origMat as THREE.MeshLambertMaterial).isMeshLambertMaterial) {
+      if (origMat && (origMat as THREE.MeshLambertMaterial).isMeshLambertMaterial && !bodyMat) {
         bodyMat = origMat as THREE.MeshLambertMaterial;
       }
     });
@@ -1174,7 +1187,7 @@ export function upgradeBotsToAdam(
     // Vest & Helmet kept hidden so only base model + backpack render
     const vestMesh = new THREE.Mesh(
       BOT_VEST_GEO,
-      vestMats[(bot.vestLevel || 1) as 1 | 2 | 3],
+      BOT_VEST_MATS[(bot.vestLevel || 1) as 1 | 2 | 3],
     );
     vestMesh.scale.set(1.06, 1, 0.68);
     vestMesh.position.set(0, -0.02, 0.015);
@@ -1183,7 +1196,7 @@ export function upgradeBotsToAdam(
 
     const helmetMesh = new THREE.Mesh(
       BOT_HELMET_GEO,
-      helmMats[(bot.helmetLevel || 1) as 1 | 2 | 3],
+      BOT_HELM_MATS[(bot.helmetLevel || 1) as 1 | 2 | 3],
     );
     helmetMesh.scale.set(0.98, 1.02, 1.08);
     helmetMesh.position.set(0, pack.helmetOffsetY, 0.005);
@@ -1271,14 +1284,11 @@ export function upgradeBotsToAdam(
     const dummyGroup = new THREE.Group();
     const surfboardGroup = new THREE.Group();
     surfboardGroup.visible = false;
-    const contactShadow = contactShadowTexture
-      ? createBlobShadowMesh(contactShadowTexture, 0.56, 0.5)
-      : new THREE.Mesh(BOT_SHARED_SHADOW_GEO, BOT_SHARED_SHADOW_MAT);
-    if (contactShadowTexture) {
-      bot.group.add(contactShadow);
-    } else {
-      contactShadow.visible = false;
-    }
+    const contactShadow = new THREE.Mesh(BOT_BLOB_SHADOW_GEO, sharedBlobMat);
+    contactShadow.position.y = 0.022;
+    contactShadow.castShadow = false;
+    contactShadow.receiveShadow = false;
+    bot.group.add(contactShadow);
 
     const rig: CharacterRig = {
       isAdam: true,
@@ -1388,15 +1398,9 @@ export function upgradeBotsToAdam(
 
 function createAirplane(): { group: THREE.Group; props: THREE.Mesh[] } {
   const group = new THREE.Group();
-  const bodyMat = new THREE.MeshLambertMaterial({
-    color: 0x555d52,
-  });
-  const stripeMat = new THREE.MeshLambertMaterial({
-    color: 0xd19a2a,
-  });
-  const propMat = new THREE.MeshLambertMaterial({
-    color: 0x1a1c1e,
-  });
+  const bodyMat = new THREE.MeshLambertMaterial({ color: 0x555d52 });
+  const stripeMat = new THREE.MeshLambertMaterial({ color: 0xd19a2a });
+  const propMat = new THREE.MeshLambertMaterial({ color: 0x1a1c1e });
 
   const fuselage = new THREE.Mesh(
     new THREE.CylinderGeometry(1.9, 1.7, 16, 10),
@@ -1442,12 +1446,12 @@ function createAirplane(): { group: THREE.Group; props: THREE.Mesh[] } {
 }
 
 function createSkyDome(): THREE.Mesh {
-  const skyGeo = new THREE.SphereGeometry(240, 24, 16);
+  const skyGeo = new THREE.SphereGeometry(240, 20, 12);
   const pos = skyGeo.attributes.position;
   const colors = new Float32Array(pos.count * 3);
-  const cZenith = new THREE.Color(0x1b5ec7);
-  const cMid = new THREE.Color(0x4ea3eb);
-  const cHorizon = new THREE.Color(0xbce4fa);
+  const cZenith = new THREE.Color(0x1565e6);
+  const cMid = new THREE.Color(0x4fb8ff);
+  const cHorizon = new THREE.Color(0xbfe9ff);
   const tmp = new THREE.Color();
 
   for (let i = 0; i < pos.count; i++) {
@@ -1479,34 +1483,32 @@ export function createIslandWorld(
   _envMap?: THREE.Texture | null,
 ): WorldHandle {
   const scene = new THREE.Scene();
-  const horizonFogColor = new THREE.Color(0x9bd4f8);
+  const horizonFogColor = new THREE.Color(0xaadfff);
   scene.background = horizonFogColor;
-  const fog = new THREE.Fog(horizonFogColor, 95, 175);
+  const fog = new THREE.Fog(horizonFogColor, 95, 185);
   scene.fog = fog;
-  scene.environment = null;
 
   const camera = new THREE.PerspectiveCamera(
     64,
     window.innerWidth / window.innerHeight,
     0.15,
-    205,
+    210,
   );
 
-  // Sky Dome + Soft Rounded Horizon Clouds (1 InstancedMesh draw call)
+  // Sky Dome + Instanced Horizon Clouds (1 Draw Call)
   const skyDome = createSkyDome();
   scene.add(skyDome);
 
-  const cloudGroup = new THREE.Group();
   const cloudMat = new THREE.MeshBasicMaterial({
-    color: 0xf6faff,
+    color: 0xf7fbff,
     transparent: true,
-    opacity: 0.76,
+    opacity: 0.75,
   });
   const cloudGeo = new THREE.SphereGeometry(16, 7, 5);
   const cloudInst = new THREE.InstancedMesh(cloudGeo, cloudMat, 14);
+  cloudInst.frustumCulled = false;
   cloudInst.castShadow = false;
   cloudInst.receiveShadow = false;
-  cloudInst.frustumCulled = true;
   const cloudDummy = new THREE.Object3D();
   for (let i = 0; i < 14; i++) {
     const a = (i / 14) * Math.PI * 2;
@@ -1518,16 +1520,13 @@ export function createIslandWorld(
     cloudInst.setMatrixAt(i, cloudDummy.matrix);
   }
   cloudInst.instanceMatrix.needsUpdate = true;
-  cloudInst.computeBoundingBox();
-  cloudInst.computeBoundingSphere();
-  cloudGroup.add(cloudInst);
-  scene.add(cloudGroup);
+  scene.add(cloudInst);
 
-  // Classic Free Fire 2017 bright colorful mobile daylight (zero shadow maps)
-  const hemi = new THREE.HemisphereLight(0xbbe6ff, 0x9fa862, 1.55);
+  // Classic Free Fire 2017 Bright Vibrant Daylight (Zero Dynamic Shadows)
+  const hemi = new THREE.HemisphereLight(0xc2ebff, 0x99b856, 1.48);
   scene.add(hemi);
 
-  const sunLight = new THREE.DirectionalLight(0xfff1cc, 1.75);
+  const sunLight = new THREE.DirectionalLight(0xfff1c4, 1.88);
   sunLight.position.set(110, 150, 85);
   sunLight.castShadow = false;
   scene.add(sunLight);
@@ -1551,10 +1550,10 @@ export function createIslandWorld(
 
   const roads: MinimapRoad[] = [];
 
-  // Seamless surrounding tropical ocean skirt for Bermuda 3D map (lightweight Lambert)
+  // Seamless surrounding tropical ocean skirt for Bermuda 3D map
   const bermudaOceanSkirtMat = new THREE.MeshLambertMaterial({
     map: textures.waterWave,
-    color: 0x1e8ec2,
+    color: 0x1b8ec4,
   });
   const bermudaOceanSkirt = new THREE.Mesh(
     new THREE.PlaneGeometry(4600, 4600),
@@ -1573,7 +1572,7 @@ export function createIslandWorld(
     emissive: 0x7f1d1d,
     emissiveIntensity: 0.35,
   });
-  const padBaseGeo = new THREE.CylinderGeometry(1.15, 1.35, 0.25, 14);
+  const padBaseGeo = new THREE.CylinderGeometry(1.15, 1.35, 0.25, 12);
   const padPlateGeo = new THREE.BoxGeometry(1.3, 0.14, 1.6);
   const padBaseMat = new THREE.MeshLambertMaterial({ color: 0x1e293b });
   const padGlowMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
@@ -1667,6 +1666,17 @@ export function createIslandWorld(
     'Emanuel_Top1', 'Samuel_M4', 'Guilherme_17', 'RodrigoCapa', 'Victor_Peak',
   ];
 
+  const sharedBotParachuteMat = new THREE.MeshLambertMaterial({
+    map: textures.camoParachute,
+    side: THREE.DoubleSide,
+  });
+  const sharedBotBlobMat = new THREE.MeshBasicMaterial({
+    map: textures.contactShadow,
+    transparent: true,
+    depthWrite: false,
+    opacity: 0.52,
+  });
+
   const targets: TargetDummy[] = BOT_NICKS.map((nick, idx) => {
     const poi = bermudaPois[idx % bermudaPois.length];
     const ang = (idx * 2.399) % (Math.PI * 2);
@@ -1682,8 +1692,8 @@ export function createIslandWorld(
       waitZ,
       (idx * 1.1) % (Math.PI * 2),
       idx,
-      textures.camoParachute,
-      textures.contactShadow,
+      sharedBotParachuteMat,
+      sharedBotBlobMat,
       'g18',
       0,
       0,
@@ -1775,7 +1785,7 @@ export function createIslandWorld(
   lootCoinGeo.rotateZ(Math.PI / 2);
   const lootDeathGeo = new THREE.BoxGeometry(0.76, 0.42, 0.52);
 
-  // Lightweight Free Fire 2017 Lambert materials for loot items
+  // Lightweight classic mobile materials matching reference loot items
   const matAmmoOlive = new THREE.MeshLambertMaterial({ color: 0x3b6345 });
   const matAmmoRed = new THREE.MeshLambertMaterial({ color: 0xa62626 });
   const matBeigeTan = new THREE.MeshLambertMaterial({ color: 0xcabca6 });
@@ -2131,19 +2141,18 @@ export function createIslandWorld(
   waitLobbyGroup.position.set(WAIT_LOBBY_ORIGIN.x, WAIT_LOBBY_ORIGIN.y, WAIT_LOBBY_ORIGIN.z);
   waitLobbyGroup.visible = false;
   const waitSnowBase = new THREE.Mesh(
-    new THREE.CircleGeometry(68, 24),
+    new THREE.CircleGeometry(68, 28),
     new THREE.MeshLambertMaterial({ color: 0xe6eff6 }),
   );
   waitSnowBase.rotation.x = -Math.PI / 2;
   waitSnowBase.position.y = -0.04;
   waitSnowBase.receiveShadow = false;
   const waitSeaBase = new THREE.Mesh(
-    new THREE.CircleGeometry(900, 24),
-    new THREE.MeshLambertMaterial({ color: 0x1e84b4 }),
+    new THREE.CircleGeometry(900, 28),
+    new THREE.MeshLambertMaterial({ color: 0x1a749e }),
   );
   waitSeaBase.rotation.x = -Math.PI / 2;
   waitSeaBase.position.y = -1.6;
-  waitSeaBase.receiveShadow = false;
   waitLobbyGroup.add(waitSnowBase, waitSeaBase);
   scene.add(waitLobbyGroup);
 
@@ -2152,18 +2161,17 @@ export function createIslandWorld(
   gladiadoresGroup.visible = false;
   const gladFloorPad = new THREE.Mesh(
     new THREE.PlaneGeometry(86, 74),
-    new THREE.MeshLambertMaterial({ color: 0x454a52 }),
+    new THREE.MeshLambertMaterial({ color: 0x3b3f45 }),
   );
   gladFloorPad.rotation.x = -Math.PI / 2;
   gladFloorPad.position.set(-15.5, 0.50, 0);
   gladFloorPad.receiveShadow = false;
   const gladOuterGround = new THREE.Mesh(
-    new THREE.CircleGeometry(520, 24),
-    new THREE.MeshLambertMaterial({ color: 0x2d3339 }),
+    new THREE.CircleGeometry(520, 28),
+    new THREE.MeshLambertMaterial({ color: 0x262b30 }),
   );
   gladOuterGround.rotation.x = -Math.PI / 2;
   gladOuterGround.position.set(-15.5, -0.45, 0);
-  gladOuterGround.receiveShadow = false;
   gladiadoresGroup.add(gladFloorPad, gladOuterGround);
   scene.add(gladiadoresGroup);
 
@@ -2203,13 +2211,56 @@ export function createIslandWorld(
     applyActiveMapLists();
   };
 
+  // Group repeated static meshes sharing exact BufferGeometry + Material into THREE.InstancedMesh
+  const batchRepeatedStaticMeshes = (root: THREE.Object3D): void => {
+    root.updateMatrixWorld(true);
+    const invRoot = new THREE.Matrix4().copy(root.matrixWorld).invert();
+    const groups = new Map<
+      string,
+      { geo: THREE.BufferGeometry; mat: THREE.Material; meshes: THREE.Mesh[] }
+    >();
+
+    root.traverse((node) => {
+      if (!(node as THREE.Mesh).isMesh) return;
+      const m = node as THREE.Mesh;
+      if (!m.visible || (m as THREE.SkinnedMesh).isSkinnedMesh || (m as THREE.InstancedMesh).isInstancedMesh) {
+        return;
+      }
+      if (Array.isArray(m.material) || !m.material || !m.geometry) return;
+      const key = `${m.geometry.uuid}:${m.material.uuid}`;
+      let entry = groups.get(key);
+      if (!entry) {
+        entry = { geo: m.geometry, mat: m.material, meshes: [] };
+        groups.set(key, entry);
+      }
+      entry.meshes.push(m);
+    });
+
+    const relMat = new THREE.Matrix4();
+    groups.forEach((entry) => {
+      if (entry.meshes.length < 2) return;
+      const inst = new THREE.InstancedMesh(entry.geo, entry.mat, entry.meshes.length);
+      inst.castShadow = false;
+      inst.receiveShadow = false;
+      inst.frustumCulled = true;
+      for (let i = 0; i < entry.meshes.length; i++) {
+        const m = entry.meshes[i];
+        relMat.multiplyMatrices(invRoot, m.matrixWorld);
+        inst.setMatrixAt(i, relMat);
+        m.parent?.remove(m);
+      }
+      inst.instanceMatrix.needsUpdate = true;
+      inst.computeBoundingSphere();
+      root.add(inst);
+    });
+  };
+
   const attachExternalWorldModels = (assets: ExternalWorldAssets) => {
     if (externalAttached) return;
     externalAttached = true;
 
     if (assets.airplaneTemplate) {
       const planeModel = assets.airplaneTemplate.clone(true);
-      optimizeObjectFF2017(planeModel);
       airplaneGroup.clear();
       airplaneGroup.add(planeModel);
       airplaneProps.length = 0;
@@ -2224,8 +2275,7 @@ export function createIslandWorld(
       waitLobbyGroup.add(lobbyModel);
       waitLobbyGroup.updateMatrixWorld(true);
       waitCollisionGrid.buildFromObject(lobbyModel);
-      optimizeObjectFF2017(lobbyModel);
-      batchRepeatedMeshesToInstanced(lobbyModel, { minGroupSize: 2 });
+      batchRepeatedStaticMeshes(lobbyModel);
     }
 
     if (assets.gladiadoresTemplate) {
@@ -2233,8 +2283,7 @@ export function createIslandWorld(
       gladiadoresGroup.add(gladModel);
       gladiadoresGroup.updateMatrixWorld(true);
       gladiadoresCollisionGrid.buildFromObject(gladModel);
-      optimizeObjectFF2017(gladModel);
-      batchRepeatedMeshesToInstanced(gladModel, { minGroupSize: 2 });
+      batchRepeatedStaticMeshes(gladModel);
     }
 
     if (assets.bermudaTemplate) {
@@ -2242,18 +2291,10 @@ export function createIslandWorld(
       bermudaGroup.add(bermudaModel);
       bermudaGroup.updateMatrixWorld(true);
       bermudaCollisionGrid.buildFromObject(bermudaModel);
+      batchRepeatedStaticMeshes(bermudaModel);
+      bermudaModel.updateMatrixWorld(true);
 
-      // Extract real houses, hangars & 2nd floors from bermuda.glb before instancing
-      const spots = extractBermudaBuildingSpots(bermudaModel, bermudaCollisionGrid);
-
-      // Convert remaining materials to FF 2017 Lambert/Basic & batch identical repeated props/trees/rocks/houses
-      optimizeObjectFF2017(bermudaModel, { hideWatermark: true });
-      batchRepeatedMeshesToInstanced(bermudaModel, {
-        minGroupSize: 2,
-        skipNameRe: /terrain|ground|water|ocean|sea|sky|highway|airport_road|p_road|road|runway/i,
-      });
-
-      // Collect non-instanced discrete buildings & props for view-cone + distance culling
+      // Collect discrete non-instanced structures/props in bermuda.glb for view-cone + distance culling
       bermudaCullables.length = 0;
       const cullBox = new THREE.Box3();
       const cullCenter = new THREE.Vector3();
@@ -2282,6 +2323,9 @@ export function createIslandWorld(
           radius,
         });
       });
+
+      // Extract real houses, hangars & 2nd floors from bermuda.glb (zero changes to map mesh!)
+      const spots = extractBermudaBuildingSpots(bermudaModel, bermudaCollisionGrid);
       const bermudaGroundAt = (x: number, z: number) =>
         bermudaCollisionGrid.sampleTerrainHeight(x, z, BERMUDA_GLB_WATER_Y);
       const findNearestDrySpot = (tx: number, tz: number): { x: number; z: number; y: number } => {
@@ -2570,7 +2614,7 @@ export function createIslandWorld(
         bermudaBarrelSpots.length,
       );
       bermudaBarrelInst.castShadow = false;
-      bermudaBarrelInst.receiveShadow = true;
+      bermudaBarrelInst.receiveShadow = false;
       bermudaBarrelInst.userData.isExplosiveBarrelInst = true;
       bermudaBarrelSpots.forEach(([bx, bz], idx) => {
         const dry = findNearestDrySpot(bx, bz);
@@ -2686,14 +2730,13 @@ export function createIslandWorld(
   };
 
   let structureCullDist = 145;
+  let baseFogNear = 92;
+  let baseFogFar = 175;
+  let baseCamFar = 200;
+  let adaptiveDrawScale = 1.0;
 
-  let baseFogNear = 88;
-  let baseFogFar = 165;
-  let baseCamFar = 195;
-  let adaptiveFarFactor = 1.0;
-
-  const setAdaptiveDrawDistance = (factor: number) => {
-    adaptiveFarFactor = THREE.MathUtils.clamp(factor, 0.55, 1.0);
+  const setAdaptiveDrawScale = (scale: number) => {
+    adaptiveDrawScale = THREE.MathUtils.clamp(scale, 0.6, 1.0);
   };
 
   const applyQuality = (
@@ -2708,43 +2751,42 @@ export function createIslandWorld(
 
     textures.applyQuality(resolvedTex, 1);
 
-    // Classic Free Fire 2017: zero dynamic shadow maps, zero PBR env maps
+    // Classic Free Fire 2017: zero shadow maps everywhere
     sunLight.castShadow = false;
     if (sunLight.shadow.map) {
       sunLight.shadow.map.dispose();
       sunLight.shadow.map = null;
     }
-    scene.environment = null;
-    scene.environmentIntensity = 0;
 
     if (quality === 'low' || isSoftwareGl) {
-      baseFogNear = 68;
-      baseFogFar = 138;
-      baseCamFar = 165;
-      structureCullDist = 112;
-      sunLight.intensity = 1.75;
-      hemi.intensity = 1.62;
-      cloudMat.opacity = 0.65;
-    } else if (quality === 'medium') {
-      baseFogNear = 88;
-      baseFogFar = 165;
-      baseCamFar = 195;
-      structureCullDist = 145;
-      sunLight.intensity = 1.78;
-      hemi.intensity = 1.55;
-      cloudMat.opacity = 0.76;
-    } else {
-      baseFogNear = 108;
-      baseFogFar = 198;
-      baseCamFar = 230;
-      structureCullDist = 178;
+      baseFogNear = 64;
+      baseFogFar = 136;
+      baseCamFar = 158;
+      structureCullDist = 110;
       sunLight.intensity = 1.85;
-      hemi.intensity = 1.52;
-      cloudMat.opacity = 0.84;
+      hemi.intensity = 1.54;
+      cloudMat.opacity = 0.62;
+    } else if (quality === 'medium') {
+      baseFogNear = 90;
+      baseFogFar = 172;
+      baseCamFar = 198;
+      structureCullDist = 142;
+      sunLight.intensity = 1.88;
+      hemi.intensity = 1.48;
+      cloudMat.opacity = 0.74;
+    } else {
+      baseFogNear = 112;
+      baseFogFar = 212;
+      baseCamFar = 242;
+      structureCullDist = 175;
+      sunLight.intensity = 1.94;
+      hemi.intensity = 1.46;
+      cloudMat.opacity = 0.82;
     }
-    fog.near = baseFogNear * adaptiveFarFactor;
-    fog.far = baseFogFar * adaptiveFarFactor;
-    camera.far = baseCamFar * adaptiveFarFactor;
+    scene.environment = null;
+    fog.near = baseFogNear * adaptiveDrawScale;
+    fog.far = baseFogFar * adaptiveDrawScale;
+    camera.far = baseCamFar * adaptiveDrawScale;
     camera.updateProjectionMatrix();
   };
 
@@ -2784,7 +2826,7 @@ export function createIslandWorld(
     camFwdZ?: number,
     isAirborne = false,
   ) => {
-    cloudGroup.rotation.y = elapsed * 0.0025;
+    cloudInst.rotation.y = elapsed * 0.0025;
 
     const cx = camPos ? camPos.x : 0;
     const cz = camPos ? camPos.z : 0;
@@ -2798,9 +2840,12 @@ export function createIslandWorld(
     const fwdX = hasFwd ? camFwdX! / fwdLen : 0;
     const fwdZ = hasFwd ? camFwdZ! / fwdLen : -1;
 
-    const targetFogNear = (isAirborne ? Math.max(baseFogNear, 220) : baseFogNear) * adaptiveFarFactor;
-    const targetFogFar = (isAirborne ? Math.max(baseFogFar, 420) : baseFogFar) * adaptiveFarFactor;
-    const targetCamFar = (isAirborne ? Math.max(baseCamFar, 480) : baseCamFar) * adaptiveFarFactor;
+    const scaledNear = baseFogNear * adaptiveDrawScale;
+    const scaledFar = baseFogFar * adaptiveDrawScale;
+    const scaledCamFar = baseCamFar * adaptiveDrawScale;
+    const targetFogNear = isAirborne ? Math.max(scaledNear, 220) : scaledNear;
+    const targetFogFar = isAirborne ? Math.max(scaledFar, 420) : scaledFar;
+    const targetCamFar = isAirborne ? Math.max(scaledCamFar, 480) : scaledCamFar;
     if (Math.abs(fog.near - targetFogNear) > 0.5 || Math.abs(fog.far - targetFogFar) > 0.5) {
       fog.near = targetFogNear;
       fog.far = targetFogFar;
@@ -2818,6 +2863,7 @@ export function createIslandWorld(
         Math.abs(cx - GLADIADORES_ORIGIN.x) < 180 &&
         Math.abs(cz - GLADIADORES_ORIGIN.z) < 180;
 
+      const effectiveCullDist = structureCullDist * adaptiveDrawScale;
       const keepAllStructures = isAirborne || cy > 45;
       if (bermudaAttached) {
         for (let i = 0; i < bermudaCullables.length; i++) {
@@ -2833,7 +2879,7 @@ export function createIslandWorld(
                 fwdZ,
                 hasFwd,
                 b.radius,
-                structureCullDist,
+                effectiveCullDist,
                 34,
               );
           if (b.obj.visible !== vis) {
@@ -2844,7 +2890,7 @@ export function createIslandWorld(
 
       // Vehicles keep full physics/collision simulation regardless of visibility;
       // 50m 360-deg safety bubble + active driver guard prevents reverse/turning bugs.
-      const vehCullR = structureCullDist + 24;
+      const vehCullR = effectiveCullDist + 24;
       for (let i = 0; i < vehicles.length; i++) {
         const v = vehicles[i];
         const vis =
@@ -2920,18 +2966,17 @@ export function createIslandWorld(
           disposedGeos.add(m.geometry);
           m.geometry.dispose();
         }
-        const disposeMat = (mat: THREE.Material | undefined) => {
+        const disposeMat = (mat: THREE.Material) => {
           if (!mat || disposedMats.has(mat)) return;
           disposedMats.add(mat);
-          const anyMat = mat as THREE.MeshLambertMaterial;
-          if (mat.userData?.disposeMap && anyMat.map) {
-            anyMat.map.dispose();
+          if (mat.userData?.disposeMap && (mat as THREE.MeshLambertMaterial).map) {
+            (mat as THREE.MeshLambertMaterial).map?.dispose();
           }
           mat.dispose();
         };
         if (Array.isArray(m.material)) {
           m.material.forEach(disposeMat);
-        } else {
+        } else if (m.material) {
           disposeMat(m.material);
         }
       }
@@ -3019,7 +3064,7 @@ export function createIslandWorld(
     spawnDroppedLoot,
     clearDroppedLoots,
     applyQuality,
-    setAdaptiveDrawDistance,
+    setAdaptiveDrawScale,
     updateDynamicProps,
     dispose,
   };

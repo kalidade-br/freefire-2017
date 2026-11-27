@@ -24,6 +24,7 @@ import {
   NetworkSyncPreset,
   normalizeCharacterModelId,
   PlayerProfile,
+  sanitizeEquippedSkins,
   ShadowQuality,
   TextureQuality,
 } from './types';
@@ -318,6 +319,7 @@ export function saveHudSlots(
 }
 
 const HUD_KILLFEED_BOTTOM_MIGRATED_KEY = 'zonazero2017_killfeed_bottom_v1';
+const HUD_FPS_TOP_MIGRATED_KEY = 'zonazero2017_fps_top_v1';
 
 function migrateLegacyKillFeedLayout(
   layout: HudLayoutConfig,
@@ -339,14 +341,38 @@ function migrateLegacyKillFeedLayout(
   return layout;
 }
 
+function migrateLegacyFpsBadgeLayout(
+  layout: HudLayoutConfig,
+  fallbackBase: HudLayoutConfig,
+): HudLayoutConfig {
+  if (
+    layout.fpsBadge &&
+    Math.abs(layout.fpsBadge.xPct - 4.5) < 0.5 &&
+    Math.abs(layout.fpsBadge.yPct - 96) < 0.5
+  ) {
+    return {
+      ...layout,
+      fpsBadge: {
+        ...layout.fpsBadge,
+        xPct: fallbackBase.fpsBadge.xPct,
+        yPct: fallbackBase.fpsBadge.yPct,
+      },
+    };
+  }
+  return layout;
+}
+
 export function loadSettings(): GameSettings {
   const dedicatedHud = loadHudLayout();
   const savedSlots = loadHudSlots(dedicatedHud);
   let needsKillFeedMigration = false;
+  let needsFpsTopMigration = false;
   try {
     needsKillFeedMigration = localStorage.getItem(HUD_KILLFEED_BOTTOM_MIGRATED_KEY) !== '1';
+    needsFpsTopMigration = localStorage.getItem(HUD_FPS_TOP_MIGRATED_KEY) !== '1';
   } catch {
     needsKillFeedMigration = false;
+    needsFpsTopMigration = false;
   }
 
   const applyMigration = (
@@ -354,16 +380,27 @@ export function loadSettings(): GameSettings {
     slot2: HudLayoutConfig,
     active: HudLayoutConfig,
   ) => {
-    if (!needsKillFeedMigration) {
+    if (!needsKillFeedMigration && !needsFpsTopMigration) {
       return { slot1, slot2, active };
     }
-    const next1 = migrateLegacyKillFeedLayout(slot1, DEFAULT_HUD_LAYOUT);
-    const next2 = migrateLegacyKillFeedLayout(slot2, DEFAULT_HUD_LAYOUT_SLOT_2);
-    const nextActive = migrateLegacyKillFeedLayout(active, DEFAULT_HUD_LAYOUT);
+    let next1 = slot1;
+    let next2 = slot2;
+    let nextActive = active;
+    if (needsKillFeedMigration) {
+      next1 = migrateLegacyKillFeedLayout(next1, DEFAULT_HUD_LAYOUT);
+      next2 = migrateLegacyKillFeedLayout(next2, DEFAULT_HUD_LAYOUT_SLOT_2);
+      nextActive = migrateLegacyKillFeedLayout(nextActive, DEFAULT_HUD_LAYOUT);
+    }
+    if (needsFpsTopMigration) {
+      next1 = migrateLegacyFpsBadgeLayout(next1, DEFAULT_HUD_LAYOUT);
+      next2 = migrateLegacyFpsBadgeLayout(next2, DEFAULT_HUD_LAYOUT_SLOT_2);
+      nextActive = migrateLegacyFpsBadgeLayout(nextActive, DEFAULT_HUD_LAYOUT);
+    }
     try {
       saveHudLayout(nextActive);
       saveHudSlots(savedSlots.activeSlot, { 1: next1, 2: next2 });
       localStorage.setItem(HUD_KILLFEED_BOTTOM_MIGRATED_KEY, '1');
+      localStorage.setItem(HUD_FPS_TOP_MIGRATED_KEY, '1');
     } catch {
       // Ignore storage errors
     }
@@ -505,6 +542,7 @@ export function loadCharacterConfig(): CharacterConfig {
           ? parsed.avatarId
           : 'default',
       glooSkin,
+      equippedSkins: sanitizeEquippedSkins(parsed.equippedSkins),
     };
   } catch {
     return { ...CHARACTER_PRESETS[0], avatarId: 'default' };

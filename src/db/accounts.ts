@@ -12,6 +12,7 @@ import {
   CURRENT_RANKED_SEASON,
   MESTRE_MIN_PTS,
   SEASON_1_REWARDS,
+  sanitizeEquippedSkins,
   type CharacterConfig,
   type PlayerAvatarId,
 } from '../game/types.ts';
@@ -430,6 +431,8 @@ function sanitizeGuestCharacter(raw: unknown): Partial<CharacterConfig> {
   }
   if (typeof src.vestEnabled === 'boolean') out.vestEnabled = src.vestEnabled;
   if (typeof src.backpackEnabled === 'boolean') out.backpackEnabled = src.backpackEnabled;
+  const cleanSkins = sanitizeEquippedSkins(src.equippedSkins);
+  if (cleanSkins) out.equippedSkins = cleanSkins;
   return out as Partial<CharacterConfig>;
 }
 
@@ -592,10 +595,18 @@ export async function updateAccountStatsAndProfile(
         ? Math.max(0, Math.min(row.gems + 50, Math.round(patch.gems)))
         : row.gems;
 
+    const existingChar = parseCharacter(row.characterJson);
     const mergedChar =
       patch.character !== undefined
-        ? sanitizeGuestCharacter({ ...patch.character, avatarId: nextAvatar })
-        : { ...parseCharacter(row.characterJson), avatarId: nextAvatar };
+        ? sanitizeGuestCharacter({
+            ...patch.character,
+            equippedSkins:
+              'equippedSkins' in patch.character
+                ? patch.character.equippedSkins
+                : existingChar.equippedSkins,
+            avatarId: nextAvatar,
+          })
+        : { ...existingChar, avatarId: nextAvatar };
 
     return {
       lastSeenAt: new Date(),

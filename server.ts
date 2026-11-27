@@ -24,7 +24,7 @@ import {
   sendFriendRequest,
   updateAccountStatsAndProfile,
 } from './src/db/accounts.ts';
-import { adminAuth } from './src/lib/firebase-admin.ts';
+import { verifyFirebaseIdToken } from './src/lib/firebase-admin.ts';
 import {
   fetchSupabaseLeaderboard,
   isSupabaseConfigured,
@@ -693,6 +693,7 @@ function buildRoomSnapshot(
 }
 
 function removeHumanFromRoom(accountId: number): void {
+  pendingMatchFound.delete(accountId);
   const roomId = accountMatchMap.get(accountId);
   accountMatchMap.delete(accountId);
   if (!roomId) return;
@@ -1380,7 +1381,7 @@ export async function createExpressApp(
       let account = token ? await getAccountByToken(token) : null;
       if (!account && fbToken) {
         try {
-          const decoded = await adminAuth.verifyIdToken(fbToken);
+          const decoded = await verifyFirebaseIdToken(fbToken);
           const restored = await loginOrRegisterFirebaseAccount({
             firebaseUid: decoded.uid,
             nickname: decoded.name
@@ -1420,6 +1421,79 @@ export async function createExpressApp(
       websocket: true,
       serverTimeMs: Date.now(),
     });
+  });
+
+  // --- FREE MIX-AND-MATCH SKIN BUNDLES CATALOG (numbered male/female GLBs) ---
+  const SKIN_CDN_BASE = 'https://kalidade-br.github.io/freefire-2017/skin';
+  interface SkinBundleCatalogEntry {
+    id: string;
+    gender: 'male' | 'female';
+    number: number;
+    url: string;
+  }
+  let cachedSkinCatalog: {
+    expiresAt: number;
+    male: SkinBundleCatalogEntry[];
+    female: SkinBundleCatalogEntry[];
+  } | null = null;
+  let skinCatalogInFlight: Promise<{
+    male: SkinBundleCatalogEntry[];
+    female: SkinBundleCatalogEntry[];
+  }> | null = null;
+
+  async function probeNumberedSkinGender(gender: 'male' | 'female'): Promise<SkinBundleCatalogEntry[]> {
+    const found: SkinBundleCatalogEntry[] = [];
+    for (let n = 1; n <= 20; n++) {
+      const url = `${SKIN_CDN_BASE}/${gender}/${n}.glb`;
+      try {
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 2500);
+        const resp = await fetch(url, { method: 'HEAD', signal: ac.signal });
+        clearTimeout(timer);
+        if (!resp.ok) break;
+        found.push({ id: `${gender}:${n}`, gender, number: n, url });
+      } catch {
+        break;
+      }
+    }
+    if (found.length === 0) {
+      found.push({ id: `${gender}:1`, gender, number: 1, url: `${SKIN_CDN_BASE}/${gender}/1.glb` });
+    }
+    return found;
+  }
+
+  app.get('/api/skins/catalog', async (_req, res) => {
+    const now = Date.now();
+    if (cachedSkinCatalog && now < cachedSkinCatalog.expiresAt) {
+      return res.json({
+        male: cachedSkinCatalog.male,
+        female: cachedSkinCatalog.female,
+      });
+    }
+    try {
+      if (!skinCatalogInFlight) {
+        skinCatalogInFlight = Promise.all([
+          probeNumberedSkinGender('male'),
+          probeNumberedSkinGender('female'),
+        ]).then(([male, female]) => {
+          cachedSkinCatalog = {
+            expiresAt: Date.now() + 5 * 60_000,
+            male,
+            female,
+          };
+          return { male, female };
+        });
+      }
+      const result = await skinCatalogInFlight;
+      return res.json(result);
+    } catch {
+      return res.json({
+        male: [{ id: 'male:1', gender: 'male', number: 1, url: `${SKIN_CDN_BASE}/male/1.glb` }],
+        female: [{ id: 'female:1', gender: 'female', number: 1, url: `${SKIN_CDN_BASE}/female/1.glb` }],
+      });
+    } finally {
+      skinCatalogInFlight = null;
+    }
   });
 
   // --- AUTH ---
@@ -1465,7 +1539,7 @@ export async function createExpressApp(
       if (!tokenStr) {
         return res.status(400).json({ error: 'Token Firebase ausente.' });
       }
-      const decoded = await adminAuth.verifyIdToken(tokenStr);
+      const decoded = await verifyFirebaseIdToken(tokenStr);
       const out = await loginOrRegisterFirebaseAccount({
         firebaseUid: decoded.uid,
         nickname: nickname
@@ -1958,17 +2032,62 @@ export async function createExpressApp(
     if (partySize > 4) {
       return res.status(400).json({ error: 'Máximo de 4 jogadores por esquadrão.' });
     }
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (party.status !== 'matchmaking') {
+      const { gameVariant, gladiadoresFormat, mode, mapId, isRanked, autoFillBots } = body;
+      if (gameVariant === 'br' || gameVariant === 'gladiadores') {
+        if (gameVariant === 'gladiadores' && partySize > 2) {
+          return res.status(400).json({ error: 'Gladiadores aceita no máximo 2 jogadores na equipe (2v2).' });
+        }
+        party.gameVariant = gameVariant;
+        if (gameVariant === 'gladiadores' && partySize === 2) {
+          party.gladiadoresFormat = '2v2';
+        }
+      }
+      if (gladiadoresFormat === '1v1' || gladiadoresFormat === '2v2') {
+        if ((party.gameVariant ?? 'br') === 'gladiadores' && gladiadoresFormat === '1v1' && partySize > 1) {
+          return res.status(400).json({ error: 'Saia do grupo para jogar Gladiadores 1v1.' });
+        }
+        party.gladiadoresFormat = gladiadoresFormat;
+      }
+      if (mode === 'solo' || mode === 'duo' || mode === 'squad') {
+        if (mode === 'solo' && partySize > 1) {
+          return res.status(400).json({ error: 'Saia do grupo com amigos para jogar Solo.' });
+        }
+        if (mode === 'duo' && partySize > 2) {
+          return res.status(400).json({ error: 'Você tem mais de 2 jogadores no grupo.' });
+        }
+        party.mode = mode;
+      }
+      if (mapId === 'bermuda') {
+        party.mapId = 'bermuda';
+      }
+      if (typeof isRanked === 'boolean') party.isRanked = isRanked;
+      if (typeof autoFillBots === 'boolean') party.autoFillBots = autoFillBots;
+    }
+
     const gv: GameVariant = party.gameVariant ?? 'br';
     const gf: GladiadoresFormat = party.gladiadoresFormat ?? '1v1';
     if (gv === 'gladiadores' && partySize > (gf === '2v2' ? 2 : 1)) {
       return res.status(400).json({ error: 'Equipe excede o limite de jogadores deste formato de Gladiadores.' });
     }
+    const partyMapId: BrMapId = 'bermuda';
+
+    // Idempotent check if already searching in the same pool
+    if (party.status === 'matchmaking') {
+      const existingPoolKey = partyPoolKeyMap.get(party.partyId);
+      const targetPoolKey = makePoolKey(gv, gf, party.mode, partyMapId, party.isRanked);
+      if (existingPoolKey && existingPoolKey === targetPoolKey && matchmakingPools.has(existingPoolKey)) {
+        return res.json({ search: getSearchStatusForParty(party), party });
+      }
+    }
+
     for (const m of party.members) {
       removeHumanFromRoom(m.accountId);
     }
-    const partyMapId: BrMapId = 'bermuda';
     const search = joinPoolForParty(party, gv, gf, party.mode, partyMapId, party.isRanked);
-    return res.json({ search });
+    return res.json({ search, party });
   });
 
   app.post('/api/matchmaking/join-queue', requireSession, (req: AuthenticatedRequest, res) => {
@@ -2026,6 +2145,9 @@ export async function createExpressApp(
     const acc = req.account!;
     removeHumanFromRoom(acc.id);
     const party = ensurePartyForAccount(acc);
+    if (party.status === 'matchmaking') {
+      removePartyFromMatchmaking(party.partyId, false);
+    }
     party.status = 'idle';
     party.roomId = null;
     broadcastParty(party);
@@ -2176,6 +2298,7 @@ export async function startServer(): Promise<void> {
     const activeRoomId = accountMatchMap.get(accountId);
     const activeRoom = activeRoomId ? rooms.get(activeRoomId) : undefined;
     if (activeRoom && activeRoom.humanMeta.has(accountId)) {
+      activeRoom.lastRequestMs.set(accountId, Date.now());
       ws.send(
         JSON.stringify({
           type: 'room_snapshot',
@@ -2184,6 +2307,7 @@ export async function startServer(): Promise<void> {
       );
     }
 
+    let orphanSyncStrikes = 0;
     ws.on('message', (raw) => {
       lastHeartbeatMs.set(accountId, Date.now());
       let msg: Record<string, unknown>;
@@ -2267,16 +2391,26 @@ export async function startServer(): Promise<void> {
 
       if (!room) {
         if (msg.type === 'sync_state' || msg.type === 'room_action') {
-          ws.send(
-            JSON.stringify({
-              type: 'match_kicked',
-              roomId: '',
-              reason: 'Você foi removido da partida por inatividade.',
-            }),
-          );
+          const pending = pendingMatchFound.get(accountId);
+          if (pending && rooms.has(pending.joinInfo.roomId)) {
+            pendingMatchFound.delete(accountId);
+            ws.send(JSON.stringify({ type: 'match_found', joinInfo: pending.joinInfo }));
+            return;
+          }
+          orphanSyncStrikes += 1;
+          if (orphanSyncStrikes >= 3) {
+            ws.send(
+              JSON.stringify({
+                type: 'match_kicked',
+                roomId: '',
+                reason: 'Você foi removido da partida por inatividade.',
+              }),
+            );
+          }
         }
         return;
       }
+      orphanSyncStrikes = 0;
 
       if (msg.type === 'sync_state' && msg.state) {
         applyClientStatePush(room, accountId, msg.state as ClientMatchStatePush);

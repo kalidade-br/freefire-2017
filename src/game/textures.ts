@@ -11,7 +11,7 @@ function makeCanvas(size: number): [HTMLCanvasElement, CanvasRenderingContext2D]
 
 function finalizeTexture(
   canvas: HTMLCanvasElement,
-  _anisotropy: number,
+  anisotropy: number,
   repeatX = 1,
   repeatY = 1,
 ): THREE.CanvasTexture {
@@ -401,9 +401,15 @@ export function createProceduralTextures(
   ];
 
   let appliedLevel: TextureQuality | null = null;
-  const applyQuality = (level: TextureQuality, _maxAniso?: number) => {
-    if (appliedLevel === level) return;
+  let lastMaxAniso = Math.max(1, maxAnisotropy);
+  const applyQuality = (level: TextureQuality, maxAniso?: number) => {
+    const resolvedMaxAniso =
+      typeof maxAniso === 'number' && maxAniso > 0
+        ? Math.max(1, maxAniso)
+        : lastMaxAniso;
+    if (appliedLevel === level && resolvedMaxAniso === lastMaxAniso) return;
     appliedLevel = level;
+    lastMaxAniso = resolvedMaxAniso;
     const targetMinFilter = THREE.LinearMipmapLinearFilter;
 
     for (let i = 0; i < allTextures.length; i++) {

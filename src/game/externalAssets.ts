@@ -3,8 +3,6 @@ import { GLTFLoader, type GLTFParser } from 'three/addons/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MinimapBuilding } from './types';
 
-import { optimizeObjectFF2017 } from './materialOptimizer';
-
 export const BERMUDA_GLB_SCALE = 5.0;
 export const BERMUDA_GLB_OFFSET_X = 500.0;
 export const BERMUDA_GLB_OFFSET_Z = 97.1;
@@ -89,12 +87,92 @@ function loadGlbScene(loader: GLTFLoader, url: string): Promise<THREE.Group | nu
   });
 }
 
+const FOLIAGE_MAT_RE = /grass|foliage|leaf|leaves|bush|tree|palm|shrub|vine|fern/i;
+
+function convertGlbMaterialToClassic(
+  mat: THREE.Material,
+  meshName: string,
+  cache: Map<THREE.Material, THREE.Material>,
+): THREE.Material {
+  const cached = cache.get(mat);
+  if (cached) return cached;
+
+  const pbr = mat as THREE.MeshStandardMaterial;
+  const map = pbr.map ?? null;
+  if (map) {
+    if (map.colorSpace !== THREE.SRGBColorSpace) {
+      map.colorSpace = THREE.SRGBColorSpace;
+    }
+    map.anisotropy = 1;
+    map.needsUpdate = true;
+  }
+
+  // Strip unused heavy PBR texture slots to free GPU memory on mobile
+  const extraTexKeys = ['normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'bumpMap', 'emissiveMap'] as const;
+  for (let k = 0; k < extraTexKeys.length; k++) {
+    const tex = (pbr as unknown as Record<string, THREE.Texture | null | undefined>)[extraTexKeys[k]];
+    if (tex && tex !== map) tex.dispose();
+  }
+
+  const isFoliage = FOLIAGE_MAT_RE.test(mat.name) || FOLIAGE_MAT_RE.test(meshName);
+  const color = pbr.color ? pbr.color.clone() : new THREE.Color(0xffffff);
+  const commonParams = {
+    name: mat.name,
+    color,
+    map,
+    transparent: mat.transparent,
+    opacity: mat.opacity,
+    alphaTest: mat.alphaTest,
+    side: mat.side,
+    vertexColors: mat.vertexColors,
+  };
+
+  const nextMat = isFoliage
+    ? new THREE.MeshBasicMaterial(commonParams)
+    : new THREE.MeshLambertMaterial(commonParams);
+
+  cache.set(mat, nextMat);
+  mat.dispose();
+  return nextMat;
+}
+
 function prepareModelMaterials(
   root: THREE.Group,
+  _castShadow: boolean,
+  _receiveShadow: boolean,
   options?: { hideWatermark?: boolean },
 ): void {
-  optimizeObjectFF2017(root, {
-    hideWatermark: options?.hideWatermark,
+  const matCache = new Map<THREE.Material, THREE.Material>();
+  root.traverse((node) => {
+    if (options?.hideWatermark && /^Text_Material/i.test(node.name)) {
+      node.visible = false;
+      return;
+    }
+    if ((node as THREE.Mesh).isMesh) {
+      const mesh = node as THREE.Mesh;
+      if (options?.hideWatermark && /^Text_Material/i.test(mesh.name)) {
+        mesh.visible = false;
+        return;
+      }
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = true;
+      if (Array.isArray(mesh.material)) {
+        for (let i = 0; i < mesh.material.length; i++) {
+          const mat = mesh.material[i];
+          if (!mat) continue;
+          if (options?.hideWatermark && /^Text_Material/i.test(mat.name)) {
+            mesh.visible = false;
+          }
+          mesh.material[i] = convertGlbMaterialToClassic(mat, mesh.name, matCache);
+        }
+      } else if (mesh.material) {
+        if (options?.hideWatermark && /^Text_Material/i.test(mesh.material.name)) {
+          mesh.visible = false;
+        }
+        mesh.material = convertGlbMaterialToClassic(mesh.material, mesh.name, matCache);
+      }
+    }
   });
 }
 
@@ -138,21 +216,23 @@ export async function preloadExternalWorldAssets(
         -box.min.y * normScale - (size.y * normScale * 0.45),
         -center.z * normScale,
       );
-      prepareModelMaterials(rawAirplane);
+      prepareModelMaterials(rawAirplane, false, false);
       wrapper.add(rawAirplane);
       airplaneTemplate = wrapper;
     }
 
     if (rawLobby) {
-      prepareModelMaterials(rawLobby);
+      prepareModelMaterials(rawLobby, false, false);
     }
     if (rawGladiadores) {
-      prepareModelMaterials(rawGladiadores);
+      prepareModelMaterials(rawGladiadores, false, false);
     }
 
     let bermudaTemplate: THREE.Group | null = null;
     if (rawBermuda) {
-      prepareModelMaterials(rawBermuda, { hideWatermark: true });
+      prepareModelMaterials(rawBermuda, false, false, {
+        hideWatermark: true,
+      });
       const wrapper = new THREE.Group();
       rawBermuda.scale.setScalar(BERMUDA_GLB_SCALE);
       rawBermuda.position.set(BERMUDA_GLB_OFFSET_X, 0, BERMUDA_GLB_OFFSET_Z);

@@ -26,6 +26,11 @@ import type {
 
 const RAW_API_BASE = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
 const RAW_WS_BASE = (import.meta.env.VITE_WS_URL || '').trim().replace(/\/+$/, '');
+const MP_TOKEN_STORAGE_KEY = 'zonazero2017_mp_token_v1';
+
+export function isGuestAccount(acc?: PublicPlayerAccount | null): boolean {
+  return Boolean(acc?.username?.startsWith('gst_'));
+}
 
 function buildApiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
@@ -141,11 +146,13 @@ type EventListener = (ev: MultiplayerServerEvent) => void;
 class MultiplayerClient {
   private token: string | null = null;
   private ws: WebSocket | null = null;
+  private wsToken: string | null = null;
   private wsConnecting = false;
   private wsEverOpened = false;
   private wsFailedWithoutOpenCount = 0;
   private wsUnsupported = false;
   private reconnectTimer: number | null = null;
+  private authEpoch = 0;
   private listeners = new Set<EventListener>();
   private lastRoomSnapshot: MatchRoomSnapshot | null = null;
   private lastParty: PartyState | null = null;
@@ -170,6 +177,14 @@ class MultiplayerClient {
 
   constructor() {
     if (typeof window !== 'undefined') {
+      try {
+        const savedToken = window.localStorage.getItem(MP_TOKEN_STORAGE_KEY);
+        if (savedToken && savedToken.trim().length > 0) {
+          this.token = savedToken.trim();
+        }
+      } catch {
+        // Ignore storage read failures
+      }
       window.addEventListener('offline', () => {
         this.connectionLost = true;
       });
@@ -181,6 +196,9 @@ class MultiplayerClient {
       });
 
       this.startPingLoop();
+      if (this.token) {
+        this.connectWs();
+      }
     }
   }
 
@@ -343,8 +361,23 @@ class MultiplayerClient {
   }
 
   public setToken(token: string | null): void {
+    const changed = this.token !== token;
     this.token = token;
+    if (typeof window !== 'undefined') {
+      try {
+        if (token) {
+          window.localStorage.setItem(MP_TOKEN_STORAGE_KEY, token);
+        } else {
+          window.localStorage.removeItem(MP_TOKEN_STORAGE_KEY);
+        }
+      } catch {
+        // Ignore storage write failures
+      }
+    }
     if (token) {
+      if (changed) {
+        this.disconnectWs();
+      }
       this.connectWs();
     } else {
       this.disconnectWs();
@@ -386,13 +419,21 @@ class MultiplayerClient {
   public connectWs(): void {
     if (typeof window === 'undefined' || !this.token) return;
     if (this.wsUnsupported) return;
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-      return;
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)
+    ) {
+      if (this.wsToken === this.token) {
+        return;
+      }
+      this.disconnectWs();
     }
-    if (this.wsConnecting) return;
+    if (this.wsConnecting && this.wsToken === this.token) return;
 
     this.wsConnecting = true;
-    const url = buildWsUrl(this.token);
+    const activeToken = this.token;
+    this.wsToken = activeToken;
+    const url = buildWsUrl(activeToken);
 
     try {
       const socket = new WebSocket(url);
@@ -447,17 +488,25 @@ class MultiplayerClient {
       };
 
       socket.onerror = () => {
-        this.wsConnecting = false;
+        if (this.ws === socket) {
+          this.wsConnecting = false;
+        }
       };
 
       socket.onclose = (ev) => {
-        this.wsConnecting = false;
-        if (this.ws === socket) {
+        const isCurrentSocket = this.ws === socket;
+        if (isCurrentSocket) {
+          this.wsConnecting = false;
           this.ws = null;
+          this.wsToken = null;
+        } else {
+          return;
         }
         // Code 4001 means invalid/expired token
         if (ev.code === 4001) {
-          this.setToken(null);
+          if (this.token === activeToken) {
+            this.setToken(null);
+          }
           return;
         }
         if (!openedThisSocket && !this.wsEverOpened) {
@@ -489,13 +538,16 @@ class MultiplayerClient {
       this.reconnectTimer = null;
     }
     if (this.ws) {
+      const old = this.ws;
+      this.ws = null;
+      this.wsToken = null;
       try {
-        this.ws.close();
+        old.close();
       } catch {
         // ignore
       }
-      this.ws = null;
     }
+    this.wsToken = null;
     this.wsConnecting = false;
   }
 
@@ -602,8 +654,9 @@ class MultiplayerClient {
       method: 'POST',
       body: JSON.stringify(params),
     });
-    this.emit({ type: 'party_update', party: res.party });
+    this.authEpoch += 1;
     this.setToken(res.token);
+    this.emit({ type: 'party_update', party: res.party });
     return res;
   }
 
@@ -625,8 +678,9 @@ class MultiplayerClient {
       method: 'POST',
       body: JSON.stringify(params),
     });
-    this.emit({ type: 'party_update', party: res.party });
+    this.authEpoch += 1;
     this.setToken(res.token);
+    this.emit({ type: 'party_update', party: res.party });
     return res;
   }
 
@@ -650,6 +704,7 @@ class MultiplayerClient {
     if (this.inFlightFirebaseLogin) {
       return this.inFlightFirebaseLogin;
     }
+    const startEpoch = this.authEpoch;
     this.inFlightFirebaseLogin = (async () => {
       try {
         const res = await this.request<{
@@ -661,8 +716,11 @@ class MultiplayerClient {
           method: 'POST',
           body: JSON.stringify(params),
         });
-        this.emit({ type: 'party_update', party: res.party });
-        this.setToken(res.token);
+        if (this.authEpoch === startEpoch) {
+          this.authEpoch += 1;
+          this.setToken(res.token);
+          this.emit({ type: 'party_update', party: res.party });
+        }
         return res;
       } finally {
         this.inFlightFirebaseLogin = null;
@@ -670,6 +728,13 @@ class MultiplayerClient {
     })();
     return this.inFlightFirebaseLogin;
   }
+
+  private inFlightGuestLogin: Promise<{
+    token: string;
+    account: PublicPlayerAccount;
+    party: PartyState;
+    invites: PartyInvitePayload[];
+  }> | null = null;
 
   public async loginGuest(params: {
     nickname?: string;
@@ -680,18 +745,32 @@ class MultiplayerClient {
     party: PartyState;
     invites: PartyInvitePayload[];
   }> {
-    const res = await this.request<{
-      token: string;
-      account: PublicPlayerAccount;
-      party: PartyState;
-      invites: PartyInvitePayload[];
-    }>('/api/auth/guest', {
-      method: 'POST',
-      body: JSON.stringify(params),
-    });
-    this.emit({ type: 'party_update', party: res.party });
-    this.setToken(res.token);
-    return res;
+    if (this.inFlightGuestLogin) {
+      return this.inFlightGuestLogin;
+    }
+    const startEpoch = this.authEpoch;
+    this.inFlightGuestLogin = (async () => {
+      try {
+        const res = await this.request<{
+          token: string;
+          account: PublicPlayerAccount;
+          party: PartyState;
+          invites: PartyInvitePayload[];
+        }>('/api/auth/guest', {
+          method: 'POST',
+          body: JSON.stringify(params),
+        });
+        if (this.authEpoch === startEpoch) {
+          this.authEpoch += 1;
+          this.setToken(res.token);
+          this.emit({ type: 'party_update', party: res.party });
+        }
+        return res;
+      } finally {
+        this.inFlightGuestLogin = null;
+      }
+    })();
+    return this.inFlightGuestLogin;
   }
 
   public async loginWithSupabase(params: {
@@ -713,19 +792,40 @@ class MultiplayerClient {
       method: 'POST',
       body: JSON.stringify(params),
     });
-    this.emit({ type: 'party_update', party: res.party });
+    this.authEpoch += 1;
     this.setToken(res.token);
+    this.emit({ type: 'party_update', party: res.party });
     return res;
   }
 
   public async logout(): Promise<void> {
-    if (this.token) {
-      await this.request('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
-    }
+    this.authEpoch += 1;
+    const tokenToRevoke = this.token;
     this.lastParty = null;
     this.lastRoomSnapshot = null;
     this.pendingWebrtcSignals = [];
     this.setToken(null);
+    if (tokenToRevoke && typeof fetch !== 'undefined') {
+      const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer =
+        typeof window !== 'undefined' ? window.setTimeout(() => ctrl?.abort(), 2500) : null;
+      try {
+        await fetch(buildApiUrl('/api/auth/logout'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${tokenToRevoke}`,
+          },
+          signal: ctrl?.signal,
+        });
+      } catch {
+        // Ignore network/abort error during logout
+      } finally {
+        if (timer !== null && typeof window !== 'undefined') {
+          window.clearTimeout(timer);
+        }
+      }
+    }
   }
 
   public async getMe(): Promise<{
@@ -891,9 +991,27 @@ class MultiplayerClient {
   }
 
   // --- MATCHMAKING QUEUE (INITIAL LOBBY) & 50MS SYNC ---
-  public async startMatchmaking(): Promise<{ search: MatchmakingSearchStatus }> {
+  public async startMatchmaking(config?: Partial<{
+    gameVariant: GameVariant;
+    gladiadoresFormat: GladiadoresFormat;
+    mode: MatchMode;
+    mapId: BrMapId;
+    isRanked: boolean;
+    autoFillBots: boolean;
+  }>): Promise<{ search: MatchmakingSearchStatus; party?: PartyState; joinInfo?: MatchRoomJoinInfo }> {
     this.lastRoomSnapshot = null;
-    return this.request('/api/matchmaking/start', { method: 'POST' });
+    const res = await this.request<{
+      search: MatchmakingSearchStatus;
+      party?: PartyState;
+      joinInfo?: MatchRoomJoinInfo;
+    }>('/api/matchmaking/start', {
+      method: 'POST',
+      body: config ? JSON.stringify(config) : undefined,
+    });
+    if (res.party) {
+      this.emit({ type: 'party_update', party: res.party });
+    }
+    return res;
   }
 
   public async joinMatchmakingQueue(

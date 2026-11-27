@@ -275,55 +275,39 @@ export const BootAndLoadingScreen: React.FC<BootAndLoadingProps> = ({
       onPointerDown={() => soundEngine.unlock()}
       className="fixed inset-0 z-50 bg-black text-white select-none overflow-hidden"
     >
-      {/* Classic Widescreen Free Fire Loading Artwork with subtle slow motion */}
+      {/* Classic Widescreen Free Fire Loading Artwork */}
       <img
         src="/assets/loading_bg.jpg"
-        alt="Carregando Free Fire 2017"
+        alt="Carregando Free Fire"
         referrerPolicy="no-referrer"
         className="w-full h-full object-cover object-center"
         style={{ animation: 'ffKenBurns 11s ease-in-out infinite alternate' }}
       />
 
-      {/* Bottom atmospheric scrim + iconic animated Free Fire loading bar */}
-      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/80 to-transparent pt-16 pb-5 px-6 sm:px-10">
-        <div className="max-w-3xl mx-auto space-y-2">
-          <div className="flex items-center justify-between text-xs font-mono tracking-wider uppercase text-amber-100">
-            <span className="flex items-center gap-2.5 min-w-0">
-              <span
-                className="inline-block w-3.5 h-3.5 rounded-full border-2 border-amber-400/35 border-t-amber-400 animate-spin shrink-0"
-                aria-hidden="true"
-              />
-              <span className="truncate">
-                {statusText}
-                <span className="inline-block w-4 text-left text-amber-300">{dots}</span>
-              </span>
-            </span>
-            <span
-              className="text-amber-400 font-black tabular-nums text-sm shrink-0 ml-3 drop-shadow-[0_0_8px_rgba(251,191,36,0.65)]"
-              style={{ animation: 'ffPercentBlink 0.85s ease-in-out infinite' }}
-            >
-              {clampedProgress}%
-            </span>
-          </div>
+      {/* Subtle bottom scrim for crisp LOADING... readability */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/85 via-black/45 to-transparent" />
 
-          <div className="relative w-full h-3.5 bg-neutral-900/95 border border-amber-400/55 p-0.5 shadow-lg overflow-hidden">
-            <div
-              className="relative h-full bg-gradient-to-r from-amber-500 via-yellow-400 to-orange-500 transition-[width] duration-300 ease-out overflow-hidden"
-              style={{ width: `${clampedProgress}%` }}
-            >
-              <div
-                className="absolute inset-y-0 w-1/2 bg-gradient-to-r from-transparent via-white/55 to-transparent"
-                style={{ animation: 'ffBarShimmer 1.15s linear infinite' }}
-              />
-            </div>
-          </div>
+      {/* Centered LOADING... + classic slim angled white progress bar matching FF 2017 v1.7.13 */}
+      <div className="absolute inset-x-0 bottom-[6%] flex flex-col items-center px-6 sm:px-14">
+        <div className="text-lg sm:text-2xl font-medium tracking-[0.06em] uppercase text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)] mb-2.5">
+          LOADING<span className="inline-block w-6 text-left">{dots}</span>
+        </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-neutral-300 pt-0.5">
-            <span>
-              DICA: No modo Duo ou Squad, inimigos derrubados ficam se arrastando — finalize antes que fujam!
-            </span>
-            <span className="text-amber-300/90 font-bold">FREE FIRE CLÁSSICO</span>
-          </div>
+        <div
+          className="relative w-full max-w-4xl h-2.5 sm:h-3 bg-black/45 border border-white/60 overflow-hidden shadow-[0_2px_10px_rgba(0,0,0,0.85)]"
+          style={{
+            clipPath: 'polygon(8px 0%, 100% 0%, calc(100% - 8px) 100%, 0% 100%)',
+          }}
+        >
+          <div
+            className="h-full bg-gradient-to-r from-neutral-200 via-white to-white transition-[width] duration-300 ease-out"
+            style={{ width: `${clampedProgress}%` }}
+          />
+        </div>
+
+        <div className="mt-2 max-w-[90vw] flex items-center justify-center gap-2.5 text-[10px] sm:text-[11px] font-mono text-white/75 tracking-wider uppercase drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)]">
+          <span className="truncate">{statusText}</span>
+          <span className="text-amber-300 font-bold tabular-nums shrink-0">{clampedProgress}%</span>
         </div>
       </div>
     </div>

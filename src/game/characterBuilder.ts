@@ -1,10 +1,5 @@
 import * as THREE from 'three';
 import {
-  createBlobShadowMesh,
-  ensureSkinnedMeshCullingSphere,
-  toFF2017Material,
-} from './materialOptimizer';
-import {
   cloneCharacterScene,
   FF_SCENE_SCALE,
   FFModelId,
@@ -12,7 +7,20 @@ import {
   isAdamAssetsLoaded,
   UPPER_AIM_BONE_NAMES,
 } from './adamAssets';
-import { CharacterConfig, normalizeCharacterModelId, WeaponId } from './types';
+import {
+  applyAdamEvaSkinOcclusion,
+  createFittedSkinPieceMesh,
+  ensureSkinBundleLoaded,
+  subscribeSkinBundles,
+} from './skinBundles';
+import {
+  CharacterConfig,
+  normalizeCharacterModelId,
+  sanitizeEquippedSkins,
+  SKIN_SLOT_KEYS,
+  type SkinSlotKey,
+  WeaponId,
+} from './types';
 import { buildHybridWeaponModel } from './weapon25d';
 
 export interface CharacterRig {
@@ -385,6 +393,10 @@ function createAdamCharacterRig(
 
   const bodyMeshes: THREE.Mesh[] = [];
   const bodyMats: THREE.MeshLambertMaterial[] = [];
+  const baseSubmeshes: Array<{ mesh: THREE.Mesh; partSlot?: string }> = [];
+  let adamEvaPrimaryMesh: THREE.Mesh | null = null;
+  let adamEvaOrigPositions: Float32Array | null = null;
+  let adamEvaClonedGeom: THREE.BufferGeometry | null = null;
 
   clonedScene.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
@@ -392,19 +404,31 @@ function createAdamCharacterRig(
     mesh.castShadow = false;
     mesh.receiveShadow = false;
     mesh.frustumCulled = true;
-    if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) {
-      ensureSkinnedMeshCullingSphere(mesh as THREE.SkinnedMesh, 1.65);
-    }
     bodyMeshes.push(mesh);
+    baseSubmeshes.push({
+      mesh,
+      partSlot: typeof mesh.userData?.partSlot === 'string' ? mesh.userData.partSlot : undefined,
+    });
+    if ((modelId === 'adam' || modelId === 'eva') && !adamEvaPrimaryMesh) {
+      adamEvaPrimaryMesh = mesh;
+    }
 
     const rawMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
     if (rawMat) {
-      const ffMat = toFF2017Material(rawMat, { nodeName: mesh.name });
-      const clonedMat = ffMat.clone();
+      const clonedMat =
+        (rawMat as THREE.MeshLambertMaterial).isMeshLambertMaterial
+          ? (rawMat as THREE.MeshLambertMaterial).clone()
+          : new THREE.MeshLambertMaterial({
+              name: rawMat.name,
+              color: (rawMat as THREE.MeshStandardMaterial).color?.clone() ?? new THREE.Color(0xffffff),
+              map: (rawMat as THREE.MeshStandardMaterial).map ?? null,
+              transparent: rawMat.transparent,
+              opacity: rawMat.opacity,
+              alphaTest: rawMat.alphaTest,
+              side: rawMat.side,
+            });
       mesh.material = clonedMat;
-      if ((clonedMat as THREE.MeshLambertMaterial).isMeshLambertMaterial) {
-        bodyMats.push(clonedMat as THREE.MeshLambertMaterial);
-      }
+      bodyMats.push(clonedMat);
     }
   });
 
@@ -422,8 +446,18 @@ function createAdamCharacterRig(
     color: 0x1b1c1f,
   });
 
-  // Classic Free Fire 2017 circular Blob Shadow grounded at y = 0.02
-  const contactShadow = createBlobShadowMesh(contactShadowTexture, 0.58, 0.54);
+  // Contact shadow disc grounded at y = 0.018
+  const contactShadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.15, 1.15),
+    new THREE.MeshBasicMaterial({
+      map: contactShadowTexture,
+      transparent: true,
+      depthWrite: false,
+      opacity: 0.52,
+    }),
+  );
+  contactShadow.rotation.x = -Math.PI / 2;
+  contactShadow.position.y = 0.018;
   root.add(contactShadow);
 
   // Locate real Free Fire Mixamo skeleton bones
@@ -629,12 +663,105 @@ function createAdamCharacterRig(
     activeClipName = startIdle.getClip().name;
   }
 
+  let isDisposed = false;
+  let lastAppliedSkinSig = '';
+  let latestSkins: Partial<Record<SkinSlotKey, string>> | undefined;
+  const attachedSkinMeshes: THREE.SkinnedMesh[] = [];
+  const attachedSkinMats: THREE.MeshLambertMaterial[] = [];
+
+  const clearAttachedSkins = () => {
+    for (let i = 0; i < attachedSkinMeshes.length; i++) {
+      const sm = attachedSkinMeshes[i];
+      clonedScene.remove(sm);
+      sm.skeleton?.dispose();
+      sm.geometry.dispose();
+    }
+    attachedSkinMeshes.length = 0;
+    for (let i = 0; i < attachedSkinMats.length; i++) {
+      attachedSkinMats[i].dispose();
+    }
+    attachedSkinMats.length = 0;
+  };
+
+  const rebuildCustomSkins = () => {
+    if (isDisposed) return;
+    clearAttachedSkins();
+
+    const activeSlots: Partial<Record<SkinSlotKey, boolean>> = {};
+    if (latestSkins) {
+      for (let i = 0; i < SKIN_SLOT_KEYS.length; i++) {
+        const slot = SKIN_SLOT_KEYS[i];
+        const pieceId = latestSkins[slot];
+        if (!pieceId) continue;
+        const skinned = createFittedSkinPieceMesh(pieceId, modelId, clonedScene);
+        if (skinned) {
+          attachedSkinMeshes.push(skinned);
+          if ((skinned.material as THREE.MeshLambertMaterial).isMeshLambertMaterial) {
+            attachedSkinMats.push(skinned.material as THREE.MeshLambertMaterial);
+          }
+          activeSlots[slot] = true;
+        } else {
+          const parts = pieceId.split(':');
+          if (parts.length === 3) {
+            void ensureSkinBundleLoaded(`${parts[0]}:${parts[1]}`);
+          }
+        }
+      }
+    }
+
+    // Hide/occlude covered parts of the base character ONLY for slots successfully attached
+    if (modelId === 'maxim' || modelId === 'kelly') {
+      for (let i = 0; i < baseSubmeshes.length; i++) {
+        const sub = baseSubmeshes[i];
+        const slot = sub.partSlot as SkinSlotKey | 'body' | undefined;
+        if (!slot || slot === 'body') {
+          sub.mesh.visible = true;
+        } else {
+          sub.mesh.visible = !activeSlots[slot];
+        }
+      }
+    } else if (adamEvaPrimaryMesh) {
+      const hasAnyOcclusion = Boolean(
+        activeSlots.head || activeSlots.shirt || activeSlots.pants || activeSlots.shoes,
+      );
+      if (hasAnyOcclusion && !adamEvaClonedGeom) {
+        adamEvaClonedGeom = adamEvaPrimaryMesh.geometry.clone();
+        adamEvaPrimaryMesh.geometry = adamEvaClonedGeom;
+        const pos = adamEvaClonedGeom.getAttribute('position') as THREE.BufferAttribute;
+        adamEvaOrigPositions = new Float32Array(pos.array as Float32Array);
+      }
+      if (adamEvaClonedGeom && adamEvaOrigPositions) {
+        const pos = adamEvaClonedGeom.getAttribute('position') as THREE.BufferAttribute;
+        applyAdamEvaSkinOcclusion(adamEvaOrigPositions, pos, {
+          head: Boolean(activeSlots.head),
+          shirt: Boolean(activeSlots.shirt),
+          pants: Boolean(activeSlots.pants),
+          shoes: Boolean(activeSlots.shoes),
+        });
+      }
+    }
+  };
+
+  const unsubSkinBundles = subscribeSkinBundles(() => {
+    if (!isDisposed && latestSkins) {
+      rebuildCustomSkins();
+    }
+  });
+
   const applyConfig = (cfg: CharacterConfig) => {
     vestMat.color.set(cfg.vestColor);
     hairMat.color.set(cfg.hairColor);
     vestGroup.visible = false;
     backpackGroup.visible = cfg.backpackEnabled;
     headgear.helmetGroup.visible = false;
+
+    const cleanSkins = sanitizeEquippedSkins(cfg.equippedSkins);
+    const sig = SKIN_SLOT_KEYS.map((s) => cleanSkins?.[s] ?? '').join('|');
+    if (sig !== lastAppliedSkinSig) {
+      lastAppliedSkinSig = sig;
+      latestSkins = cleanSkins;
+      rebuildCustomSkins();
+    }
   };
 
   applyConfig(initialConfig);
@@ -677,10 +804,20 @@ function createAdamCharacterRig(
     for (let m = 0; m < bodyMats.length; m++) {
       bodyMats[m].emissive.setRGB(0, 0, 0);
     }
+    for (let m = 0; m < attachedSkinMats.length; m++) {
+      attachedSkinMats[m].emissive.setRGB(0, 0, 0);
+    }
     vestMat.emissive.setRGB(0, 0, 0);
   };
 
   const dispose = () => {
+    isDisposed = true;
+    unsubSkinBundles();
+    clearAttachedSkins();
+    if (adamEvaClonedGeom) {
+      adamEvaClonedGeom.dispose();
+      adamEvaClonedGeom = null;
+    }
     mixer.stopAllAction();
     mixer.uncacheRoot(clonedScene);
     surfboard.dispose();
@@ -693,6 +830,8 @@ function createAdamCharacterRig(
     for (let m = 0; m < bodyMats.length; m++) {
       bodyMats[m].dispose();
     }
+    contactShadow.geometry.dispose();
+    (contactShadow.material as THREE.Material).dispose();
     muzzleFlash.geometry.dispose();
     (muzzleFlash.material as THREE.Material).dispose();
     vestGroup.traverse((o) => {
@@ -829,7 +968,17 @@ function createProceduralCharacterRig(
     return m;
   };
 
-  const contactShadow = createBlobShadowMesh(contactShadowTexture, 0.58, 0.54);
+  const contactShadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.15, 1.15),
+    new THREE.MeshBasicMaterial({
+      map: contactShadowTexture,
+      transparent: true,
+      depthWrite: false,
+      opacity: 0.52,
+    }),
+  );
+  contactShadow.rotation.x = -Math.PI / 2;
+  contactShadow.position.y = 0.018;
   root.add(contactShadow);
 
   const pelvis = new THREE.Group();

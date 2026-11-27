@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { autoRigStaticCharacter } from './autoRigCharacter';
-import { optimizeObjectFF2017 } from './materialOptimizer';
 import type { CharacterModelId } from './types';
 
 export type FFModelId = CharacterModelId;
@@ -376,8 +375,42 @@ function buildFFPack(
   rawRotY = -Math.PI / 2,
   runData?: { scene: THREE.Group; clip: THREE.AnimationClip } | null,
 ): FFModelAssetPack {
-  optimizeObjectFF2017(rawScene, {
-    minSkinnedCullRadius: 1.65,
+  // Normalize meshes: disable shadows, enable frustum culling with generous animated bounds, and convert PBR to MeshLambertMaterial
+  const animCenter = new THREE.Vector3(0, 0.9 / FF_SCENE_SCALE, 0);
+  const animRadius = 2.8 / FF_SCENE_SCALE;
+  rawScene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.frustumCulled = true;
+    if (mesh.geometry) {
+      mesh.geometry.boundingSphere = new THREE.Sphere(animCenter.clone(), animRadius);
+    }
+    const rawMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+    if (rawMat) {
+      const pbr = rawMat as THREE.MeshStandardMaterial;
+      const map = pbr.map ?? null;
+      if (map) {
+        map.colorSpace = THREE.SRGBColorSpace;
+        map.anisotropy = 1;
+        map.needsUpdate = true;
+      }
+      if ((pbr as THREE.MeshStandardMaterial).isMeshStandardMaterial || (pbr as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial) {
+        const lambert = new THREE.MeshLambertMaterial({
+          name: pbr.name,
+          color: pbr.color ? pbr.color.clone() : new THREE.Color(0xffffff),
+          map,
+          transparent: pbr.transparent,
+          opacity: pbr.opacity,
+          alphaTest: pbr.alphaTest,
+          side: pbr.side,
+          vertexColors: pbr.vertexColors,
+        });
+        pbr.dispose();
+        mesh.material = lambert;
+      }
+    }
   });
 
   // Wrap raw (~0.98m) scene inside +Z-facing upright wrapper (~1.74m)

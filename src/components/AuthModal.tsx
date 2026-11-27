@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { signInWithPopup, signOut } from 'firebase/auth';
-import { KeyRound, LogIn, LogOut, ShieldCheck, UserPlus, X } from 'lucide-react';
-import { multiplayerClient } from '../game/multiplayerClient';
+import { KeyRound, LogIn, LogOut, ShieldCheck, UserCheck, UserPlus, X } from 'lucide-react';
+import { isGuestAccount, multiplayerClient } from '../game/multiplayerClient';
 import { loadCharacterConfig, loadProfile } from '../game/storage';
 import { auth, googleAuthProvider } from '../lib/firebase';
 import { loadOrCreateFirestoreProfile } from '../lib/firestoreProfile';
@@ -26,6 +26,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [nickname, setNickname] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isGuest = isGuestAccount(currentAccount);
+  const hasFullAccount = Boolean(currentAccount && !isGuest);
 
   const handleGoogleSignIn = async () => {
     setError(null);
@@ -70,9 +73,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             rankedMatches: fsProf.rankedMatches,
             rankedWins: fsProf.rankedWins,
             totalKills: fsProf.totalKills,
+            avatarId: fsProf.avatarId,
+            unlockedAvatars: fsProf.unlockedAvatars,
+            seasonId: fsProf.seasonId,
+            s1PeakRankPoints: fsProf.s1PeakRankPoints,
+            s1ClaimedRewards: fsProf.s1ClaimedRewards,
             character: {
               ...res.account.character,
               modelId: fsProf.characterModelId,
+              avatarId: fsProf.avatarId,
+              equippedSkins: res.account.character?.equippedSkins ?? localChar.equippedSkins,
             },
           }
         : res.account;
@@ -81,6 +91,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         void multiplayerClient
           .updateProfile({
             nickname: fsProf.nickname,
+            avatarId: fsProf.avatarId,
             level: fsProf.level,
             gold: fsProf.gold,
             gems: fsProf.gems,
@@ -90,7 +101,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             rankedMatches: fsProf.rankedMatches,
             rankedWins: fsProf.rankedWins,
             totalKills: fsProf.totalKills,
-            character: { modelId: fsProf.characterModelId },
+            character: {
+              modelId: fsProf.characterModelId,
+              avatarId: fsProf.avatarId,
+              equippedSkins: res.account.character?.equippedSkins ?? localChar.equippedSkins,
+            },
           })
           .catch(() => undefined);
       }
@@ -102,7 +117,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         err && typeof err === 'object' && 'code' in err
           ? String((err as { code?: unknown }).code)
           : '';
-      if (code === 'auth/unauthorized-domain') {
+      if (code === 'auth/operation-not-allowed') {
+        setError(
+          'O provedor Google precisa estar ativado em Firebase Console → Authentication → Sign-in method.',
+        );
+      } else if (code === 'auth/unauthorized-domain') {
         const host = typeof window !== 'undefined' ? window.location.hostname : '';
         setError(
           `Domínio "${host}" ainda não autorizado no Firebase Auth. Adicione "${host}" em Firebase Console → Authentication → Settings → Authorized domains.`,
@@ -185,14 +204,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md bg-[#14181e] border-2 border-amber-500 shadow-2xl overflow-hidden"
+        className="w-full max-w-md bg-[#14181e] border-2 border-amber-500 shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-3 bg-[#1d232c] border-b border-neutral-700">
           <div className="flex items-center gap-2">
             <KeyRound className="w-4 h-4 text-amber-400" />
             <h2 className="font-black text-sm tracking-widest uppercase text-amber-400">
-              {currentAccount ? 'CONTA MULTIPLAYER' : 'ENTRAR / CRIAR CONTA'}
+              {hasFullAccount
+                ? 'CONTA MULTIPLAYER'
+                : isGuest
+                  ? 'CONVIDADO ONLINE · VINCULAR CONTA'
+                  : 'ENTRAR / CRIAR CONTA'}
             </h2>
           </div>
           <button
@@ -204,7 +227,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </button>
         </div>
 
-        {currentAccount ? (
+        {hasFullAccount && currentAccount ? (
           <div className="p-5 space-y-4">
             <div className="bg-[#0e1318] border border-emerald-500/40 p-4 space-y-2">
               <div className="flex items-center justify-between">
@@ -250,16 +273,48 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
         ) : (
           <div className="p-5 space-y-4">
+            {isGuest && currentAccount && (
+              <div className="bg-[#0e151f] border border-cyan-400/50 p-3 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 text-[11px] font-black text-cyan-300 uppercase">
+                    <UserCheck className="w-3.5 h-3.5" />
+                    <span>CONVIDADO ONLINE ATIVO</span>
+                  </span>
+                  <span className="px-1.5 py-0.5 bg-cyan-500/20 border border-cyan-400/50 text-[10px] font-mono font-bold text-cyan-200">
+                    ID #{currentAccount.publicId}
+                  </span>
+                </div>
+                <p className="text-[11px] text-neutral-300 leading-snug">
+                  Você já pode jogar todos os modos online como <strong>{currentAccount.nickname}</strong>. Entre com Google abaixo para salvar seu progresso na nuvem.
+                </p>
+              </div>
+            )}
+
             <button
               type="button"
               disabled={busy}
               onClick={() => void handleGoogleSignIn()}
-              className="w-full py-2.5 px-3 bg-white hover:bg-neutral-100 text-neutral-900 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shadow-lg"
+              className="w-full py-2.5 px-3 bg-white hover:bg-neutral-100 text-neutral-900 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-50 shadow-lg"
             >
-              <span className="w-4 h-4 rounded-full bg-amber-500 text-black font-black text-[10px] flex items-center justify-center">
-                G
-              </span>
-              <span>{busy ? 'CONECTANDO...' : 'ENTRAR COM GOOGLE (FIREBASE)'}</span>
+              <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0" aria-hidden="true">
+                <path
+                  fill="#EA4335"
+                  d="M12 5c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 1.49 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.91 6.16-4.91z"
+                />
+                <path
+                  fill="#4285F4"
+                  d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58l3.7 2.87c2.16-1.99 3.72-4.92 3.72-8.69z"
+                />
+                <path
+                  fill="#FBBC05"
+                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"
+                />
+                <path
+                  fill="#34A853"
+                  d="M12 23c3.24 0 5.95-1.08 7.93-2.91l-3.7-2.87c-1.08.72-2.45 1.16-4.23 1.16-2.86 0-5.29-2.31-6.16-4.91l-3.66 2.84C3.99 20.53 7.7 23 12 23z"
+                />
+              </svg>
+              <span>{busy ? 'CONECTANDO...' : 'ENTRAR COM GOOGLE'}</span>
             </button>
 
             <div className="flex items-center gap-2 text-[10px] font-mono text-neutral-500 uppercase">
@@ -314,7 +369,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </label>
                 <input
                   type="text"
-                  autoFocus
+                  autoFocus={!isGuest}
                   maxLength={24}
                   placeholder="ex: nobru17"
                   value={username}
@@ -353,21 +408,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
               )}
 
-              <p className="text-[10px] font-mono text-neutral-400 leading-relaxed">
-                Entre com sua conta Google (Firebase + Firestore) ou crie usuário e senha para salvar seu progresso, adicionar amigos e usar a call de voz da equipe!
-              </p>
-
-              <button
-                type="submit"
-                disabled={busy}
-                className="w-full py-3 bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-black font-black text-xs uppercase tracking-[0.16em] cursor-pointer disabled:opacity-50"
-              >
-                {busy
-                  ? 'CONECTANDO...'
-                  : mode === 'register'
-                    ? 'CRIAR CONTA E ENTRAR'
-                    : 'ENTRAR NA CONTA'}
-              </button>
+              <div className="flex items-center gap-2">
+                {isGuest && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={handleLogout}
+                    className="px-3 py-3 bg-neutral-900 hover:bg-red-950 border border-neutral-700 hover:border-red-500 text-neutral-300 hover:text-red-200 font-bold text-[10px] uppercase tracking-wider cursor-pointer shrink-0"
+                  >
+                    SAIR
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="flex-1 py-3 bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-black font-black text-xs uppercase tracking-[0.16em] cursor-pointer disabled:opacity-50"
+                >
+                  {busy
+                    ? 'CONECTANDO...'
+                    : mode === 'register'
+                      ? 'CRIAR CONTA E ENTRAR'
+                      : 'ENTRAR NA CONTA'}
+                </button>
+              </div>
             </form>
           </div>
         )}

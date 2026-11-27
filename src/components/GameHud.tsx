@@ -1248,16 +1248,20 @@ export const GameHud: React.FC<GameHudProps> = ({
         </div>
       )}
 
-      {/* CUSTOMIZABLE FPS READOUT */}
+      {/* CUSTOMIZABLE FPS | CALLS | TRIS READOUT */}
       {showFps && (
         <div
           style={{
             ...layoutStyle(hudLayout.fpsBadge),
             textShadow: '0 1px 2px rgba(0,0,0,0.95)',
           }}
-          className="pointer-events-none absolute z-20 whitespace-nowrap text-[10px] font-mono font-bold tabular-nums text-white/85"
+          className="pointer-events-none absolute z-20 whitespace-nowrap rounded-sm bg-black/35 px-1.5 py-0.5 text-[10px] font-mono font-bold tabular-nums text-white/90"
         >
-          {hud.fps} FPS | {hud.drawCalls} Calls | {hud.triangles} Tris
+          {hud.fps} FPS | {hud.renderCalls} Calls |{' '}
+          {hud.renderTris >= 1000
+            ? `${(hud.renderTris / 1000).toFixed(1)}k`
+            : hud.renderTris}{' '}
+          Tris
         </div>
       )}
 

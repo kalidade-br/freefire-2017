@@ -532,6 +532,8 @@ export function autoRigStaticCharacter(
   const skeleton = new THREE.Skeleton(bones);
   skeleton.calculateInverses();
 
+  const headCandidates: Array<{ index: number; skinned: THREE.SkinnedMesh; vertexCount: number; maxY: number; minY: number }> = [];
+
   for (let m = 0; m < sourceMeshes.length; m++) {
     const entry = sourceMeshes[m];
     const geom = entry.geometry;
@@ -588,8 +590,31 @@ export function autoRigStaticCharacter(
     const skinned = new THREE.SkinnedMesh(geom, entry.material);
     skinned.name = entry.name;
     skinned.frustumCulled = false;
+
+    const ySpan = meshMaxY - meshMinY;
+    if (ySpan > 1.22 || (meshMinY < 0.25 && meshMaxY > 1.42)) {
+      skinned.userData.partSlot = 'body';
+    } else if (meshMaxY <= 0.42 && meshMinY < 0.14) {
+      skinned.userData.partSlot = 'shoes';
+    } else if (meshMinY < 0.65 && meshMaxY <= 1.22) {
+      skinned.userData.partSlot = 'pants';
+    } else if (meshMinY >= 0.68 && meshMaxY <= 1.58 && meshMinY < 1.35) {
+      skinned.userData.partSlot = 'shirt';
+    } else {
+      skinned.userData.partSlot = 'head';
+      headCandidates.push({ index: m, skinned, vertexCount: count, maxY: meshMaxY, minY: meshMinY });
+    }
+
     riggedRoot.add(skinned);
     skinned.bind(skeleton);
+  }
+
+  if (headCandidates.length >= 2) {
+    headCandidates.sort((a, b) => b.vertexCount - a.vertexCount || b.maxY - a.maxY);
+    headCandidates[0].skinned.userData.partSlot = 'head';
+    for (let h = 1; h < headCandidates.length; h++) {
+      headCandidates[h].skinned.userData.partSlot = 'mask';
+    }
   }
 
   return riggedRoot;

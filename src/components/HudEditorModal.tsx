@@ -377,12 +377,12 @@ const ELEMENT_META: Record<HudElementId, ElementMeta> = {
     ),
   },
   fpsBadge: {
-    label: 'Contador FPS',
-    sizeClass: 'w-14 h-5',
+    label: 'FPS | Calls | Tris',
+    sizeClass: 'w-28 h-5',
     shape: 'box',
     renderPreview: () => (
-      <div className="w-full h-full bg-black/60 border border-white/25 flex items-center justify-center text-[9px] font-mono font-bold text-white pointer-events-none">
-        60 FPS
+      <div className="w-full h-full bg-black/60 border border-white/25 flex items-center justify-center text-[8px] font-mono font-bold text-white pointer-events-none whitespace-nowrap px-1">
+        60 FPS | 0 Calls | 0 Tris
       </div>
     ),
   },
