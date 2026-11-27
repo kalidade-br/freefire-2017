@@ -70,7 +70,7 @@ const RUN_BONE_MAP: ReadonlyArray<readonly [src: string, dst: string]> = [
 ];
 
 export interface FFModelAssetPack {
-  modelId: FFModelId;
+  modelId: string;
   baseScene: THREE.Group;
   animations: THREE.AnimationClip[];
   aimPoseQuats: Record<string, THREE.Quaternion>;
@@ -91,6 +91,12 @@ export interface AdamLoadedData {
 
 let loadedData: AdamLoadedData | null = null;
 let loadPromise: Promise<AdamLoadedData | null> | null = null;
+let cachedAnimLib: {
+  srcScene: THREE.Group;
+  srcClips: THREE.AnimationClip[];
+  runData: { scene: THREE.Group; clip: THREE.AnimationClip } | null;
+} | null = null;
+const customSkinPacks = new Map<string, FFModelAssetPack>();
 
 export function isAdamAssetsLoaded(): boolean {
   return loadedData !== null;
@@ -100,7 +106,9 @@ export function getAdamData(): AdamLoadedData | null {
   return loadedData;
 }
 
-export function getModelAssetPack(modelId: FFModelId = 'adam'): FFModelAssetPack | null {
+export function getModelAssetPack(modelId: string = 'adam'): FFModelAssetPack | null {
+  const custom = customSkinPacks.get(modelId);
+  if (custom) return custom;
   if (!loadedData) return null;
   if (modelId === 'eva') return loadedData.eva;
   if (modelId === 'maxim') return loadedData.maxim;
@@ -108,7 +116,36 @@ export function getModelAssetPack(modelId: FFModelId = 'adam'): FFModelAssetPack
   return loadedData.adam;
 }
 
-export function getAimPoseQuats(modelId: FFModelId = 'adam'): Record<string, THREE.Quaternion> | null {
+export function getCustomSkinPack(bundleId: string): FFModelAssetPack | null {
+  return customSkinPacks.get(bundleId) ?? null;
+}
+
+export function getOrBuildCustomSkinPack(
+  bundleId: string,
+  buildRiggedScene: () => THREE.Group,
+): FFModelAssetPack | null {
+  const existing = customSkinPacks.get(bundleId);
+  if (existing) return existing;
+  if (!cachedAnimLib) return null;
+
+  const riggedScene = buildRiggedScene();
+  const pack = buildFFPack(
+    bundleId,
+    riggedScene,
+    cachedAnimLib.srcScene,
+    cachedAnimLib.srcClips,
+    0,
+    cachedAnimLib.runData,
+  );
+  customSkinPacks.set(bundleId, pack);
+  return pack;
+}
+
+export function cloneCharacterSceneForPack(pack: FFModelAssetPack): THREE.Group {
+  return SkeletonUtils.clone(pack.baseScene) as THREE.Group;
+}
+
+export function getAimPoseQuats(modelId: string = 'adam'): Record<string, THREE.Quaternion> | null {
   const pack = getModelAssetPack(modelId);
   return pack ? pack.aimPoseQuats : null;
 }
@@ -368,7 +405,7 @@ function buildRunLoopFromRunGlb(
 }
 
 function buildFFPack(
-  modelId: FFModelId,
+  modelId: string,
   rawScene: THREE.Group,
   srcScene: THREE.Group,
   srcClips: THREE.AnimationClip[],
@@ -764,6 +801,12 @@ export function preloadAdamAssets(
         runGltf && runGltf.animations.length > 0
           ? { scene: runGltf.scene, clip: runGltf.animations[0] }
           : null;
+
+      cachedAnimLib = {
+        srcScene: animLibGltf.scene,
+        srcClips: animLibGltf.animations,
+        runData,
+      };
 
       onStep?.(72, 'Aplicando animações Free Fire nos 4 personagens...');
       const adamPack = buildFFPack('adam', ffAdamGltf.scene, animLibGltf.scene, animLibGltf.animations, -Math.PI / 2, runData);

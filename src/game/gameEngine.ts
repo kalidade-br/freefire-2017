@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { preloadAdamAssets } from './adamAssets';
-import { preloadSkinBundles } from './skinBundles';
+import { preloadSkinBundles, subscribeSkinBundles } from './skinBundles';
 import { BERMUDA_GLB_WATER_Y, preloadExternalWorldAssets } from './externalAssets';
 import { soundEngine } from './audio';
 import {
@@ -47,6 +47,7 @@ import {
   GameState,
   GameVariant,
   getCharacterPresetByModelId,
+  getEquippedSkinBundleId,
   GladiadoresFormat,
   GlooSkinId,
   HudSnapshot,
@@ -387,6 +388,7 @@ interface RemoteHumanEntity {
   level: number;
   rankPoints: number;
   modelId: CharacterModelId;
+  charConfig: CharacterConfig;
   teamId: number;
   slotInTeam: number;
   isTeamLeader: boolean;
@@ -434,6 +436,14 @@ export class BattleRoyaleEngine {
   private lobbyRig: CharacterRig;
   private lobbyExtraRigs: CharacterRig[] = [];
   private lobbySquadSignature = '';
+  private lastLobbySquadMembers: Array<{
+    accountId: number;
+    nickname: string;
+    modelId: CharacterModelId;
+    character?: Partial<CharacterConfig>;
+    isLeader: boolean;
+    isSelf: boolean;
+  }> = [];
   private lobbySquadTargetZ = 3.72;
   private lobbySelfOffsetX = 0;
   private lobbySelfOffsetZ = 0;
@@ -605,6 +615,7 @@ export class BattleRoyaleEngine {
   private aimLockedTarget = false;
   private aimEnemyLockedTarget = false;
   private aimAssistActive = false;
+  private aimFocusZone: 'chest' | 'neck' | 'head' = 'chest';
   private recentUpDragSum = 0;
   private recentUpDragPeak = 0;
   private pendingSemiFireUntilMs = 0;
@@ -810,6 +821,7 @@ export class BattleRoyaleEngine {
   private nextLikeToastId = 1;
   private followingTeamLeader = true;
   private unsubMultiplayer?: () => void;
+  private unsubSkinBundles?: () => void;
 
   // Settings & callbacks
   private settings: GameSettings;
@@ -985,6 +997,39 @@ export class BattleRoyaleEngine {
 
     this.unsubMultiplayer = multiplayerClient.subscribe((ev) => {
       this.handleMultiplayerEvent(ev);
+    });
+
+    this.unsubSkinBundles = subscribeSkinBundles(() => {
+      if (this.disposed) return;
+      const localSkinId = getEquippedSkinBundleId(this.currentCharConfig);
+      if (localSkinId && this.playerRig?.skinBundleId !== localSkinId) {
+        this.rebuildPlayerAndLobbyRigs();
+      }
+      if (this.lastLobbySquadMembers.length > 0) {
+        let needsSquadRebuild = false;
+        for (let i = 0; i < this.lastLobbySquadMembers.length; i++) {
+          const m = this.lastLobbySquadMembers[i];
+          if (m.isSelf) continue;
+          const wantSkin = getEquippedSkinBundleId({
+            modelId: m.modelId,
+            equippedSkins: m.character?.equippedSkins,
+          });
+          if (wantSkin) {
+            needsSquadRebuild = true;
+            break;
+          }
+        }
+        if (needsSquadRebuild) {
+          this.lobbySquadSignature = '';
+          this.setLobbySquadMembers(this.lastLobbySquadMembers);
+        }
+      }
+      for (const entity of this.onlineRemotePlayers.values()) {
+        const wantSkin = getEquippedSkinBundleId(entity.charConfig);
+        if (wantSkin && entity.rig.skinBundleId !== wantSkin) {
+          this.rebuildRemotePlayerRig(entity);
+        }
+      }
     });
 
     soundEngine.configure(initialSettings.soundVolume, initialSettings.muted);
@@ -1201,9 +1246,11 @@ export class BattleRoyaleEngine {
   public updateCharacterConfig(config: CharacterConfig): void {
     const prevModelId = this.currentCharConfig.modelId ?? 'adam';
     const nextModelId = config.modelId ?? 'adam';
+    const prevSkinId = getEquippedSkinBundleId(this.currentCharConfig);
+    const nextSkinId = getEquippedSkinBundleId(config);
     this.glooSkin = config.glooSkin === 'ffwc' ? 'ffwc' : 'classic';
     this.currentCharConfig = { ...config, modelId: nextModelId, glooSkin: this.glooSkin };
-    if (prevModelId !== nextModelId) {
+    if (prevModelId !== nextModelId || prevSkinId !== nextSkinId) {
       this.rebuildPlayerAndLobbyRigs();
     } else {
       this.lobbyRig.applyConfig(this.currentCharConfig);
@@ -1259,10 +1306,14 @@ export class BattleRoyaleEngine {
     }>,
   ): void {
     const active = members.slice(0, 4);
+    this.lastLobbySquadMembers = active;
     const sig = active
       .map((m) => {
-        const s = m.character?.equippedSkins;
-        const skinSig = s ? `${s.head ?? ''},${s.mask ?? ''},${s.shirt ?? ''},${s.pants ?? ''},${s.shoes ?? ''}` : '';
+        const skinSig =
+          getEquippedSkinBundleId({
+            modelId: m.modelId,
+            equippedSkins: m.character?.equippedSkins,
+          }) ?? '';
         return `${m.accountId}:${m.modelId}:${m.isSelf ? 1 : 0}:${skinSig}`;
       })
       .join('|');
@@ -1737,6 +1788,7 @@ export class BattleRoyaleEngine {
       level: slot.level ?? 1,
       rankPoints: slot.rankPoints ?? 1000,
       modelId,
+      charConfig: charCfg,
       teamId: slot.teamId,
       slotInTeam: slot.slotInTeam,
       isTeamLeader: Boolean(slot.isTeamLeader),
@@ -1754,6 +1806,46 @@ export class BattleRoyaleEngine {
     };
     this.onlineRemotePlayers.set(slot.accountId, entity);
     return entity;
+  }
+
+  private rebuildRemotePlayerRig(entity: RemoteHumanEntity): void {
+    const prevPos = entity.rig.root.position.clone();
+    const prevYaw = entity.rig.root.rotation.y;
+    const prevVisible = entity.rig.root.visible;
+
+    this.world.scene.remove(entity.rig.root);
+    entity.rig.dispose();
+
+    const rig = createCharacterRig(
+      entity.charConfig,
+      this.textures.camoParachute,
+      this.textures.contactShadow,
+    );
+    rig.setWeapon(entity.lastWeaponId ?? 'g18');
+    rig.setBackWeapons(null, null);
+    rig.root.position.copy(prevPos);
+    rig.root.rotation.y = prevYaw;
+    rig.root.visible = prevVisible;
+
+    const chestHit = new THREE.Mesh(this.remoteChestHitGeo, this.remoteHitMat);
+    chestHit.position.set(0, rig.spineMount && rig.isAdam ? -0.06 : 0.16, 0);
+    chestHit.userData.remoteAccountId = entity.accountId;
+    chestHit.userData.isHeadshot = false;
+    (rig.spineMount ?? rig.torso).add(chestHit);
+
+    const headHit = new THREE.Mesh(this.remoteHeadHitGeo, this.remoteHitMat);
+    headHit.position.set(
+      0,
+      rig.headMount && rig.isAdam ? (rig.helmetOffsetY ?? 0.14) + 0.005 : 0.08,
+      0.01,
+    );
+    headHit.userData.remoteAccountId = entity.accountId;
+    headHit.userData.isHeadshot = true;
+    (rig.headMount ?? rig.headGroup).add(headHit);
+
+    this.world.scene.add(rig.root);
+    entity.rig = rig;
+    entity.hitMeshes = [chestHit, headHit];
   }
 
   private queueOrSendRoomAction(action: MatchRoomAction): void {
@@ -4096,6 +4188,7 @@ export class BattleRoyaleEngine {
     this.aimLockedTarget = false;
     this.aimEnemyLockedTarget = false;
     this.aimAssistActive = false;
+    this.aimFocusZone = 'chest';
     this.recentUpDragSum = 0;
     this.recentUpDragPeak = 0;
     this.pendingSemiFireUntilMs = 0;
@@ -4603,6 +4696,7 @@ export class BattleRoyaleEngine {
     this.aimLockedTarget = false;
     this.aimEnemyLockedTarget = false;
     this.aimAssistActive = false;
+    this.aimFocusZone = 'chest';
     this.recentUpDragSum = 0;
     this.recentUpDragPeak = 0;
     this.pendingSemiFireUntilMs = 0;
@@ -5832,6 +5926,7 @@ export class BattleRoyaleEngine {
           this.aimLockedTarget = false;
           this.aimEnemyLockedTarget = false;
           this.aimAssistActive = false;
+          this.aimFocusZone = 'chest';
           this.updateThirdPersonCamera(dt, camDist, camHeight, 'none', false, this.spectateSnapNext);
           this.spectateSnapNext = false;
           return;
@@ -6347,21 +6442,21 @@ export class BattleRoyaleEngine {
       const rayY = camPos.y + fy * proj;
       const rayZ = camPos.z + fz * proj;
 
-      const distVertPad = THREE.MathUtils.clamp(proj * 0.015, 0.14, 1.15);
+      const distVertPad = THREE.MathUtils.clamp(proj * 0.038, 0.55, 2.35);
       const headTopWorldY =
-        Math.max(_v3.y + 0.24, baseY + (isLowPose ? 0.72 : 0.85)) + distVertPad * 0.65;
-      const minWorldY = Math.min(_v2.y - 0.58, baseY - 0.24) - distVertPad;
+        Math.max(_v3.y + 0.42, baseY + (isLowPose ? 0.88 : 1.05)) + distVertPad * 0.85;
+      const minWorldY = Math.min(_v2.y - 0.82, baseY - 0.35) - distVertPad;
       if (rayY > headTopWorldY || rayY < minWorldY) return null;
 
       const horizErr = Math.hypot(rayX - _v2.x, rayZ - _v2.z);
       const minStickRadius =
-        playerDist < 12
-          ? 0.95
-          : THREE.MathUtils.clamp(0.75 + proj * 0.008, 0.75, 1.65);
+        playerDist < 16
+          ? 2.15
+          : THREE.MathUtils.clamp(1.75 + proj * 0.020, 1.75, 3.60);
       const maxHorizErr = THREE.MathUtils.clamp(
         Math.tan(maxAngleRad) * proj,
         minStickRadius,
-        4.2,
+        7.5,
       );
 
       let inScreenHalo = false;
@@ -6369,13 +6464,13 @@ export class BattleRoyaleEngine {
       if (_camDesired.z >= -1 && _camDesired.z <= 1) {
         const ndcDist = Math.hypot(_camDesired.x, _camDesired.y);
         const haloRadiusNdc =
-          playerDist < 16
+          playerDist < 22
             ? this.isAiming
-              ? 0.14
-              : 0.11
+              ? 0.27
+              : 0.23
             : this.isAiming
-              ? 0.095
-              : 0.065;
+              ? 0.18
+              : 0.14;
         if (ndcDist <= haloRadiusNdc) {
           inScreenHalo = true;
         }
@@ -7584,6 +7679,7 @@ export class BattleRoyaleEngine {
       this.aimRelockBlockedUntilRelease = false;
       this.lockedTargetWasStanding = false;
       this.aimBreakAccum = 0;
+      this.aimFocusZone = 'chest';
       if (this.stance !== 'crouch') {
         this.wasLockedWhileCrouched = false;
       }
@@ -7644,19 +7740,20 @@ export class BattleRoyaleEngine {
       !this.isPlacingGloo &&
       !this.isHoldingGrenade;
 
-    // Progressive spray fatigue: crisp 4-shot capa burst window, then fades so player always controls aim
+    // Progressive spray fatigue: crisp 4-shot capa burst window, then holds strong tracking without dropping off target
     const sprayControl =
       this.consecutiveShots <= 4
         ? 1.0
         : Math.max(0.15, 1.0 - (this.consecutiveShots - 4) * 0.14);
+    const sprayTrack = Math.max(0.84, sprayControl);
 
     const renderReach = this.getEnemyRenderDist() + 10;
     const assistMaxRange = activeDef
       ? activeDef.category === 'SG'
-        ? Math.min(activeDef.range + 8, 42)
+        ? Math.min(activeDef.range + 14, 52)
         : activeDef.category === 'HG' || activeDef.category === 'SMG'
-          ? Math.min(renderReach, activeDef.range + (this.isAiming ? 16 : 6))
-          : Math.min(renderReach + 12, activeDef.range + (this.isAiming ? 20 : 8))
+          ? Math.min(renderReach + 6, activeDef.range + (this.isAiming ? 24 : 12))
+          : Math.min(renderReach + 18, activeDef.range + (this.isAiming ? 32 : 15))
       : 2.85;
 
     // Camera Look with per-scope sensitivity (zero weapon recoil)
@@ -7675,25 +7772,45 @@ export class BattleRoyaleEngine {
     const rawPitchInput = -edges.dy * sens * invert;
     const absRawYawIn = Math.abs(rawYawInput);
 
-    // Light assist friction during initial burst; player flicks or drags always break lock cleanly
+    // Strong sticky fire lock; hard flicks or sustained pulls still break free cleanly
     const hasActiveFireLock =
       assistAllowed && weaponFireDown && !justStartedFiring && this.lockedTargetId !== null;
     let deferredPitchApplied = false;
 
     if (hasActiveFireLock) {
-      const isUpwardDrag = rawPitchInput > 0.0008 && absRawYawIn < rawPitchInput * 1.45;
-      if (absRawYawIn > 0.016 && !isUpwardDrag) {
-        this.aimBreakAccum += absRawYawIn;
-      } else {
-        this.aimBreakAccum = Math.max(0, this.aimBreakAccum - dt * 1.45);
+      const isUpwardDrag = rawPitchInput > 0.0006 && absRawYawIn < rawPitchInput * 1.95;
+      let pushingAway = true;
+      const lockPreview = this.getResolvedAimTarget(this.lockedTargetId);
+      if (lockPreview) {
+        lockPreview.getChest(_v1);
+        lockPreview.getHead(_v3);
+        const trackYawPt = this.aimFocusZone === 'head' ? _v3 : _v1;
+        const lockAim = this.computeExactAnglesToTarget(
+          trackYawPt.x,
+          trackYawPt.y,
+          trackYawPt.z,
+          targetCamHeight,
+          targetShoulderOffset,
+        );
+        let previewDeltaYaw = lockAim.yaw - this.yaw;
+        while (previewDeltaYaw > Math.PI) previewDeltaYaw -= Math.PI * 2;
+        while (previewDeltaYaw < -Math.PI) previewDeltaYaw += Math.PI * 2;
+        pushingAway = rawYawInput * previewDeltaYaw <= 0;
       }
 
-      const breakFlick = 0.18 * Math.max(0.45, sprayControl);
-      const breakAccumLimit = 0.46 * Math.max(0.32, sprayControl);
+      if (!isUpwardDrag && (pushingAway ? absRawYawIn > 0.042 : absRawYawIn > 0.085)) {
+        this.aimBreakAccum += absRawYawIn;
+      } else {
+        this.aimBreakAccum = Math.max(0, this.aimBreakAccum - dt * 3.2);
+      }
+
+      const breakSprayFloor = Math.max(0.85, sprayControl);
+      const breakFlick = 0.38 * breakSprayFloor;
+      const breakAccumLimit = 1.15 * breakSprayFloor;
       if (
         absRawYawIn > breakFlick ||
         this.aimBreakAccum > breakAccumLimit ||
-        rawPitchInput < -0.025
+        rawPitchInput < -0.058
       ) {
         // Player pulled away — release lock immediately without jumping to another target
         this.lockedTargetId = null;
@@ -7701,10 +7818,11 @@ export class BattleRoyaleEngine {
         this.lockedTargetWasStanding = false;
         this.aimBreakAccum = 0;
         this.wasLockedWhileCrouched = false;
+        this.aimFocusZone = 'chest';
         this.yaw += rawYawInput;
         this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput, -1.05, 1.18);
       } else {
-        const horizSlip = THREE.MathUtils.lerp(0.82, 0.25, sprayControl);
+        const horizSlip = THREE.MathUtils.lerp(0.18, 0.06, sprayTrack);
         this.yaw += rawYawInput * horizSlip;
         deferredPitchApplied = true;
       }
@@ -7744,6 +7862,7 @@ export class BattleRoyaleEngine {
           this.lockedTargetId = null;
           this.lockedTargetWasStanding = false;
           this.aimBreakAccum = 0;
+          this.aimFocusZone = 'chest';
         }
         let target: ReturnType<BattleRoyaleEngine['getResolvedAimTarget']> = null;
         if (this.lockedTargetId) {
@@ -7766,33 +7885,36 @@ export class BattleRoyaleEngine {
               this.lockedTargetWasStanding = false;
               this.aimRelockBlockedUntilRelease = true;
               this.aimBreakAccum = 0;
+              this.aimFocusZone = 'chest';
             }
           } else {
             this.lockedTargetId = null;
             this.lockedTargetWasStanding = false;
             this.aimRelockBlockedUntilRelease = true;
             this.aimBreakAccum = 0;
+            this.aimFocusZone = 'chest';
           }
         }
 
         if (
           !target &&
           !this.aimRelockBlockedUntilRelease &&
-          (justStartedFiring || justStartedAiming || this.consecutiveShots <= 2)
+          (justStartedFiring || justStartedAiming || this.consecutiveShots <= 4)
         ) {
           const coneRad =
             justStartedFiring || justStartedAiming
               ? this.isAiming
-                ? 0.18
-                : 0.15
+                ? 0.33
+                : 0.28
               : this.isAiming
-                ? 0.14
-                : 0.11;
+                ? 0.27
+                : 0.22;
           target = this.findAimAssistTarget(coneRad, assistMaxRange);
           if (target) {
             this.lockedTargetId = target.id;
             this.lockedTargetWasStanding = !target.isLowPose;
             this.aimBreakAccum = 0;
+            this.aimFocusZone = 'chest';
           }
         }
 
@@ -7837,6 +7959,13 @@ export class BattleRoyaleEngine {
               currentHitWorldY >= _v3.y - 0.19 &&
               currentHitWorldY <= _v3.y + 0.19;
 
+            const chestPitch = chestAim.pitch;
+            const headPitch = headAim.pitch;
+            const headTopPitch = Math.max(headPitch + 0.012, headTopAim.pitch);
+            const chestHeadSpan = Math.max(0.014, headPitch - chestPitch);
+            const neckPitch = THREE.MathUtils.lerp(chestPitch, headPitch, 0.56);
+            const zoneT = (this.pitch - chestPitch) / chestHeadSpan;
+
             this.aimAssistActive = sprayControl > 0.3;
             if (this.stance === 'crouch' && !target.isLowPose) {
               this.wasLockedWhileCrouched = true;
@@ -7844,31 +7973,58 @@ export class BattleRoyaleEngine {
             }
 
             if (justStartedFiring || justStartedAiming) {
-              this.yaw += deltaYaw * 0.98;
-              const span0 = Math.max(0.012, headAim.pitch - chestAim.pitch);
               const activeUpPull = Math.max(
                 rawPitchInput * 3.8,
                 this.recentUpDragSum * 1.55,
                 this.recentUpDragPeak * 4.2,
               );
-              let startPitch = alreadyOnHead ? headAim.pitch : chestAim.pitch;
-              if (!alreadyOnHead && activeUpPull >= 0.004) {
-                // One-tap Capa ("Desert / Doze / 1-tiro"): pulling up as you fire climbs straight to head
+              let startPitch = chestPitch;
+              if (alreadyOnHead || (horizOffsetAtTarget <= 0.34 && zoneT >= 0.58 && this.pitch <= headTopPitch + 0.01)) {
+                this.aimFocusZone = 'head';
+                startPitch = headPitch;
+              } else if (horizOffsetAtTarget <= 0.36 && zoneT >= 0.40 && activeUpPull < 0.004) {
+                this.aimFocusZone = 'neck';
+                startPitch = neckPitch;
+              } else {
+                this.aimFocusZone = 'chest';
+                startPitch = chestPitch;
+              }
+
+              if (this.aimFocusZone !== 'head' && activeUpPull >= 0.004) {
+                // One-tap Capa ("Desert / Doze / 1-tiro"): pulling up as you fire climbs smoothly from chest/neck to head
                 const oneTapMult =
                   !activeDef.automatic ||
                   activeDef.category === 'HG' ||
                   activeDef.category === 'SG'
-                    ? 1.55
+                    ? 1.50
                     : 1.25;
                 const climb0 = THREE.MathUtils.clamp(
-                  (activeUpPull * oneTapMult - 0.003) / Math.max(0.014, span0 * 0.65),
+                  (activeUpPull * oneTapMult - 0.003) / Math.max(0.014, chestHeadSpan * 0.65),
                   0,
                   1,
                 );
-                startPitch = THREE.MathUtils.lerp(chestAim.pitch, headAim.pitch, climb0);
+                startPitch = THREE.MathUtils.lerp(startPitch, headPitch, climb0);
+                if (climb0 >= 0.64) {
+                  this.aimFocusZone = 'head';
+                } else if (climb0 >= 0.34 && this.aimFocusZone === 'chest') {
+                  this.aimFocusZone = 'neck';
+                }
               }
+
+              const targetYaw0 =
+                this.aimFocusZone === 'head'
+                  ? headAim.yaw
+                  : this.aimFocusZone === 'neck'
+                    ? lerpAngle(chestAim.yaw, headAim.yaw, 0.55)
+                    : chestAim.yaw;
+              let deltaYaw0 = targetYaw0 - this.yaw;
+              while (deltaYaw0 > Math.PI) deltaYaw0 -= Math.PI * 2;
+              while (deltaYaw0 < -Math.PI) deltaYaw0 += Math.PI * 2;
+
+              const snapBlend = justStartedAiming ? 0.99 : 0.98;
+              this.yaw += deltaYaw0 * snapBlend;
               this.pitch = THREE.MathUtils.clamp(
-                THREE.MathUtils.lerp(this.pitch, startPitch, 0.96),
+                THREE.MathUtils.lerp(this.pitch, startPitch, snapBlend),
                 -1.05,
                 1.18,
               );
@@ -7876,11 +8032,47 @@ export class BattleRoyaleEngine {
                 justAimSnapped = true;
               }
             } else {
-              // Gentle assist that lets the user pull freely past head or unstick anytime (works standing, crouched, prone, or downed)
-              const yawLambda = (this.isAiming ? 26 : 20) * sprayControl;
-              this.yaw += deltaYaw * (1 - Math.exp(-yawLambda * dt));
+              // Update dynamic zone with hysteresis so chest/neck/head tracking never oscillates wildly
+              if (rawPitchInput > 0.00012) {
+                if (zoneT >= 0.50) {
+                  this.aimFocusZone = 'head';
+                } else if (zoneT >= 0.25 && this.aimFocusZone === 'chest') {
+                  this.aimFocusZone = 'neck';
+                }
+              } else if (rawPitchInput < -0.0008) {
+                if (zoneT < 0.34) {
+                  this.aimFocusZone = 'chest';
+                } else if (zoneT < 0.70 && this.aimFocusZone === 'head') {
+                  this.aimFocusZone = 'neck';
+                }
+              } else {
+                if (this.aimFocusZone === 'chest') {
+                  if (zoneT >= 0.64) this.aimFocusZone = 'head';
+                  else if (zoneT >= 0.42) this.aimFocusZone = 'neck';
+                } else if (this.aimFocusZone === 'neck') {
+                  if (zoneT >= 0.66) this.aimFocusZone = 'head';
+                  else if (zoneT < 0.22 && this.pullingUpTimer <= 0) this.aimFocusZone = 'chest';
+                } else if (zoneT < 0.44) {
+                  this.aimFocusZone = zoneT < 0.22 && this.pullingUpTimer <= 0 ? 'chest' : 'neck';
+                }
+              }
+
+              const targetYawZone =
+                this.aimFocusZone === 'head'
+                  ? headAim.yaw
+                  : this.aimFocusZone === 'neck'
+                    ? lerpAngle(chestAim.yaw, headAim.yaw, 0.55)
+                    : chestAim.yaw;
+              let deltaYawZone = targetYawZone - this.yaw;
+              while (deltaYawZone > Math.PI) deltaYawZone -= Math.PI * 2;
+              while (deltaYawZone < -Math.PI) deltaYawZone += Math.PI * 2;
+
+              // Strong, sticky horizontal tracking across bursts and sprays
+              const yawLambda = (this.isAiming ? 46 : 40) * sprayTrack;
+              this.yaw += deltaYawZone * (1 - Math.exp(-yawLambda * dt));
 
               if (this.bugDoCapaTimer > 0 && !target.isLowPose) {
+                this.aimFocusZone = 'head';
                 const distQuality =
                   chestAim.horiz < 6
                     ? chestAim.horiz / 6
@@ -7892,129 +8084,116 @@ export class BattleRoyaleEngine {
                   headAim.pitch + 0.004,
                   distQuality,
                 );
-                this.pitch = THREE.MathUtils.damp(this.pitch, bugPitch, 32 * sprayControl, dt);
-              } else {
-                const chestPitch = chestAim.pitch;
-                const headPitch = headAim.pitch;
-                const headTopPitch = Math.max(headPitch + 0.012, headTopAim.pitch);
-                const chestHeadSpan = Math.max(0.014, headPitch - chestPitch);
+                this.pitch = THREE.MathUtils.damp(
+                  this.pitch,
+                  bugPitch,
+                  38 * Math.max(0.75, sprayControl),
+                  dt,
+                );
+              } else if (rawPitchInput > 0.00012) {
+                // Smooth chest-to-head Capa drag with anti-overshoot cushion around head
+                const climbScale = THREE.MathUtils.clamp(chestHeadSpan / 0.031, 0.80, 1.38);
+                const oneShotBoost =
+                  !activeDef.automatic ||
+                  activeDef.category === 'HG' ||
+                  activeDef.category === 'SG'
+                    ? 1.38
+                    : 1.20;
+                const headCushionStart = headPitch - chestHeadSpan * 0.16;
 
-                if (rawPitchInput > 0.00012) {
-                  // Player drags upward for Capa — NO hard ceiling; pulling past headTopPitch + 0.024 breaks lock!
-                  const climbScale = THREE.MathUtils.clamp(chestHeadSpan / 0.030, 0.78, 1.45);
-                  const oneShotBoost =
-                    !activeDef.automatic ||
-                    activeDef.category === 'HG' ||
-                    activeDef.category === 'SG'
-                      ? 1.45
-                      : 1.25;
+                if (this.pitch < headCushionStart) {
                   const scaledUp = rawPitchInput * climbScale * oneShotBoost;
-                  this.pitch = THREE.MathUtils.clamp(this.pitch + scaledUp, -1.05, 1.18);
-
-                  if (this.pitch > headTopPitch + 0.024) {
-                    // User pulled too far upward — unstick cleanly!
-                    this.lockedTargetId = null;
-                    this.aimRelockBlockedUntilRelease = true;
-                    this.lockedTargetWasStanding = false;
-                    this.aimBreakAccum = 0;
-                    this.wasLockedWhileCrouched = false;
-                    this.aimAssistActive = false;
-                  } else if (
-                    sprayControl > 0.35 &&
-                    Math.abs(rawPitchInput) < 0.0045 &&
-                    this.pitch >= headPitch - chestHeadSpan * 0.14 &&
-                    this.pitch <= headTopPitch
-                  ) {
-                    const headMagnet = Math.min(18, 28 * sprayControl);
-                    this.pitch = THREE.MathUtils.clamp(
-                      THREE.MathUtils.damp(this.pitch, headPitch, headMagnet, dt),
-                      -1.05,
-                      1.18,
-                    );
-                  }
-                } else if (rawPitchInput < -0.0008) {
-                  if (rawPitchInput < -0.025) {
-                    this.lockedTargetId = null;
-                    this.lockedTargetWasStanding = false;
-                    this.aimRelockBlockedUntilRelease = true;
-                    this.aimBreakAccum = 0;
-                    this.aimAssistActive = false;
-                    this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput, -1.05, 1.18);
-                  } else {
-                    this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput * 0.72, -1.05, 1.18);
-                    if (this.pitch < chestPitch - 0.03) {
-                      this.lockedTargetId = null;
-                      this.lockedTargetWasStanding = false;
-                      this.aimRelockBlockedUntilRelease = true;
-                      this.aimBreakAccum = 0;
-                      this.aimAssistActive = false;
-                    }
-                  }
+                  const nextPitch = this.pitch + scaledUp;
+                  // Cushion landing if single frame would overshoot straight past the head
+                  this.pitch = THREE.MathUtils.clamp(
+                    nextPitch > headTopPitch && rawPitchInput < 0.032
+                      ? THREE.MathUtils.lerp(headPitch, nextPitch, 0.22)
+                      : nextPitch,
+                    -1.05,
+                    1.18,
+                  );
                 } else {
-                  const inHeadZone =
-                    this.pitch >= headPitch - chestHeadSpan * 0.42 &&
-                    this.pitch <= headTopPitch + 0.02;
-                  const dampRate = (this.isAiming ? 20 : 16) * sprayControl;
-                  if (inHeadZone) {
-                    this.pitch = THREE.MathUtils.damp(this.pitch, headPitch, dampRate, dt);
-                  } else if (this.pullingUpTimer > 0) {
-                    this.pitch = THREE.MathUtils.clamp(this.pitch, chestPitch, headTopPitch + 0.024);
-                  } else {
-                    this.pitch = THREE.MathUtils.damp(this.pitch, chestPitch, dampRate, dt);
+                  const headDepth = THREE.MathUtils.clamp(
+                    (this.pitch - headCushionStart) /
+                      Math.max(0.012, headTopPitch - headCushionStart),
+                    0,
+                    1,
+                  );
+                  const upCushion =
+                    rawPitchInput > 0.032 ? 1.0 : THREE.MathUtils.lerp(0.50, 0.15, headDepth);
+                  this.pitch = THREE.MathUtils.clamp(
+                    this.pitch + rawPitchInput * upCushion,
+                    -1.05,
+                    1.18,
+                  );
+                }
+
+                if (this.pitch > headTopPitch + 0.060 || rawPitchInput > 0.048) {
+                  // User pulled deliberately past the head — unstick cleanly!
+                  this.lockedTargetId = null;
+                  this.aimRelockBlockedUntilRelease = true;
+                  this.lockedTargetWasStanding = false;
+                  this.aimBreakAccum = 0;
+                  this.wasLockedWhileCrouched = false;
+                  this.aimAssistActive = false;
+                  this.aimFocusZone = 'chest';
+                } else if (this.pitch >= headCushionStart && this.pitch <= headTopPitch + 0.025) {
+                  this.aimFocusZone = 'head';
+                  const headMagnet =
+                    (this.isAiming ? 36 : 31) * sprayTrack * (rawPitchInput < 0.018 ? 1.0 : 0.65);
+                  this.pitch = THREE.MathUtils.clamp(
+                    THREE.MathUtils.damp(this.pitch, headPitch, headMagnet, dt),
+                    -1.05,
+                    1.18,
+                  );
+                }
+              } else if (rawPitchInput < -0.0008) {
+                if (rawPitchInput < -0.058) {
+                  this.lockedTargetId = null;
+                  this.lockedTargetWasStanding = false;
+                  this.aimRelockBlockedUntilRelease = true;
+                  this.aimBreakAccum = 0;
+                  this.aimAssistActive = false;
+                  this.aimFocusZone = 'chest';
+                  this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput, -1.05, 1.18);
+                } else {
+                  this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput * 0.42, -1.05, 1.18);
+                  if (this.pitch < chestPitch - 0.075) {
+                    this.lockedTargetId = null;
+                    this.lockedTargetWasStanding = false;
+                    this.aimRelockBlockedUntilRelease = true;
+                    this.aimBreakAccum = 0;
+                    this.aimAssistActive = false;
+                    this.aimFocusZone = 'chest';
                   }
+                }
+              } else {
+                const dampRate = (this.isAiming ? 36 : 31) * sprayTrack;
+                const zoneTargetPitch =
+                  this.aimFocusZone === 'head'
+                    ? headPitch
+                    : this.aimFocusZone === 'neck'
+                      ? neckPitch
+                      : chestPitch;
+                if (this.aimFocusZone === 'chest' && this.pullingUpTimer > 0 && this.pitch > chestPitch) {
+                  // Preserve upward climb progress right after dragging up instead of snapping back down
+                  this.pitch = THREE.MathUtils.clamp(
+                    THREE.MathUtils.damp(this.pitch, neckPitch, dampRate * 0.35, dt),
+                    chestPitch,
+                    headTopPitch + 0.048,
+                  );
+                } else {
+                  this.pitch = THREE.MathUtils.clamp(
+                    THREE.MathUtils.damp(this.pitch, zoneTargetPitch, dampRate, dt),
+                    -1.05,
+                    1.18,
+                  );
                 }
               }
             }
           }
         } else if (deferredPitchApplied) {
           this.pitch = THREE.MathUtils.clamp(this.pitch + rawPitchInput, -1.05, 1.18);
-        }
-      } else if (justStartedAiming) {
-        // One-time Aim-FOV snap when opening scope using tighter reticle capture
-        const aimSnapTarget = this.findAimAssistTarget(0.18, assistMaxRange);
-        if (aimSnapTarget) {
-          aimSnapTarget.getChest(_v1);
-          aimSnapTarget.getHead(_v3);
-          const pivotY = this.pos.y + targetCamHeight;
-
-          const chestAim = this.computeExactAnglesToTarget(
-            _v1.x,
-            _v1.y,
-            _v1.z,
-            targetCamHeight,
-            targetShoulderOffset,
-          );
-
-          if (chestAim.horiz > 0.15) {
-            let deltaYawToCenter = chestAim.yaw - this.yaw;
-            while (deltaYawToCenter > Math.PI) deltaYawToCenter -= Math.PI * 2;
-            while (deltaYawToCenter < -Math.PI) deltaYawToCenter += Math.PI * 2;
-
-            const currentHitWorldY = pivotY + Math.tan(this.pitch) * chestAim.horiz;
-            const horizOffsetAtTarget = Math.abs(Math.sin(deltaYawToCenter)) * chestAim.horiz;
-            const alreadyOnHead =
-              horizOffsetAtTarget <= 0.22 &&
-              currentHitWorldY >= _v3.y - 0.17 &&
-              currentHitWorldY <= _v3.y + 0.17;
-
-            const snapPt = alreadyOnHead ? _v3 : _v1;
-            const desired = this.computeExactAnglesToTarget(
-              snapPt.x,
-              snapPt.y,
-              snapPt.z,
-              targetCamHeight,
-              targetShoulderOffset,
-            );
-            let deltaYaw = desired.yaw - this.yaw;
-            while (deltaYaw > Math.PI) deltaYaw -= Math.PI * 2;
-            while (deltaYaw < -Math.PI) deltaYaw += Math.PI * 2;
-
-            // Snap cleanly onto exact center of chest (or head if already aligned)
-            this.yaw += deltaYaw;
-            this.pitch = desired.pitch;
-            justAimSnapped = true;
-            aimConvergedThisFrame = true;
-          }
         }
       }
     }
@@ -15420,6 +15599,7 @@ export class BattleRoyaleEngine {
   public dispose(): void {
     this.disposed = true;
     this.unsubMultiplayer?.();
+    this.unsubSkinBundles?.();
     this.clearOnlineRoomState();
     this.clearLoadTimers();
     soundEngine.setFlightAudioMode('none');

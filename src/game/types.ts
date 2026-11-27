@@ -86,6 +86,11 @@ export const SKIN_SLOT_KEYS: ReadonlyArray<SkinSlotKey> = ['head', 'mask', 'shir
 export type EquippedSkinLoadout = Partial<Record<SkinSlotKey, string>>;
 
 const SKIN_PIECE_ID_RE = /^(male|female):([1-9][0-9]{0,2}):(head|mask|shirt|pants|shoes)$/;
+const SKIN_BUNDLE_ID_RE = /^(male|female):([1-9][0-9]{0,2})$/;
+
+export function getCharacterGender(modelId?: CharacterModelId | null): SkinGender {
+  return modelId === 'eva' || modelId === 'kelly' ? 'female' : 'male';
+}
 
 export function sanitizeEquippedSkins(raw: unknown): EquippedSkinLoadout | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
@@ -104,6 +109,37 @@ export function sanitizeEquippedSkins(raw: unknown): EquippedSkinLoadout | undef
     }
   }
   return count > 0 ? out : undefined;
+}
+
+export function getEquippedSkinBundleId(
+  cfg?: Pick<CharacterConfig, 'modelId' | 'equippedSkins'> | null,
+): string | null {
+  if (!cfg?.equippedSkins) return null;
+  const charGender = getCharacterGender(cfg.modelId);
+  const clean = sanitizeEquippedSkins(cfg.equippedSkins);
+  if (!clean) return null;
+  for (let i = 0; i < SKIN_SLOT_KEYS.length; i++) {
+    const val = clean[SKIN_SLOT_KEYS[i]];
+    if (!val) continue;
+    const match = SKIN_PIECE_ID_RE.exec(val);
+    if (match && match[1] === charGender) {
+      return `${match[1]}:${match[2]}`;
+    }
+  }
+  return null;
+}
+
+export function buildEquippedSkinBundleLoadout(bundleId: string): EquippedSkinLoadout | undefined {
+  const m = SKIN_BUNDLE_ID_RE.exec(bundleId.trim());
+  if (!m) return undefined;
+  const prefix = `${m[1]}:${m[2]}`;
+  return {
+    head: `${prefix}:head`,
+    mask: `${prefix}:mask`,
+    shirt: `${prefix}:shirt`,
+    pants: `${prefix}:pants`,
+    shoes: `${prefix}:shoes`,
+  };
 }
 
 export type PlayerAvatarId =

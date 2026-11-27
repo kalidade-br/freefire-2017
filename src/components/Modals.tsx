@@ -1,13 +1,32 @@
 import React from 'react';
-import { X, Check, RotateCcw, Keyboard, MousePointerClick, Wifi, RefreshCw, Lock, Sparkles } from 'lucide-react';
+import {
+  X,
+  Check,
+  RotateCcw,
+  Keyboard,
+  MousePointerClick,
+  Wifi,
+  RefreshCw,
+  Lock,
+  Sparkles,
+  Ban,
+} from 'lucide-react';
 import {
   FREE_PLAYER_AVATARS,
   PLAYER_AVATARS,
   getCharacterAvatar,
   normalizePlayerAvatarId,
 } from '../game/avatars';
+import { soundEngine } from '../game/audio';
 import { multiplayerClient } from '../game/multiplayerClient';
 import {
+  getAllLoadedSkinBundles,
+  getSkinBundlesLoadingStatus,
+  preloadSkinBundles,
+  subscribeSkinBundles,
+} from '../game/skinBundles';
+import {
+  buildEquippedSkinBundleLoadout,
   CharacterConfig,
   CharacterModelId,
   ControlMode,
@@ -15,7 +34,9 @@ import {
   EMULATOR_KEY_BINDINGS,
   formatKeyCodeLabel,
   GameSettings,
+  getCharacterGender,
   getCharacterPresetByModelId,
+  getEquippedSkinBundleId,
   GlooSkinId,
   GraphicsQuality,
   KEY_BINDING_GROUPS,
@@ -25,6 +46,7 @@ import {
   normalizeCharacterModelId,
   PlayerAvatarId,
   ShadowQuality,
+  SkinGender,
   TextureQuality,
   WEAPONS,
 } from '../game/types';
@@ -148,6 +170,7 @@ interface CharacterModalProps {
   config: CharacterConfig;
   unlockedAvatars?: PlayerAvatarId[];
   s1PeakRankPoints?: number;
+  dockedRight?: boolean;
   onSelectAvatar?: (avatarId: PlayerAvatarId) => void;
   onChange: (next: CharacterConfig) => void;
   onClose: () => void;
@@ -157,183 +180,504 @@ export const CharacterModal: React.FC<CharacterModalProps> = ({
   config,
   unlockedAvatars,
   s1PeakRankPoints = 0,
+  dockedRight = true,
   onSelectAvatar,
   onChange,
   onClose,
 }) => {
   const activeModel = normalizeCharacterModelId(config.modelId);
+  const activeGender = getCharacterGender(activeModel);
   const activeAvatarId = normalizePlayerAvatarId(config.avatarId);
+  const [mainTab, setMainTab] = React.useState<'roupas' | 'personagem' | 'extras'>('roupas');
+  const [genderFilter, setGenderFilter] = React.useState<SkinGender | 'all'>('all');
+  const [lockWarningGender, setLockWarningGender] = React.useState<SkinGender | null>(null);
+  const [, setSkinRev] = React.useState(0);
 
-  const characters: ReadonlyArray<{ id: CharacterModelId; title: string; sub: string }> = [
-    { id: 'adam', title: 'ADAM', sub: 'Personagem Masculino Clássico' },
-    { id: 'eva', title: 'EVA', sub: 'Personagem Feminina Clássica' },
-    { id: 'maxim', title: 'MAXIM', sub: 'Guloso • Jaqueta & Boné' },
-    { id: 'kelly', title: 'KELLY', sub: 'Velocista • Agasalho Amarelo' },
+  React.useEffect(() => {
+    const unsub = subscribeSkinBundles(() => {
+      setSkinRev((r) => r + 1);
+    });
+    void preloadSkinBundles();
+    return unsub;
+  }, []);
+
+  React.useEffect(() => {
+    setLockWarningGender(null);
+  }, [activeModel]);
+
+  const equippedBundleId = getEquippedSkinBundleId({
+    modelId: activeModel,
+    equippedSkins: config.equippedSkins,
+  });
+  const skinBundles = getAllLoadedSkinBundles(genderFilter);
+  const bundleStatus = getSkinBundlesLoadingStatus();
+
+  const equipBundle = (bundleId: string | undefined) => {
+    soundEngine.playUiClick(740);
+    setLockWarningGender(null);
+    onChange({
+      ...config,
+      equippedSkins: bundleId ? buildEquippedSkinBundleLoadout(bundleId) : undefined,
+      vestEnabled: false,
+    });
+  };
+
+  const clearAllSkins = () => {
+    soundEngine.playUiClick(580);
+    setLockWarningGender(null);
+    onChange({
+      ...config,
+      equippedSkins: undefined,
+      vestEnabled: false,
+    });
+  };
+
+  const characters: ReadonlyArray<{
+    id: CharacterModelId;
+    title: string;
+    sub: string;
+    genderLabel: string;
+  }> = [
+    { id: 'adam', title: 'ADAM', sub: 'Personagem Clássico', genderLabel: 'MASCULINO' },
+    { id: 'eva', title: 'EVA', sub: 'Personagem Clássica', genderLabel: 'FEMININA' },
+    { id: 'maxim', title: 'MAXIM', sub: 'Guloso • Jaqueta & Boné', genderLabel: 'MASCULINO' },
+    { id: 'kelly', title: 'KELLY', sub: 'Velocista • Agasalho Amarelo', genderLabel: 'FEMININA' },
   ];
 
+  const activeCharMeta = characters.find((c) => c.id === activeModel) ?? characters[0];
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div className="w-full max-w-lg bg-[#14181e] border-2 border-amber-500 text-white shadow-2xl">
-        <div className="flex items-center justify-between px-4 py-3 bg-[#1d232c] border-b border-neutral-700">
+    <div
+      className={
+        dockedRight
+          ? 'fixed inset-0 z-50 pointer-events-none flex justify-end'
+          : 'fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4'
+      }
+    >
+      {dockedRight && (
+        <div className="hidden sm:flex flex-1 items-end justify-start p-4 pointer-events-none">
+          <div className="px-3 py-1.5 bg-black/60 border border-white/15 text-[11px] font-bold uppercase tracking-wider text-neutral-200">
+            Arraste o personagem para girar
+          </div>
+        </div>
+      )}
+
+      <div
+        className={
+          dockedRight
+            ? 'pointer-events-auto w-[62%] min-w-[270px] sm:w-[435px] md:w-[465px] h-full bg-[#10161d]/96 border-l-2 border-amber-500 text-white shadow-2xl flex flex-col'
+            : 'w-full max-w-lg bg-[#14181e] border-2 border-amber-500 text-white shadow-2xl flex flex-col max-h-[88vh]'
+        }
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-2.5 bg-[#19212b] border-b border-white/15 shrink-0">
           <h2 className="font-black text-sm tracking-widest uppercase text-amber-400">
-            SELEÇÃO DE PERSONAGEM
+            COFRE DE SKINS
           </h2>
           <button
             type="button"
             onClick={onClose}
             className="p-1 hover:bg-neutral-700 cursor-pointer"
+            aria-label="Fechar Cofre"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="p-4 space-y-4 max-h-[76vh] overflow-y-auto text-xs">
-          {/* Core Character Selection: Adam, Eva, Maxim, Kelly */}
-          <div>
-            <div className="font-bold uppercase tracking-wider text-neutral-300 mb-2">
-              PERSONAGEM ORIGINAL (FREE FIRE)
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              {characters.map((ch) => {
-                const selected = activeModel === ch.id;
-                const preset = getCharacterPresetByModelId(ch.id);
-                return (
+        {/* Main Vault Tabs */}
+        <div className="grid grid-cols-3 border-b border-white/15 bg-[#141b23] shrink-0">
+          {(
+            [
+              { id: 'roupas', label: 'SKINS' },
+              { id: 'personagem', label: 'PERSONAGEM' },
+              { id: 'extras', label: 'MOCHILA & GELO' },
+            ] as const
+          ).map((t) => {
+            const active = mainTab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => {
+                  soundEngine.playUiClick(690);
+                  setMainTab(t.id);
+                }}
+                className={`py-2.5 px-2 text-[10px] sm:text-[11px] font-black uppercase tracking-wider border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
+                  active
+                    ? 'border-amber-400 bg-amber-500/15 text-amber-300'
+                    : 'border-transparent text-neutral-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4 text-xs">
+          {mainTab === 'roupas' && (
+            <div className="space-y-3">
+              {/* Active Character Gender Banner */}
+              <div className="px-3 py-2 bg-[#161e28] border border-white/10 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-wider text-amber-300">
+                    {activeCharMeta.title} · {activeCharMeta.genderLabel}
+                  </div>
+                  <div className="text-[10px] text-neutral-400">
+                    Skins completas pré-prontas • Grátis
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playUiClick(690);
+                    setMainTab('personagem');
+                  }}
+                  className="px-2 py-1 border border-white/15 bg-black/40 hover:border-amber-400 text-[9px] font-black uppercase text-neutral-200 cursor-pointer shrink-0"
+                >
+                  Trocar
+                </button>
+              </div>
+
+              {/* Gender Filter + Reset Bar */}
+              <div className="flex items-center justify-between gap-2">
+                <div className="grid grid-cols-3 gap-1 flex-1">
+                  {(
+                    [
+                      { id: 'all', label: 'Todas' },
+                      { id: 'male', label: 'Masculinas' },
+                      { id: 'female', label: 'Femininas' },
+                    ] as const
+                  ).map((g) => (
+                    <button
+                      key={g.id}
+                      type="button"
+                      onClick={() => {
+                        soundEngine.playUiClick(680);
+                        setGenderFilter(g.id);
+                      }}
+                      className={`py-1.5 px-1.5 text-[10px] font-black uppercase border cursor-pointer transition-colors ${
+                        genderFilter === g.id
+                          ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                          : 'bg-[#171e27] border-neutral-700 text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      {g.label}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  disabled={!equippedBundleId}
+                  onClick={clearAllSkins}
+                  className="px-2.5 py-1.5 border border-neutral-700 bg-[#171e27] hover:border-red-400 hover:text-red-300 disabled:opacity-40 disabled:cursor-not-allowed text-[10px] font-black uppercase flex items-center gap-1 cursor-pointer shrink-0"
+                  title="Voltar ao visual padrão do personagem"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Padrão</span>
+                </button>
+              </div>
+
+              {/* Opposite-Gender Padlock Alert */}
+              {lockWarningGender && lockWarningGender !== activeGender && (
+                <div className="p-2.5 bg-red-950/55 border border-red-400/70 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Lock className="w-4 h-4 text-amber-300 shrink-0" />
+                    <span className="text-[11px] font-bold text-red-100 leading-snug">
+                      {lockWarningGender === 'female'
+                        ? 'Skin feminina bloqueada! Equipe Eva ou Kelly para usar.'
+                        : 'Skin masculina bloqueada! Equipe Adam ou Maxim para usar.'}
+                    </span>
+                  </div>
                   <button
-                    key={ch.id}
                     type="button"
-                    onClick={() =>
-                      onChange({
-                        ...config,
-                        ...preset,
-                        backpackEnabled: config.backpackEnabled,
-                        glooSkin: config.glooSkin,
-                        vestEnabled: false,
-                      })
-                    }
-                    className={`p-2.5 text-left border-2 cursor-pointer transition-colors flex flex-col gap-2 ${
-                      selected
-                        ? 'bg-amber-500/20 border-amber-400 text-amber-300'
-                        : 'bg-[#1a2028] border-neutral-700 hover:border-neutral-500 text-neutral-200'
-                    }`}
+                    onClick={() => {
+                      soundEngine.playUiClick(710);
+                      setMainTab('personagem');
+                    }}
+                    className="px-2 py-1 bg-amber-500 hover:bg-amber-400 text-black font-black text-[9px] uppercase cursor-pointer shrink-0"
                   >
-                    <div className="relative w-full aspect-square bg-black/50 border border-white/15 overflow-hidden">
-                      <img
-                        src={getCharacterAvatar(ch.id)}
-                        alt={ch.title}
-                        className="w-full h-full object-cover object-top"
-                      />
+                    Personagem
+                  </button>
+                </div>
+              )}
+
+              {/* Image-Only Full Outfit Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                {/* Default character visual tile */}
+                <button
+                  type="button"
+                  onClick={() => equipBundle(undefined)}
+                  className={`relative aspect-[3/4] p-2 border-2 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                    !equippedBundleId
+                      ? 'bg-amber-500/15 border-amber-400 text-amber-200'
+                      : 'bg-[#171e27] border-neutral-700 hover:border-neutral-500 text-neutral-400'
+                  }`}
+                  title="Visual padrão do personagem"
+                >
+                  <Ban className="w-7 h-7 opacity-80" />
+                  <span className="text-[10px] font-black uppercase tracking-wider">Padrão</span>
+                  {!equippedBundleId && (
+                    <div className="absolute top-1.5 right-1.5 w-4 h-4 bg-amber-400 text-black flex items-center justify-center">
+                      <Check className="w-3 h-3" />
+                    </div>
+                  )}
+                </button>
+
+                {/* Ready-Made Complete Skins (Images Only, Gender Locked) */}
+                {skinBundles.map((bundle) => {
+                  const compatible = bundle.gender === activeGender;
+                  const selected = compatible && equippedBundleId === bundle.id;
+                  return (
+                    <button
+                      key={bundle.id}
+                      type="button"
+                      onClick={() => {
+                        if (!compatible) {
+                          soundEngine.playUiClick(340);
+                          setLockWarningGender(bundle.gender);
+                          return;
+                        }
+                        equipBundle(selected ? undefined : bundle.id);
+                      }}
+                      aria-label={`Skin ${bundle.gender} ${bundle.number}`}
+                      className={`relative aspect-[3/4] p-1.5 border-2 bg-gradient-to-b from-[#1e2733] to-[#11171f] flex items-center justify-center overflow-hidden cursor-pointer transition-all ${
+                        selected
+                          ? 'border-amber-400 ring-1 ring-amber-400/50'
+                          : compatible
+                            ? 'border-neutral-700 hover:border-cyan-400/80'
+                            : 'border-neutral-800 hover:border-red-400/70'
+                      }`}
+                    >
+                      {bundle.thumbnailUrl ? (
+                        <img
+                          src={bundle.thumbnailUrl}
+                          alt=""
+                          className={`w-full h-full object-contain drop-shadow-[0_6px_12px_rgba(0,0,0,0.75)] ${
+                            compatible ? '' : 'grayscale opacity-50'
+                          }`}
+                        />
+                      ) : (
+                        <RefreshCw className="w-6 h-6 text-neutral-500 animate-spin" />
+                      )}
+
                       {selected && (
-                        <div className="absolute top-1.5 right-1.5 w-5 h-5 bg-amber-400 text-black flex items-center justify-center">
+                        <div className="absolute top-1.5 right-1.5 w-5 h-5 bg-amber-400 text-black flex items-center justify-center shadow">
                           <Check className="w-3.5 h-3.5" />
                         </div>
                       )}
-                    </div>
-                    <div>
-                      <div className="font-black text-sm tracking-wider">{ch.title}</div>
-                      <span className="text-[10px] text-neutral-400">{ch.sub}</span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
 
-          {/* Only Backpack Toggle (no skins/vest/helmet) */}
-          <button
-            type="button"
-            onClick={() => onChange({ ...config, backpackEnabled: !config.backpackEnabled, vestEnabled: false })}
-            className={`w-full py-2.5 px-3 border flex items-center justify-between cursor-pointer ${
-              config.backpackEnabled
-                ? 'bg-emerald-900/40 border-emerald-500 text-emerald-300'
-                : 'bg-[#1a2028] border-neutral-700 text-neutral-400'
-            }`}
-          >
-            <span className="font-bold uppercase">Mochila</span>
-            <span>{config.backpackEnabled ? 'ON' : 'OFF'}</span>
-          </button>
-
-          {/* Gloo Wall Skin Selector */}
-          <div className="border-t border-neutral-700 pt-3">
-            <div className="font-bold uppercase tracking-wider text-neutral-300 mb-2">
-              SKIN DE PAREDE DE GELO
-            </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              {(
-                [
-                  {
-                    id: 'classic' as GlooSkinId,
-                    title: 'GELO CLÁSSICO',
-                    sub: 'Curvado, espesso e largo nos lados',
-                  },
-                  {
-                    id: 'ffwc' as GlooSkinId,
-                    title: 'FF WORLD CUP 2019',
-                    sub: 'Compacto, inclinado p/ frente (dá pra pular em cima)',
-                  },
-                ]
-              ).map((g) => {
-                const activeGloo = (config.glooSkin === 'ffwc' ? 'ffwc' : 'classic') === g.id;
-                return (
-                  <button
-                    key={g.id}
-                    type="button"
-                    onClick={() => onChange({ ...config, glooSkin: g.id })}
-                    className={`p-2.5 text-left border-2 cursor-pointer transition-colors flex flex-col gap-1.5 ${
-                      activeGloo
-                        ? 'bg-cyan-500/15 border-cyan-400 text-cyan-200'
-                        : 'bg-[#1a2028] border-neutral-700 hover:border-neutral-500 text-neutral-300'
-                    }`}
-                  >
-                    <div className="w-full h-14 bg-black/55 border border-white/10 flex items-center justify-center">
-                      {g.id === 'classic' ? (
-                        <svg viewBox="0 0 80 42" className="w-16 h-10">
-                          <path
-                            d="M8,36 Q8,10 22,6 Q40,3 58,6 Q72,10 72,36 L64,38 Q62,16 40,14 Q18,16 16,38 Z"
-                            fill="#dbeafe"
-                            stroke="#60a5fa"
-                            strokeWidth="2"
-                          />
-                        </svg>
-                      ) : (
-                        <svg viewBox="0 0 80 42" className="w-16 h-10">
-                          <path
-                            d="M14,34 L18,12 L32,14 L40,9 L48,14 L62,12 L66,34 Z"
-                            fill="#cbd5e1"
-                            stroke="#22d3ee"
-                            strokeWidth="1.5"
-                          />
-                          <path d="M16,26 L64,26 L66,34 L14,34 Z" fill="#090d16" />
-                          <polygon points="40,13 48,21 40,30 32,21" fill="#eab308" stroke="#111827" strokeWidth="1" />
-                          <polygon points="20,21 30,24 27,27 18,24" fill="#fde047" />
-                          <polygon points="60,21 50,24 53,27 62,24" fill="#fde047" />
-                        </svg>
+                      {!compatible && (
+                        <>
+                          <div className="absolute top-1.5 right-1.5 w-6 h-6 bg-black/80 border border-amber-400/70 text-amber-300 flex items-center justify-center shadow">
+                            <Lock className="w-3.5 h-3.5" />
+                          </div>
+                          <div className="absolute inset-x-0 bottom-0 px-1.5 py-1.5 bg-black/85 border-t border-white/10 flex items-center justify-center gap-1 text-center">
+                            <Lock className="w-3 h-3 text-amber-300 shrink-0" />
+                            <span className="text-[9px] font-black uppercase leading-tight text-amber-200">
+                              {bundle.gender === 'female'
+                                ? 'Precisa de feminina'
+                                : 'Precisa de masculino'}
+                            </span>
+                          </div>
+                        </>
                       )}
-                    </div>
-                    <div className="flex items-center justify-between gap-1">
-                      <span className="font-black text-[11px] tracking-wide">{g.title}</span>
-                      {activeGloo && <Check className="w-3.5 h-3.5 text-cyan-300 shrink-0" />}
-                    </div>
-                    <span className="text-[10px] leading-tight text-neutral-400">{g.sub}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+                    </button>
+                  );
+                })}
+              </div>
 
-          {/* Profile Avatar Selector */}
-          {onSelectAvatar && (
-            <div className="border-t border-neutral-700 pt-3">
-              <AvatarCollectionGrid
-                activeAvatarId={activeAvatarId}
-                unlockedAvatars={unlockedAvatars}
-                s1PeakRankPoints={s1PeakRankPoints}
-                onSelectAvatar={onSelectAvatar}
-              />
+              {bundleStatus.inFlightCount > 0 && (
+                <div className="flex items-center justify-center gap-2 py-2 text-[11px] text-cyan-300 font-bold">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Carregando skins do cofre...</span>
+                </div>
+              )}
+
+              {bundleStatus.inFlightCount === 0 && skinBundles.length === 0 && (
+                <div className="border border-white/10 bg-black/30 p-3 text-center text-[11px] text-neutral-400 space-y-2">
+                  <div>Nenhuma skin disponível neste filtro.</div>
+                  {bundleStatus.loadedCount === 0 && (
+                    <button
+                      type="button"
+                      onClick={() => void preloadSkinBundles()}
+                      className="px-3 py-1 bg-amber-500 text-black font-black text-[10px] uppercase cursor-pointer"
+                    >
+                      Recarregar Skins
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {mainTab === 'personagem' && (
+            <div className="space-y-3">
+              <div className="font-bold uppercase tracking-wider text-neutral-300">
+                ESCOLHER PERSONAGEM (MASCULINO / FEMININO)
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                {characters.map((ch) => {
+                  const selected = activeModel === ch.id;
+                  const preset = getCharacterPresetByModelId(ch.id);
+                  const sameGender = getCharacterGender(ch.id) === activeGender;
+                  return (
+                    <button
+                      key={ch.id}
+                      type="button"
+                      onClick={() => {
+                        soundEngine.playUiClick(720);
+                        onChange({
+                          ...config,
+                          ...preset,
+                          backpackEnabled: config.backpackEnabled,
+                          glooSkin: config.glooSkin,
+                          equippedSkins: sameGender ? config.equippedSkins : undefined,
+                          vestEnabled: false,
+                        });
+                      }}
+                      className={`p-2 text-left border-2 cursor-pointer transition-colors flex flex-col gap-2 ${
+                        selected
+                          ? 'bg-amber-500/20 border-amber-400 text-amber-300'
+                          : 'bg-[#1a2028] border-neutral-700 hover:border-neutral-500 text-neutral-200'
+                      }`}
+                    >
+                      <div className="relative w-full aspect-square bg-black/50 border border-white/15 overflow-hidden">
+                        <img
+                          src={getCharacterAvatar(ch.id)}
+                          alt={ch.title}
+                          className="w-full h-full object-cover object-top"
+                        />
+                        {selected && (
+                          <div className="absolute top-1.5 right-1.5 w-5 h-5 bg-amber-400 text-black flex items-center justify-center">
+                            <Check className="w-3.5 h-3.5" />
+                          </div>
+                        )}
+                        <div className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-black/80 border border-white/15 text-[8px] font-black uppercase text-cyan-200">
+                          {ch.genderLabel}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="font-black text-sm tracking-wider">{ch.title}</div>
+                        <span className="text-[10px] text-neutral-400">{ch.sub}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {mainTab === 'extras' && (
+            <div className="space-y-4">
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playUiClick(700);
+                  onChange({
+                    ...config,
+                    backpackEnabled: !config.backpackEnabled,
+                    vestEnabled: false,
+                  });
+                }}
+                className={`w-full py-2.5 px-3 border flex items-center justify-between cursor-pointer ${
+                  config.backpackEnabled
+                    ? 'bg-emerald-900/40 border-emerald-500 text-emerald-300'
+                    : 'bg-[#1a2028] border-neutral-700 text-neutral-400'
+                }`}
+              >
+                <span className="font-bold uppercase">Mochila Visível no Lobby</span>
+                <span className="font-black">{config.backpackEnabled ? 'ON' : 'OFF'}</span>
+              </button>
+
+              <div className="border-t border-white/10 pt-3">
+                <div className="font-bold uppercase tracking-wider text-neutral-300 mb-2">
+                  SKIN DE PAREDE DE GELO
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  {(
+                    [
+                      {
+                        id: 'classic' as GlooSkinId,
+                        title: 'GELO CLÁSSICO',
+                        sub: 'Curvado, espesso e largo nos lados',
+                      },
+                      {
+                        id: 'ffwc' as GlooSkinId,
+                        title: 'FF WORLD CUP 2019',
+                        sub: 'Compacto, inclinado p/ frente',
+                      },
+                    ]
+                  ).map((g) => {
+                    const activeGloo = (config.glooSkin === 'ffwc' ? 'ffwc' : 'classic') === g.id;
+                    return (
+                      <button
+                        key={g.id}
+                        type="button"
+                        onClick={() => {
+                          soundEngine.playUiClick(700);
+                          onChange({ ...config, glooSkin: g.id });
+                        }}
+                        className={`p-2.5 text-left border-2 cursor-pointer transition-colors flex flex-col gap-1.5 ${
+                          activeGloo
+                            ? 'bg-cyan-500/15 border-cyan-400 text-cyan-200'
+                            : 'bg-[#1a2028] border-neutral-700 hover:border-neutral-500 text-neutral-300'
+                        }`}
+                      >
+                        <div className="w-full h-14 bg-black/55 border border-white/10 flex items-center justify-center">
+                          {g.id === 'classic' ? (
+                            <svg viewBox="0 0 80 42" className="w-16 h-10">
+                              <path
+                                d="M8,36 Q8,10 22,6 Q40,3 58,6 Q72,10 72,36 L64,38 Q62,16 40,14 Q18,16 16,38 Z"
+                                fill="#dbeafe"
+                                stroke="#60a5fa"
+                                strokeWidth="2"
+                              />
+                            </svg>
+                          ) : (
+                            <svg viewBox="0 0 80 42" className="w-16 h-10">
+                              <path
+                                d="M14,34 L18,12 L32,14 L40,9 L48,14 L62,12 L66,34 Z"
+                                fill="#cbd5e1"
+                                stroke="#22d3ee"
+                                strokeWidth="1.5"
+                              />
+                              <path d="M16,26 L64,26 L66,34 L14,34 Z" fill="#090d16" />
+                              <polygon points="40,13 48,21 40,30 32,21" fill="#eab308" stroke="#111827" strokeWidth="1" />
+                              <polygon points="20,21 30,24 27,27 18,24" fill="#fde047" />
+                              <polygon points="60,21 50,24 53,27 62,24" fill="#fde047" />
+                            </svg>
+                          )}
+                        </div>
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="font-black text-[11px] tracking-wide">{g.title}</span>
+                          {activeGloo && <Check className="w-3.5 h-3.5 text-cyan-300 shrink-0" />}
+                        </div>
+                        <span className="text-[10px] leading-tight text-neutral-400">{g.sub}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {onSelectAvatar && (
+                <div className="border-t border-white/10 pt-3">
+                  <AvatarCollectionGrid
+                    activeAvatarId={activeAvatarId}
+                    unlockedAvatars={unlockedAvatars}
+                    s1PeakRankPoints={s1PeakRankPoints}
+                    onSelectAvatar={onSelectAvatar}
+                  />
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        <div className="px-4 py-3 bg-[#1d232c] border-t border-neutral-700 flex justify-end">
+        {/* Footer */}
+        <div className="px-4 py-2.5 bg-[#19212b] border-t border-white/15 flex justify-end shrink-0">
           <button
             type="button"
             onClick={onClose}

@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import http from 'node:http';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -1425,11 +1426,13 @@ export async function createExpressApp(
 
   // --- FREE MIX-AND-MATCH SKIN BUNDLES CATALOG (numbered male/female GLBs) ---
   const SKIN_CDN_BASE = 'https://kalidade-br.github.io/freefire-2017/skin';
+  const localSkinRoot = path.resolve(__dirname, 'skin');
   interface SkinBundleCatalogEntry {
     id: string;
     gender: 'male' | 'female';
     number: number;
     url: string;
+    fallbackUrl?: string;
   }
   let cachedSkinCatalog: {
     expiresAt: number;
@@ -1443,21 +1446,52 @@ export async function createExpressApp(
 
   async function probeNumberedSkinGender(gender: 'male' | 'female'): Promise<SkinBundleCatalogEntry[]> {
     const found: SkinBundleCatalogEntry[] = [];
-    for (let n = 1; n <= 20; n++) {
-      const url = `${SKIN_CDN_BASE}/${gender}/${n}.glb`;
-      try {
-        const ac = new AbortController();
-        const timer = setTimeout(() => ac.abort(), 2500);
-        const resp = await fetch(url, { method: 'HEAD', signal: ac.signal });
-        clearTimeout(timer);
-        if (!resp.ok) break;
-        found.push({ id: `${gender}:${n}`, gender, number: n, url });
-      } catch {
+    for (let n = 1; n <= 30; n++) {
+      const localFile = path.join(localSkinRoot, gender, `${n}.glb`);
+      const hasLocal = fs.existsSync(localFile);
+      const remoteUrl = `${SKIN_CDN_BASE}/${gender}/${n}.glb`;
+      let hasRemote = false;
+
+      if (!hasLocal) {
+        try {
+          const ac = new AbortController();
+          const timer = setTimeout(() => ac.abort(), 2500);
+          const resp = await fetch(remoteUrl, { method: 'HEAD', signal: ac.signal });
+          clearTimeout(timer);
+          hasRemote = resp.ok;
+        } catch {
+          hasRemote = false;
+        }
+      }
+
+      if (!hasLocal && !hasRemote) {
         break;
       }
+
+      found.push(
+        hasLocal
+          ? {
+              id: `${gender}:${n}`,
+              gender,
+              number: n,
+              url: `/skin/${gender}/${n}.glb`,
+              fallbackUrl: remoteUrl,
+            }
+          : {
+              id: `${gender}:${n}`,
+              gender,
+              number: n,
+              url: remoteUrl,
+            },
+      );
     }
     if (found.length === 0) {
-      found.push({ id: `${gender}:1`, gender, number: 1, url: `${SKIN_CDN_BASE}/${gender}/1.glb` });
+      found.push({
+        id: `${gender}:1`,
+        gender,
+        number: 1,
+        url: `${SKIN_CDN_BASE}/${gender}/1.glb`,
+      });
     }
     return found;
   }
@@ -1488,8 +1522,24 @@ export async function createExpressApp(
       return res.json(result);
     } catch {
       return res.json({
-        male: [{ id: 'male:1', gender: 'male', number: 1, url: `${SKIN_CDN_BASE}/male/1.glb` }],
-        female: [{ id: 'female:1', gender: 'female', number: 1, url: `${SKIN_CDN_BASE}/female/1.glb` }],
+        male: [
+          {
+            id: 'male:1',
+            gender: 'male',
+            number: 1,
+            url: '/skin/male/1.glb',
+            fallbackUrl: `${SKIN_CDN_BASE}/male/1.glb`,
+          },
+        ],
+        female: [
+          {
+            id: 'female:1',
+            gender: 'female',
+            number: 1,
+            url: '/skin/female/1.glb',
+            fallbackUrl: `${SKIN_CDN_BASE}/female/1.glb`,
+          },
+        ],
       });
     } finally {
       skinCatalogInFlight = null;
@@ -2174,6 +2224,9 @@ export async function createExpressApp(
   });
 
   // --- VITE / STATIC ASSET SERVING ---
+  if (fs.existsSync(localSkinRoot)) {
+    app.use('/skin', express.static(localSkinRoot, { maxAge: '1h' }));
+  }
   if (options.attachFrontend !== false) {
     if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
       const vitePkg = 'vite';

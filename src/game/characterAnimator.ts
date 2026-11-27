@@ -250,7 +250,7 @@ export function applyAdamOverBackDraw(
   vis: THREE.Object3D | undefined,
   upperBones: Array<{ name: string; bone: THREE.Object3D }> | undefined,
   drawTimer: number,
-  modelId: FFModelId = 'adam',
+  modelId: string = 'adam',
 ): number {
   if (!vis || !upperBones || drawTimer <= 0) return 0;
   const { reachWeight } = computeWeaponDrawWeights(drawTimer);
@@ -624,7 +624,7 @@ export class CharacterAnimator {
       vis.updateMatrixWorld(true);
       vis.getWorldQuaternion(_qVisW);
 
-      const aimQuats = getAimPoseQuats(rig.modelId ?? 'adam');
+      const aimQuats = getAimPoseQuats(rig.skinBundleId ?? rig.modelId ?? 'adam');
       if (hasWeapon && aimQuats && rig.adamUpperBones) {
         slerpArmBones(rig.adamUpperBones, aimQuats, 0.72 * plantEnv, false, 'rightOnly', 0);
         vis.updateMatrixWorld(true);
@@ -747,7 +747,7 @@ export class CharacterAnimator {
       rotateBoneCharAxis(_qVisW, rig.adamSpineBone, 1, 0, 0, -0.34 - this.recoil * 0.06);
       rotateBoneCharAxis(_qVisW, rig.adamHeadBone, 1, 0, 0, -0.64 + input.pitchRad * 0.24);
 
-      const aimQuats = getAimPoseQuats(rig.modelId ?? 'adam');
+      const aimQuats = getAimPoseQuats(rig.skinBundleId ?? rig.modelId ?? 'adam');
       if (aimQuats && rig.adamUpperBones) {
         slerpArmBones(rig.adamUpperBones, aimQuats, 1.0, false);
         vis.updateMatrixWorld(true);
@@ -1043,7 +1043,7 @@ export class CharacterAnimator {
 
     mixer.update(dt);
 
-    const aimQuats = getAimPoseQuats(rig.modelId ?? 'adam');
+    const aimQuats = getAimPoseQuats(rig.skinBundleId ?? rig.modelId ?? 'adam');
     const isMaxim = rig.modelId === 'maxim';
     const breath = Math.sin(this.idleTime * 2.3);
     const sway = Math.sin(this.runSwayPhase);
@@ -1741,7 +1741,7 @@ export class CharacterAnimator {
     }
 
     // Measure actual head gaze direction via headMountQuat so head looks straight ahead naturally in every clip
-    const modelPack = getModelAssetPack(rig.modelId ?? 'adam');
+    const modelPack = getModelAssetPack(rig.skinBundleId ?? rig.modelId ?? 'adam');
     if (modelPack && rig.adamHeadBone && !input.isReviving && !input.isHealing) {
       vis.updateMatrixWorld(true);
       vis.getWorldQuaternion(_qVisW);
@@ -1807,7 +1807,12 @@ export class CharacterAnimator {
     // J. Over-the-shoulder weapon draw pose
     const drawReach =
       hasWeapon && this.drawTimer > 0 && !input.isHealing && !input.isReviving && !input.isReloading
-        ? applyAdamOverBackDraw(vis, rig.adamUpperBones, this.drawTimer, rig.modelId ?? 'adam')
+        ? applyAdamOverBackDraw(
+            vis,
+            rig.adamUpperBones,
+            this.drawTimer,
+            rig.skinBundleId ?? rig.modelId ?? 'adam',
+          )
         : 0;
     if (!rig.weaponMount.userData.baseMountQuat) {
       rig.weaponMount.userData.baseMountQuat = rig.weaponMount.quaternion.clone();

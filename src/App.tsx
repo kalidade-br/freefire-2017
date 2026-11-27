@@ -2086,6 +2086,7 @@ export default function App() {
           config={character}
           unlockedAvatars={profile.unlockedAvatars}
           s1PeakRankPoints={Math.max(profile.rankPoints, profile.s1PeakRankPoints ?? 0)}
+          dockedRight={gameState === GameState.LOBBY || gameState === GameState.MATCHMAKING}
           onSelectAvatar={(av) => void handleSelectAvatar(av)}
           onChange={handleUpdateCharacter}
           onClose={() => {
